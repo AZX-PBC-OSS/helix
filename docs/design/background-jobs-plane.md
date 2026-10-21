@@ -1,6 +1,7 @@
 # Background jobs plane
 
-**Status:** Implementation design; not shipped. Implements
+**Status:** Implemented in `apps/jobs` (see [the feature doc](../features/background-jobs.md));
+enabling it on a production install is a separate operator rollout. Implements
 [ADR-0045](../adr/0045-app-triggered-durable-jobs-plane.md).
 **Updated:** 2026-10-13.
 
@@ -159,7 +160,10 @@ allowlisted operation, method, exact resource, SHA-256 of the HTTP body bytes,
 and the operation's app/env/owner/type/generation claims. Caller-provided
 headers cannot override them. The portal lifecycle key authorizes lifecycle
 updates only, never job results or outbound fetch. HTTPS protects every deployed
-hop; a route being called "internal" is not a network restriction.
+hop; a route being called "internal" is not a network restriction. The signed
+contract, its reference mint/verify implementation, and the executable signing
+vectors live in `@azx-pbc/shared/jobsSigning` and `@azx-pbc/shared/jobsSigningVectors`
+(ADR-0045); any future non-TypeScript server is judged against those same vectors.
 
 Each receiver atomically burns the nonce before side effects, with retention
 covering the validity window and clock tolerance. Jobs keeps its burns in its
@@ -248,7 +252,7 @@ finite positive limits after sizing; app payloads and manifests cannot.
 | Control | Initial default | Authority |
 | --- | --- | --- |
 | Submission attempts per app/environment | 10 per 60-second fixed window | Edge, existing shared counter primitive |
-| Submission attempts across the deployment | 100 per 60-second fixed window | Edge, shared aggregate counter across serving replicas and environments |
+| Submission attempts across the deployment | 100 per 60-second fixed window | Edge, shared aggregate counter across serving edge replicas and servers |
 | Unfinished jobs per app/environment | 20 | Jobs, checked with enqueue |
 | Unfinished jobs per server | 200 | Jobs, checked with enqueue |
 | Retained jobs per app/environment | 1,000 | Jobs, checked with enqueue |
@@ -258,7 +262,9 @@ finite positive limits after sizing; app payloads and manifests cannot.
 Values are initial operator defaults, not public SLAs or workload-sizing claims.
 Per-app unfinished/retained defaults are scoped within each server.
 Keep one configuration definition per owning service and document resolved
-values. Reject zero/negative/unbounded settings. Capacity reductions block new
+values. The edge and the dev gateway read the two submission controls
+and their window from `EDGE_JOBS_LIMITS`; the jobs service reads its own
+controls from `JOBS_LIMITS`. Reject zero/negative/unbounded settings. Capacity reductions block new
 work until occupancy falls; they do not evict accepted jobs or erase results.
 Execution overlap follows §6; no persisted distributed-slot synchronization is required.
 
@@ -281,7 +287,11 @@ cleanup releases retained storage capacity. Within each server database, enforce
 caps across types and rolling overlap. These caps are transactional; execution
 concurrency is a separate soft limit. The per-app submission throttle and the
 deployment aggregate are shared across all servers, so changing a type prefix
-does not multiply the edge allowance. No cross-database capacity reservation or
+does not multiply the edge allowance. Development-tier submissions are counted
+by the dev gateway's own process-local throttle, with the same configured
+limits, and do not count toward the deployment aggregate: the dev gateway's
+database role has no grant on the shared counter table, so a compromised dev
+gateway cannot reset production abuse controls. No cross-database capacity reservation or
 global execution ledger is introduced. Adding a server requires sizing the
 combined storage and connection budget; it adds its own configured capacity. These finite counts, bounded payload/result
 sizes, bounded attempts/progress and §7 retention limit jobs storage; the stored
@@ -678,5 +688,6 @@ second production runner: identical local ids/keys remain isolated by server;
 qualified grants cannot cross servers; wrong-server signatures and callbacks
 fail; outages never trigger fallback; lifecycle delivery is tracked independently;
 retirement preserves old reads/retries/cleanup while blocking new work. Initial
-production acceptance still runs against the one real pg-boss service. This
-document does not claim the unimplemented production failure matrix has passed.
+production acceptance still runs against the one real pg-boss service. The
+[2026-10-21 acceptance review](../reviews/2026-10-21-background-jobs-acceptance.md)
+records which of these cases ran against real services, and which did not.

@@ -12,14 +12,14 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 
 ## What it provisions
 
-| Layer    | Resources                                                                                                                                            |
-| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                                          |
-| Data     | Postgres Flexible Server (private), Storage (blob, private)                                                                                          |
-| Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) + `kv-delegated` (user-delegated token material, egress-only) — all private |
-| Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`)                       |
-| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`)                      |
-| DNS      | public zone for the apps domain (`*`, `auth`, `portal`; `dev-api` when `deployDevGateway`)                                                           |
+| Layer    | Resources                                                                                                                                                                                                    |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                                                                                                  |
+| Data     | Postgres Flexible Server (private): the platform `helix` database + the jobs plane's private `helix_jobs` database; Storage (blob, private)                                                                  |
+| Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) + `kv-delegated` (user-delegated token material, egress-only) — all private                                                         |
+| Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`); the two migrate jobs get one deploy-scoped identity each                     |
+| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`) and the default-on jobs plane's container app and migrate job (`deployJobs`) |
+| DNS      | public zone for the apps domain (`*`, `auth`, `portal`; `dev-api` when `deployDevGateway`)                                                                                                                   |
 
 ### The security shape, in one diagram
 
@@ -264,8 +264,10 @@ Two scope notes:
 
 - **ACA Jobs cannot resolve references** (open platform bug,
   [microsoft/azure-container-apps#1804](https://github.com/microsoft/azure-container-apps/issues/1804)),
-  so the migrate job keeps its runtime read of `postgres-admin-password` with its
-  own managed identity. Do not move it to references until that bug closes.
+  so both migrate jobs keep their runtime secret reads with their own managed
+  identities — the platform's job reads `postgres-admin-password`, the jobs
+  job reads `jobs-migrate-database-url`. Do not move either to references
+  until that bug closes.
 - On an environment whose egress is UDR'd through the firewall
   (`deployFirewall=true`), reference resolution needs the `AzureKeyVault`
   service tag and `login.microsoft.com` on the allow list (managed-identity
@@ -436,6 +438,167 @@ The token audience is not configurable here: it is always
 `https://portal.<appsDomain>`, and the portal derives it from `APP_PUBLIC_BASE`
 (`PORTAL_PUBLIC_ORIGIN` overrides it for a portal served on another hostname).
 
+## Background jobs (`deployJobs`, [ADR-0045](../../docs/adr/0045-app-triggered-durable-jobs-plane.md))
+
+The operator procedures for this plane — server states, temporary recovery,
+closing intake, retirement, re-enabling, health and alerts, and the measured
+capacity figures — are in the public docs'
+[Operating background jobs](../../apps/docs/src/deploy/jobs.md) page. This
+section is the reference for what the template provisions.
+
+The background-jobs plane keeps the same database isolation as everywhere else
+(background-jobs design §8): its own private database on the platform's Postgres
+server, two identities that never cross the boundary, and migrations that run
+separately from the service. On by default; `deployJobs` gates the jobs
+container app, the edge / dev-gateway / portal jobs wiring, the jobs secrets in
+kv-platform and the jobs migrate job.
+
+- **The database (`helix_jobs`) is declared unconditionally** — `deployJobs`
+  gates the plane's _dependencies_, never the store. An apply can therefore
+  never delete the jobs database, and a re-enabled jobs plane reuses its
+  retained records (retirement rules: never repoint a server id to an empty
+  store while its references remain). The name must stay what
+  `sql/01-roles.sql` provisions — `apps/portal/src/db/provisioning-parity.test.ts`
+  holds the two together.
+- **Two DSNs, two readers, no third.** `jobs-database-url` (the `helix_jobs`
+  runtime role) is for the jobs container app only;
+  `jobs-migrate-database-url` (the `helix_jobs_migrate` migration identity) is
+  for the jobs migrate job only. No other container receives either — the edge
+  and the portal never hold a jobs database credential. Both are written to
+  kv-platform only while `deployJobs` is on.
+- **The `<namePrefix>-jobs-migrate` job** is Manual, like the platform's: it
+  never runs on its own. It runs the **helix-jobs image** (migrations are
+  applied at the image version being deployed, same rule as the portal's job)
+  at its `db:migrate:azure` entry, which reads the migration DSN from
+  kv-platform with its own deploy-scoped identity (Key Vault Secrets User on
+  kv-platform — nothing else) and runs the package's own `db:migrate`
+  command. That command refuses a runtime DSN (it needs CREATE on the
+  database) and verifies every grant it makes by re-reading the store, so the
+  migration identity's authority is the whole of its confinement.
+- **The `<namePrefix>-jobs` container app** runs the helix-jobs image in the
+  **apps** environment with **internal ingress**: the edge, the dev-gateway and
+  the portal reach it at `https://<namePrefix>-jobs.internal.<env-domain>`,
+  and nothing reaches it from the public load balancer. This is the
+  apps environment's network posture, not a jobs-only sandbox — the jobs
+  service inherits the apps subnet's outbound allowances (background-jobs
+  design §8; application fetches still go through the edge and egress).
+  It runs with **no managed identity**: it holds no Azure credential and no Key
+  Vault access, so every secret it needs is an inline container-app secret
+  composed by the template. One replica (`min = max = 1`); a Single-revision
+  rollout overlaps old and new for at most two worker processes. Startup,
+  liveness and readiness probes hit `/health`, which answers 200 in every
+  state — they catch a process that stopped answering, and a degraded store is
+  read from the body, never by restarting the replica.
+- **Each service gets only its own credentials** (one server map in
+  `main.bicep`, projected per consumer):
+
+  | Service              | Jobs configuration it receives                                                                                            |
+  | -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+  | jobs                 | `JOBS_SERVER_ID`, its runtime DSN, its three signing roots, the prod and dev callback bases                               |
+  | edge, dev-gateway    | `EDGE_JOBS_CONFIG` — the jobs endpoint, the edge→jobs and jobs→edge roots                                                 |
+  | portal               | `PORTAL_JOBS_CONFIG` — the jobs endpoint and the portal→jobs root; `PORTAL_JOBS_CATALOGUE` — serving state and types only |
+  | egress, migrate jobs | nothing from the server map                                                                                               |
+
+  The edge and the portal never receive a jobs database credential, and the
+  portal never receives an edge hop root. `apps/jobs/src/azureServiceWiring.test.ts`
+  holds the template to this table and boots each service's real config
+  loader on the documents the template builds.
+
+- **Three signing roots**, one per direction (`edge→jobs`, `jobs→edge`,
+  `portal→jobs`), each 32 random bytes in standard base64
+  (`openssl rand -base64 32`, generated separately). The apply refuses a
+  missing, malformed or repeated root. They land in kv-platform as
+  `jobs-edge-to-jobs-root`, `jobs-jobs-to-edge-root` and
+  `jobs-portal-to-jobs-root` — the steady-state source the commented
+  `az.getSecret()` lines in `main.bicepparam` read back — and reach the
+  services only through the template. Rotating a root is a template apply with
+  the new value: the services holding it roll together.
+- **Callbacks stay in their tier.** Prod jobs call back to the edge's
+  environment FQDN, dev jobs to the dev-gateway's. With the dev surface off,
+  the dev callback still names the dev-gateway's host — which then answers
+  nothing — so a dev-tier callback fails instead of reaching the production
+  plane.
+- **The endpoint is computed.** The edge and the portal are configured with
+  the jobs app's internal FQDN computed from its name (taking the jobs app's
+  own output would be a dependency cycle with its callbacks). After an apply,
+  the `jobsEndpoint` output must equal `https://` + the `jobsFqdn` output; the
+  edge's `jobs_reachability` health check reports a mismatch as unreachable.
+- **Capacity limits are the platform defaults.** The template sets neither
+  `JOBS_LIMITS` (the jobs service's capacity controls) nor `EDGE_JOBS_LIMITS`
+  (the edge's and dev gateway's submission throttle), so a deployed plane runs
+  the defaults in `apps/jobs/README.md` and `apps/edge/README.md`. To tune one
+  after sizing, add it as a plain environment entry on that container app in
+  `main.bicep`; neither carries a secret. Set `EDGE_JOBS_LIMITS` on the edge
+  and the dev gateway together: each process reads its own copy.
+- **Serving, closed, retiring, disabled.** `jobsServerState` is `serving` by
+  default. `jobsIntakeOpen=false` keeps a serving server advertised but closes
+  its intake: the jobs service gets `JOBS_ACCEPTING=false` and refuses new
+  submissions with 503 `jobs_disabled`. `retiring` withdraws `jobs:fetch` from
+  new-grant discovery in the portal and always closes intake, whatever
+  `jobsIntakeOpen` says. Saved grants stay. In both cases the service, its
+  routing and every credential stay in place, so retained-key recovery, reads,
+  cancellation, lifecycle delivery and cleanup keep working. The closure is
+  durable in the jobs store and serialized with in-flight enqueues: once the
+  new revision's apply lands, no replica of either revision admits new work.
+- **Retirement completes from the health body.** Watch the jobs service's
+  `jobs_intake` check. It reports the remaining `unfinishedServer` and
+  `retainedServer` counts, and `intake is closed and drained` when both are
+  zero. Only then set `deployJobs=false`. That removes the jobs container app
+  and every jobs key from the edge, dev-gateway and portal — ordinary hosting
+  then has no jobs dependency — and leaves the database and any records in
+  place. A temporary shutdown is not retirement: re-enabling reuses the same
+  store, its retained keys recover their original jobs, and the portal
+  resynchronizes every app's current lifecycle state to it (step 5 of the
+  upgrade procedure below). The jobs service refuses a store bound to a
+  different server id (`jobs_intake` reports `error`).
+- **Known limitation: vault-wide reads.** kv-platform grants the edge, portal,
+  egress and dev-gateway identities Key Vault Secrets User on the whole vault
+  (`modules/rbac.bicep`), so those identities can read the jobs roots and DSNs
+  stored there, as they can every other platform secret. The configuration the
+  template delivers respects the table above; the vault grant does not
+  enforce it.
+
+#### The jobs upgrade procedure (existing install)
+
+1. **Roles/ACLs** — re-run `scripts/create-roles.sh` (step 4). The role SQL is
+   idempotent: it creates what is missing (including the jobs identities and
+   the jobs database on an install that predates them) and re-applies the
+   current ACL posture without touching passwords or data.
+2. **Template apply** — the `helix_jobs` databases resource, the jobs
+   secrets, the jobs migrate job, the jobs container app and the edge /
+   portal jobs wiring land on the first `deployJobs=true` apply. The first
+   such apply must compose the two DSNs from the bootstrap passwords
+   (`HELIX_JOBS_DB_PASSWORD` / `HELIX_JOBS_MIGRATE_DB_PASSWORD`) and take the
+   three signing roots from `HELIX_JOBS_EDGE_TO_JOBS_ROOT` /
+   `HELIX_JOBS_JOBS_TO_EDGE_ROOT` / `HELIX_JOBS_PORTAL_TO_JOBS_ROOT`, via
+   `main.bootstrap.bicepparam` or `--parameters`: the template refuses an
+   apply that would write an empty-password DSN or a missing root instead of
+   silently doing it. From the next apply on, source all five from the vault
+   in `main.bicepparam` (the commented jobs `az.getSecret()` lines).
+3. **Jobs migration** — run the jobs migrate job, exactly like the platform's
+   (update the image, start, read the execution). The two stores are
+   independent (different databases, different identities), so the order of
+   the two migrate jobs does not matter; both run before the images that
+   need them. Re-running is safe — the command converges queue-policy drift
+   and adds what is missing.
+4. **Roll the images.** The jobs service's startup compatibility check is the
+   rollback guard: it reads the schema version, the queue policy and the
+   runtime privileges and reports any mismatch through `/health` — it never
+   migrates and never writes. An image rolled back past the forward-only
+   schema therefore degrades loudly instead of corrupting anything.
+5. **Wait for lifecycle synchronization.** On its first passes after the
+   roll, the portal's lifecycle sender enqueues and delivers the current
+   lifecycle state of every existing app, archived apps included, to the jobs
+   server. Until an app's state is acknowledged, that app's job submissions
+   get a retryable `503 jobs_unavailable`; nothing is admitted on unknown
+   state. Watch the portal's `jobs_lifecycle_delivery` check in `/health`:
+   enablement has finished when `synchronizedTargets` equals `targets` and the
+   check has no detail (the `jobs.delivery.synchronized` log line marks the
+   moment). While it is unfinished, the detail names each server and its
+   pending count, and pending work older than 60 s reads `degraded`. An
+   interrupted synchronization resumes from the portal's outbox on the next
+   pass or the next portal start, against the same jobs store.
+
 ## Deployment topology handed to the portal SPA
 
 The portal SPA is a **prebuilt bundle baked into the portal image**, so it cannot
@@ -528,6 +691,8 @@ modules/
   foundry.bicep       Azure AI Foundry account + model deployments (invoked by foundry-rg.bicep)
   aca-environment.bicep   reusable managed environment (called twice)
   containerapp.bicep  reusable container app (edge/portal/egress + opt-in dev-gateway)
+  migrate-job.bicep   the platform schema's migrate job (manual, portal image)
+  jobs-migrate-job.bicep  the jobs database's migrate job (manual, helix-jobs image)
   dns.bicep           public DNS zone + records (incl. opt-in dev-api)
 ```
 
@@ -646,6 +811,13 @@ export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '
 export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')   # helix_portal runtime role (role created in step 4)
 export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
 export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')     # helix_dev role — create it now even if deployDevGateway stays false (see step 4)
+export HELIX_JOBS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')        # helix_jobs runtime role (role + jobs database created in step 4)
+export HELIX_JOBS_MIGRATE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=') # helix_jobs_migrate — the jobs migration identity, never installed in a runtime image
+# The jobs server's three signing roots: exactly 32 bytes each, standard base64,
+# one independent value per direction.
+export HELIX_JOBS_EDGE_TO_JOBS_ROOT=$(openssl rand -base64 32)
+export HELIX_JOBS_JOBS_TO_EDGE_ROOT=$(openssl rand -base64 32)
+export HELIX_JOBS_PORTAL_TO_JOBS_ROOT=$(openssl rand -base64 32)
 # Signing secrets are base64-DECODED by the apps — standard base64 here.
 # A base64url value makes the edge crash on boot.
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
@@ -667,16 +839,21 @@ export HELIX_AZX_WEB_CLIENT_ID=<helix-portal client id (GUID)>
 az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam
 ```
 
-### 3. Build + publish the three images
+### 3. Build + publish the images
 
-CI builds and publishes all three images to **GHCR** on pushes to the default
+CI builds and publishes five images to **GHCR** on pushes to the default
 branch and on `v*` tags (`.github/workflows/ci.yml`):
 
 ```
 ghcr.io/azx-pbc-oss/helix-edge:<tag>
 ghcr.io/azx-pbc-oss/helix-portal:<tag>
 ghcr.io/azx-pbc-oss/helix-egress:<tag>
+ghcr.io/azx-pbc-oss/helix-certbot:<tag>
+ghcr.io/azx-pbc-oss/helix-jobs:<tag>
 ```
+
+CI checks the built `helix-jobs` image with `apps/jobs/scripts/image-smoke.sh`
+before pushing it.
 
 Tags produced per push: the branch name, the commit SHA (`sha-<short>`), the
 semver on `v*` tags, and `latest` on the default branch. The container apps pull
@@ -684,32 +861,51 @@ these directly (see `imageRegistry` / `imageTag` in `main.bicepparam`), so a
 normal deploy needs no local build — set `imageTag` to the tag CI published and
 run the deployment.
 
+Two shell values the commands on this page use — define them once here, even
+on an install that builds nothing locally (step 5's apply reads `$TAG`;
+`GHCR_PAT` is only needed for the manual push below):
+
+```bash
+export TAG=sha-$(git rev-parse --short=7 HEAD) # the tag CI published for this commit
+export GHCR_PAT=<a GitHub PAT with write:packages>
+```
+
 > **GHCR packages must be pullable by the deploy.** The bicep does an anonymous
-> pull by default (empty `registries`), which requires the three packages to be
-> **public** (Package settings → Change visibility → Public — the repo can be
-> public while packages default to private). To keep them private instead, pass
-> a `registries` entry to the container apps (a `{ server: 'ghcr.io', username,
-passwordSecretRef }` with a `read:packages` PAT) and provision that secret.
+> pull by default (empty `registries`), which requires the pulled packages to be
+> **public** — `helix-edge`, `helix-portal`, `helix-egress`, `helix-certbot`,
+> and `helix-jobs` (Package settings → Change visibility → Public — the repo
+> can be public while packages default to private). To keep them private
+> instead, pass a `registries` entry to the container apps (a
+> `{ server: 'ghcr.io', username, passwordSecretRef }` with a `read:packages`
+> PAT) and provision that secret. The two migrate jobs accept no `registries`
+> entry (the platform's job shares the limitation), so on a private-registry
+> install they cannot pull their images at all — the job modules need the
+> same `registries` param before that path works.
 
 To build/publish manually (e.g. off-CI), from the repo root:
 
 ```bash
 echo "$GHCR_PAT" | docker login ghcr.io -u <github-user> --password-stdin
 REG=ghcr.io/azx-pbc-oss
-docker build -f apps/edge/Dockerfile   -t $REG/helix-edge:$TAG   .
-docker build -f apps/portal/Dockerfile -t $REG/helix-portal:$TAG .
-docker build -f apps/egress/Dockerfile -t $REG/helix-egress:$TAG .
-docker push $REG/helix-edge:$TAG && docker push $REG/helix-portal:$TAG && docker push $REG/helix-egress:$TAG
+docker build -f apps/edge/Dockerfile    -t $REG/helix-edge:$TAG    .
+docker build -f apps/portal/Dockerfile  -t $REG/helix-portal:$TAG  .
+docker build -f apps/egress/Dockerfile  -t $REG/helix-egress:$TAG  .
+docker build -f apps/certbot/Dockerfile -t $REG/helix-certbot:$TAG .
+docker build -f apps/jobs/Dockerfile    -t $REG/helix-jobs:$TAG    .
+docker push $REG/helix-edge:$TAG && docker push $REG/helix-portal:$TAG && docker push $REG/helix-egress:$TAG && docker push $REG/helix-certbot:$TAG && docker push $REG/helix-jobs:$TAG
 ```
 
 ### 4. Create the Postgres runtime roles
 
 The server and `helix` DB exist; the least-privilege roles and grants do not
 yet. The committed role SQL (`sql/01-roles.sql` — the prod analog of
-`.devcontainer/db-init/01-roles.sql`, with `NOBYPASSRLS` explicit on all four
-roles) creates them, run once as the admin with the **same passwords** you set
-above. It must run before the first migration: the migrations' per-table GRANTs
-are guarded by an `IF EXISTS role` check, so the roles must exist first.
+`.devcontainer/db-init/01-roles.sql`, with `NOBYPASSRLS` explicit on every
+role) creates them — the four platform runtime roles, the jobs runtime role
+(`helix_jobs`) and the jobs migration identity (`helix_jobs_migrate`), plus the
+jobs database and the PUBLIC-CONNECT revocation on both databases — run as the
+admin with the **same passwords** you set above. It must run before the first
+migration: the migrations' per-table GRANTs are guarded by an `IF EXISTS role`
+check, so the roles must exist first.
 
 Postgres is private-endpoint-only, so this runs as a throwaway Container Apps
 Job inside the VNet — `scripts/create-roles.sh` wraps the whole operation
@@ -720,10 +916,12 @@ which it must not survive: it carries the admin DSN as a job secret):
 RG=<rg> PREFIX=<namePrefix> scripts/create-roles.sh
 ```
 
-It reads the same `HELIX_*` env vars as the bicepparam, and it is **run-once**:
-`CREATE ROLE` is not idempotent, and a second run fails with "role already
-exists". To change a role password later, `ALTER ROLE` through the same
-throwaway-job shape — don't re-run the script.
+It reads the same `HELIX_*` env vars as the bicepparam. The role SQL is
+**idempotent** — it creates only what is missing and never touches an existing
+password — so re-running it applies the current ACL posture to an install that
+predates a role or the jobs database. To change a role password, `ALTER ROLE`
+through the same throwaway-job shape (don't re-run this — the existing
+password is deliberately kept).
 
 > Create `helix_dev` here even if you are not deploying the dev-gateway
 > (`deployDevGateway=false`) — the role is harmless without its app, and adding
@@ -857,6 +1055,12 @@ in "Every migration" above (pin the image to the tag being deployed, start it,
 confirm the execution reports `Succeeded`). Apps that booted before the schema
 existed pick it up on their own; nothing needs restarting.
 
+With `deployJobs=true` (the default) the apply also created the
+`<namePrefix>-jobs-migrate` job — run it the same way, pinned to the same tag,
+so the jobs store's schema and queue policy are in place before anything
+submits work. See "Background jobs" above for the two jobs' relationship (the
+stores are independent; either order works).
+
 ### 7. DNS + TLS
 
 - Delegate `azx.helix.azxlabs.io` (a subdomain of `azxlabs.io`) by adding NS
@@ -914,20 +1118,21 @@ gets its own.
 
 ## Alerting (`deployAlerts`, `alertEmails`)
 
-Five modules, split by **what they read** rather than by what they are about,
+Six modules, split by **what they read** rather than by what they are about,
 because that is what decides which failures a rule can see at all:
 
 | Module                      | Reads                         | Needs `deployTelemetry` | Gate                               |
 | --------------------------- | ----------------------------- | ----------------------- | ---------------------------------- |
 | `alerts.bicep`              | the platform's own telemetry  | yes (metric rule)       | `deployAlerts`                     |
+| `alerts-jobs.bicep`         | jobs health bodies, relayed   | no                      | `deployAlerts`+`deployJobs`        |
 | `alerts-availability.bicep` | an outside HTTP probe         | yes (App Insights)      | `deployAvailabilityTests`          |
 | `alerts-infra.bicep`        | Azure platform metrics        | no                      | `deployInfraAlerts`                |
 | `alerts-cost.bicep`         | billing (the platform groups) | no                      | `deployCostBudget`                 |
 | `alerts-cost-foundry.bicep` | billing (the Foundry group)   | no                      | `deployCostBudget`+`deployFoundry` |
 
-The first three notify through **one** action group (`modules/action-group.bicep`,
+The first four notify through **one** action group (`modules/action-group.bicep`,
 `<prefix>-ag-platform`), so a recipient is added in one parameter rather than
-five files. The budgets are the exceptions and say why in their own headers.
+six files. The budgets are the exceptions and say why in their own headers.
 
 ### The platform's own telemetry (`modules/alerts.bicep`)
 
@@ -961,6 +1166,68 @@ _degraded_ line instead, and expect noise from transient DB blips.
 **With `alertEmails` empty the rules still deploy and still fire — at nobody.**
 That state looks identical to working alerting, so the deployment emits an
 `alertsNotify` output saying which one you got. Read it.
+
+### Background jobs — health bodies from inside (`modules/alerts-jobs.bicep`)
+
+The jobs service answers `/health` with 200 in every state, and its failures
+are in the body as the `jobs_*` checks. The jobs app has internal ingress, and
+so does the portal unless `portalExternal` is set, so the availability tests
+below cannot reach either one. With `deployAlerts` and `deployJobs` on, the
+template adds a **health relay**: a scheduled Container Apps Job,
+`<prefix>-jobs-health-relay`, that runs every 5 minutes in the apps environment
+from the helix-jobs image (`apps/jobs/scripts/health-relay.ts`). It reads
+`/health` on each configured jobs server and on the portal, validates the body
+against the shared health contract, and writes bounded JSON lines to stdout:
+
+- `jobs.health.check`: one line per expected check, with `kind`, `target` (the
+  server id, or `portal`), `check`, `status`, `detail` (capped at 400
+  characters) and `metrics`.
+- `jobs.health.observed`: one line per target, with `outcome` (`observed`,
+  `no_answer` or `off_protocol`), the body's roll-up `status`, and `missing`
+  (expected checks the body did not report).
+
+The relay has no identity and no secrets, and it never logs a URL or an error
+message. The rules read those lines from the workspace, take the latest reading
+per target and check in a 15-minute window, and split alerts by target, so each
+jobs server alerts separately. None reads an HTTP status or a submission
+refusal: an ordinary throttle (429) or unfinished-capacity refusal never fires a
+rule.
+
+| Rule                     | Fires when                                                           | Checks                                                                        | Sev | First diagnostic step                                                                                                                                                                                      |
+| ------------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-alert-jobs-execution`  | storage unreachable or wrong schema, no worker, intake not applied   | `jobs_database`, `jobs_worker`, `jobs_intake`                                 | 1   | Read the check's `detail`. Schema or store words mean run `<prefix>-jobs-migrate` or check Postgres (`-alert-db-unavailable`); a worker error means read the jobs app's `jobs.runner.*` events             |
+| `-alert-jobs-capacity`   | retained storage at its server-wide bound, or its measurement stale  | `jobs_capacity`                                                               | 2   | Compare `retainedServer` with the bound. If `jobs_cleanup` is also failing, fix cleanup first; saturation clears as cleanup removes expired records                                                        |
+| `-alert-jobs-cleanup`    | expired content past its 48-hour removal deadline, or loop stopped   | `jobs_cleanup`                                                                | 2   | Read the jobs app's `jobs.cleanup.overdue`, `jobs.cleanup.pass_failed` and `jobs.cleanup.backlog` events                                                                                                   |
+| `-alert-jobs-lifecycle`  | lifecycle intent pending over 60 s, or the sender or sweeper stopped | `jobs_lifecycle_delivery` (portal), `jobs_lifecycle_recovery`, `jobs_sweeper` | 2   | For `portal`, the detail names each lagging server; read the portal's `jobs.delivery.*` events. For a jobs server, read its `jobs.recovery.*` events                                                       |
+| `-alert-jobs-unobserved` | no current reading for a target                                      | none (missing evidence)                                                       | 1   | `outcome` says which: `no_observation` (the relay is not running), `no_answer` (target down or unreachable), `off_protocol` (wrong service or invalid body), or a non-empty `missing` (check not reported) |
+
+While `-alert-jobs-unobserved` fires for a target, the other four rules have no
+current reading for it and cannot fire. Treat it as the most urgent of the five.
+
+To see what the relay saw, query the workspace:
+
+```kusto
+ContainerAppConsoleLogs_CL
+| extend p = parse_json(Log_s)
+| where tostring(p.event) in ("jobs.health.check", "jobs.health.observed")
+| project TimeGenerated, event = tostring(p.event), target = tostring(p.target),
+          check = tostring(p.check), status = tostring(p.status),
+          outcome = tostring(p.outcome), detail = tostring(p.detail), metrics = p.metrics
+| order by TimeGenerated desc
+```
+
+The same lines show a retiring server's drain progress: the `jobs_intake`
+check's `unfinishedServer` and `retainedServer` metrics. For a
+`no_observation` reading, check the relay's own runs first:
+
+```bash
+az containerapp job execution list -g <rg> -n <prefix>-jobs-health-relay -o table
+```
+
+The edge's `jobs_reachability` check is not relayed. It is in the edge's public
+body, and the edge availability test below fires when it reports `error`
+(every configured server unreachable, which with the one `jobs` server is any
+outage).
 
 ### Availability tests — the only view from outside (`modules/alerts-availability.bicep`)
 
@@ -1133,10 +1400,13 @@ reason: the failure is invisible in every place you would naturally look.
   certificate params. Full walkthrough + gotchas (v2 tokens, cert auth, App
   Roles): `docs/runbooks/entra-app-registration.md`.
 - **Wildcard ACME cert issuance/renewal** — portal scheduled job (deferred).
-- **Postgres runtime roles + the FIRST migration** — steps 4 and 6 above
-  (data-plane, not IaC). Subsequent migrations are not an operator step:
-  `deployApps=true` creates the `<namePrefix>-migrate` job, which applies them
-  without anyone handling the admin password (step 4's "Every migration" note).
+- **Postgres runtime roles + the FIRST migrations** — steps 4 and 6 above
+  (data-plane, not IaC). Subsequent platform migrations are not an operator
+  step: `deployApps=true` creates the `<namePrefix>-migrate` job, which
+  applies them without anyone handling the admin password (step 4's "Every
+  migration" note). The jobs store's migrations stay operator-triggered the
+  same way — `<namePrefix>-jobs-migrate`, one run per jobs image bump ("The
+  jobs upgrade procedure").
 - **Front Door / bastion** for operator access to the internal portal.
 - **Passwordless (Entra) Postgres auth** — a hardening follow-up, and **not** the
   config flip an earlier version of this list implied. The managed identities do

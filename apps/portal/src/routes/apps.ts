@@ -30,7 +30,11 @@ import {
   visibilityToColumns,
   type DeployAggregates,
 } from "../db/mappers.js";
-import { applyCapabilityChange, createApprovalRequest } from "../approvals/service.js";
+import {
+  applyCapabilityChange,
+  assertNoUnavailableJobTypeAdds,
+  createApprovalRequest,
+} from "../approvals/service.js";
 import { manifestWithBindings } from "../connections/bindings.js";
 import { Prisma } from "../db/client.js";
 import {
@@ -40,6 +44,7 @@ import {
   hashPassword,
 } from "../access/password.js";
 import { appPublicUrl } from "../deployment.js";
+import { recordLifecycleIntents, transitionAppLifecycle } from "../jobs/lifecycle.js";
 
 /** App registry routes: create, list, get (architecture §7). */
 export async function appRoutes(app: FastifyInstance): Promise<void> {
@@ -73,33 +78,83 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("forbidden", "password apps are disabled on this deployment");
     }
     const visibilityColumns = visibilityToColumns(body.visibility);
+    // Fill capability defaults so the stored shape always parses on read.
+    const capabilities = CapabilitiesSchema.parse(body.capabilities ?? {});
+    // Creation is a capability write like any other: a type this deployment
+    // does not offer cannot be born granted (the empty pre-image makes every
+    // jobs type in the payload an addition). Checked before the directory
+    // lookup below — the refusal owes no side work.
+    assertNoUnavailableJobTypeAdds({}, capabilities);
+    // Known gap, reported not fixed: unlike the manifest PUT, creation runs no
+    // classifier, so an elevated-shaped grant out of this payload (an mcp
+    // server, an externalOrigin, a fetch origin, an over-baseline budget)
+    // commits with no approval request. Closing it decides whether app births
+    // are approval-gated — a product decision recorded in the initiative's
+    // decision log, not a route-local fix.
     // Best-effort, like the visibility route's: a name the directory could not
     // supply costs the audit row its names and nothing else.
     const createGroupNames = await resolveGroupNamesForAudit(visibilityColumns.visibilityGroupIds);
-    // Fill capability defaults so the stored shape always parses on read.
-    const capabilities = CapabilitiesSchema.parse(body.capabilities ?? {});
 
     let row;
     try {
-      row = await app.prisma.app.create({
-        data: {
-          slug: body.slug,
-          displayName: body.displayName,
-          description: body.description ?? null,
-          // The identity half — the creator's Entra `oid` (ADR-0048): the one
-          // id the edge session also holds for the same human, so `ownsApp`
-          // and `scope=mine` compare a value that actually corresponds across
-          // planes. Never rendered.
-          ownerId: actor.oid,
-          // Capture the actor's display claims alongside the identity. The
-          // portal never resolves an owner against the directory later, so this
-          // is the only moment they are available; they may go stale if the
-          // person is renamed, which is the trade documented on the columns.
-          ownerName: actor.name ?? null,
-          ownerEmail: actor.email ?? null,
-          ...visibilityColumns,
-          capabilities,
-        },
+      // One boundary: the app row, its birth generation's per-target open
+      // records, and the birth audit event commit together or not at all.
+      // Before the lifecycle work the audit rode behind a separate write and
+      // could be lost while the app survived — the outbox row cannot be.
+      row = await app.prisma.$transaction(async (tx) => {
+        const created = await tx.app.create({
+          data: {
+            slug: body.slug,
+            displayName: body.displayName,
+            description: body.description ?? null,
+            // The identity half — the creator's Entra `oid` (ADR-0048): the one
+            // id the edge session also holds for the same human, so `ownsApp`
+            // and `scope=mine` compare a value that actually corresponds across
+            // planes. Never rendered.
+            ownerId: actor.oid,
+            // Capture the actor's display claims alongside the identity. The
+            // portal never resolves an owner against the directory later, so this
+            // is the only moment they are available; they may go stale if the
+            // person is renamed, which is the trade documented on the columns.
+            ownerName: actor.name ?? null,
+            ownerEmail: actor.email ?? null,
+            ...visibilityColumns,
+            capabilities,
+          },
+        });
+        // The birth generation's open records — one intent per configured
+        // lifecycle target (design §5: initial creation emits them too). An
+        // empty map (fully disabled) records nothing.
+        await recordLifecycleIntents(tx, created.id, {
+          generation: created.jobsGeneration,
+          archived: false,
+        });
+        await tx.auditEvent.create({
+          data: {
+            appId: created.id,
+            actor: actor.sub,
+            action: "app.create",
+            // Visibility is recorded here for the same reason the visibility route
+            // records it (ADR-0040 §7: an audit entry is the ONE place a group name
+            // is kept). An app can be group-scoped from birth — `CreateAppRequest`
+            // accepts the full union and `helix create --visibility group:a,b`
+            // produces exactly that; only the SPA declines to offer the mode — so
+            // without this, the groups an app was created with were recorded nowhere.
+            metadata: {
+              slug: created.slug,
+              visibility: visibilityLabel(body.visibility),
+              ...(visibilityColumns.visibilityGroupIds.length > 0
+                ? {
+                    groupIds: visibilityColumns.visibilityGroupIds,
+                    ...(Object.keys(createGroupNames).length > 0
+                      ? { groupNames: createGroupNames }
+                      : {}),
+                  }
+                : {}),
+            } as unknown as Prisma.InputJsonValue,
+          },
+        });
+        return created;
       });
     } catch (err) {
       if (isUniqueViolation(err, "slug")) {
@@ -107,32 +162,6 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       }
       throw err;
     }
-
-    await app.prisma.auditEvent.create({
-      data: {
-        appId: row.id,
-        actor: actor.sub,
-        action: "app.create",
-        // Visibility is recorded here for the same reason the visibility route
-        // records it (ADR-0040 §7: an audit entry is the ONE place a group name
-        // is kept). An app can be group-scoped from birth — `CreateAppRequest`
-        // accepts the full union and `helix create --visibility group:a,b`
-        // produces exactly that; only the SPA declines to offer the mode — so
-        // without this, the groups an app was created with were recorded nowhere.
-        metadata: {
-          slug: row.slug,
-          visibility: visibilityLabel(body.visibility),
-          ...(visibilityColumns.visibilityGroupIds.length > 0
-            ? {
-                groupIds: visibilityColumns.visibilityGroupIds,
-                ...(Object.keys(createGroupNames).length > 0
-                  ? { groupNames: createGroupNames }
-                  : {}),
-              }
-            : {}),
-        } as unknown as Prisma.InputJsonValue,
-      },
-    });
 
     reply.status(201).send(toApp(row));
   });
@@ -251,6 +280,12 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
 
   // Archive an app: the edge serves 410 + Clear-Site-Data for it (architecture
   // §7). Mutating — requires the dev token. Idempotent.
+  //
+  // The archive commits the state change, the next lifecycle generation and
+  // the per-target cancellation intents in one transaction
+  // (transitionAppLifecycle); the response reports the registry change and
+  // claims nothing about running work — cancellation delivery is asynchronous
+  // (spec criterion 50).
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/archive",
     { preHandler: [authenticate, ownsApp] },
@@ -260,21 +295,20 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
-      if (row.archivedAt) {
-        return toApp(row); // already archived — idempotent
-      }
-      const updated = await app.prisma.app.update({
-        where: { id: row.id },
-        data: { archivedAt: new Date() },
-      });
-      await app.prisma.auditEvent.create({
-        data: { appId: row.id, actor: actor.sub, action: "app.archive", metadata: {} },
+      const updated = await transitionAppLifecycle(app.prisma, {
+        appId: row.id,
+        slug: req.params.slug,
+        archive: true,
+        actor: actor.sub,
       });
       return toApp(updated);
     },
   );
 
-  // Un-archive an app. Mutating — requires the dev token. Idempotent.
+  // Un-archive an app. Mutating — requires the dev token. Idempotent. Opens a
+  // new lifecycle generation (and never resumes the cancelled older one); the
+  // pending intents of the archived generation stay pending, so a brief
+  // archive between two deliveries is still delivered (design §5).
   app.post<{ Params: { slug: string } }>(
     "/api/v1/apps/:slug/unarchive",
     { preHandler: [authenticate, ownsApp] },
@@ -284,15 +318,11 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
       if (!row) {
         throw new AppError("not_found", `app "${req.params.slug}" not found`);
       }
-      if (!row.archivedAt) {
-        return toApp(row); // not archived — idempotent
-      }
-      const updated = await app.prisma.app.update({
-        where: { id: row.id },
-        data: { archivedAt: null },
-      });
-      await app.prisma.auditEvent.create({
-        data: { appId: row.id, actor: actor.sub, action: "app.unarchive", metadata: {} },
+      const updated = await transitionAppLifecycle(app.prisma, {
+        appId: row.id,
+        slug: req.params.slug,
+        archive: false,
+        actor: actor.sub,
       });
       return toApp(updated);
     },

@@ -5,6 +5,7 @@ import {
   BASELINE_BYTES_PER_DAY,
   BASELINE_FETCH_REQUESTS_PER_DAY,
 } from "./approval.js";
+import { JobTypeCatalogueEntrySchema } from "./jobs.js";
 import { CatalogueProviderSchema } from "./providers.js";
 import { VisibilityModeSchema, type VisibilityMode } from "./visibility.js";
 
@@ -130,6 +131,29 @@ export const CapabilityCatalogueSchema = z.object({
     /** Human-facing summary of the scope rule; not machine-parsed. */
     scopeRule: z.string().min(1),
   }),
+
+  /**
+   * Background jobs (ADR-0001): the qualified job types an app may request
+   * here, entries straight from the shared wire contract. **Optional**, where
+   * every sibling block is always present: absence means jobs is fully
+   * disabled on this deployment — no configured or retained servers — and a
+   * deployment whose servers are all retiring advertises an empty list (the
+   * saved grants survive; nothing new may request them). Derived from the
+   * deployment's installed types, never from jobs-service reachability.
+   *
+   * **Strict** where the sibling blocks are loose, because the jobs catalogue
+   * deliberately carries no daily allowance or baseline budget (platform
+   * defaults bound jobs resources and no jobs-budget approval threshold
+   * exists) — a producer that grows one fails this parse instead of stripping
+   * it into a response that advertises an entitlement the platform does not
+   * have. Producer and SPA ship together (the portal serves the built SPA), so
+   * the version-skew cost a strict consumer otherwise carries does not arise.
+   */
+  jobs: z
+    .strictObject({
+      types: z.array(JobTypeCatalogueEntrySchema),
+    })
+    .optional(),
 
   /** Deploy bundle size caps in megabytes, as enforced on upload. */
   deploy: z.object({

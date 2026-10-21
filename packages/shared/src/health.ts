@@ -21,8 +21,9 @@ export type HealthState = z.infer<typeof HealthStateSchema>;
 
 /**
  * One named sub-check. Generic on purpose — every service adds its own without
- * touching this schema (today only the edge reports one: the registry
- * projection's freshness).
+ * touching this schema (the edge reports the registry projection's freshness;
+ * the portal reports its jobs lifecycle-delivery loop and backlog; the jobs
+ * service reports its own supervision states).
  */
 export const HealthCheckSchema = z.object({
   /** Stable identifier an alert rule can key on, e.g. `registry-projection`. */
@@ -45,10 +46,22 @@ export const HealthStatusSchema = z.object({
   service: z.string(),
   /** Process uptime in seconds. */
   uptime: z.number().nonnegative(),
-  /** Absent means the service reports liveness only (portal and egress today). */
+  /** Absent means the service reports liveness only — egress always; the portal when jobs is not configured on the install. */
   checks: z.array(HealthCheckSchema).optional(),
 });
 export type HealthStatus = z.infer<typeof HealthStatusSchema>;
+
+/**
+ * The name the jobs service stamps in its `/health` body's `service` field —
+ * the value `apps/jobs/src/serviceName.ts` exports as its own `SERVICE_NAME`
+ * and stamps in the OTel resource attribute, the boot log line and this
+ * field. Defined here because it has a second consumer that must never
+ * disagree with the first: the edge's reachability probe verifies the body it
+ * received was answered by the jobs service and not by some other helix
+ * process sharing the same wire contract — a misrouted endpoint must never
+ * read as a reachable jobs server.
+ */
+export const JOBS_SERVICE_NAME = "helix-jobs";
 
 const STATE_RANK: Record<HealthState, number> = { ok: 0, degraded: 1, error: 2 };
 
@@ -59,4 +72,47 @@ export function worstHealthState(states: Iterable<HealthState>): HealthState {
     if (STATE_RANK[state] > STATE_RANK[worst]) worst = state;
   }
   return worst;
+}
+
+// ── Grading a supervised pass loop ───────────────────────────────────────────
+
+/**
+ * The freshness skeleton every loop-graded health check shares — one grading
+ * of a supervised pass loop's supervision state (is it running; has a pass
+ * ever completed; is the last successful pass fresh). Check-specific evidence
+ * (backlog age, lag, saturation) is graded by each check after this returns
+ * `fresh`. The parameter is structural — the three fields the grading reads —
+ * so different loops' snapshots grade through this one function and cannot
+ * drift into different staleness semantics; a boundary correction here is
+ * every loop-graded check's correction, and no leg can pass on a private
+ * copy.
+ */
+export type PassFreshness =
+  | { kind: "not_started" }
+  | { kind: "no_pass"; lastPassSeconds: number | null }
+  | { kind: "stale"; sinceSeconds: number }
+  | { kind: "fresh" };
+
+export function passFreshness(
+  snapshot: { started: boolean; lastPassAt: string | null; lastOkPassAt: string | null },
+  staleAfterMs: number,
+  nowMs: number,
+): PassFreshness {
+  if (!snapshot.started) return { kind: "not_started" };
+  if (snapshot.lastOkPassAt === null) {
+    return {
+      kind: "no_pass",
+      lastPassSeconds: snapshot.lastPassAt
+        ? Math.round((nowMs - Date.parse(snapshot.lastPassAt)) / 1000)
+        : null,
+    };
+  }
+  const sinceMs = nowMs - Date.parse(snapshot.lastOkPassAt);
+  if (sinceMs > staleAfterMs) return { kind: "stale", sinceSeconds: Math.round(sinceMs / 1000) };
+  return { kind: "fresh" };
+}
+
+/** The distinction the last pass's own instant buys: a loop that never ran at all and one that runs but cannot complete a pass read differently. */
+export function lastPassAgeSuffix(lastPassSeconds: number | null): string {
+  return lastPassSeconds === null ? "" : ` — its last pass was ${lastPassSeconds}s ago`;
 }

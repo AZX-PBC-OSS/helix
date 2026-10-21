@@ -38,6 +38,16 @@ export const INSTR_EGRESS_EXCHANGES = "helix.egress.exchanges";
 export const INSTR_EGRESS_RENEWALS = "helix.egress.renewals";
 export const INSTR_EGRESS_RETIREMENTS = "helix.egress.retirements";
 export const INSTR_APP_VISITS = "helix.app.visits";
+export const INSTR_JOBS_STORAGE_PROBES = "helix.jobs.storage.probes";
+export const INSTR_JOBS_REACHABILITY_PROBES = "helix.jobs.reachability.probes";
+export const INSTR_JOBS_INSTRUCTIONS = "helix.jobs.instructions";
+export const INSTR_JOBS_BURN_SWEEPS = "helix.jobs.burn.sweeps";
+export const INSTR_JOBS_EXECUTIONS = "helix.jobs.executions";
+export const INSTR_JOBS_RECOVERIES = "helix.jobs.recoveries";
+export const INSTR_JOBS_CLEANUPS = "helix.jobs.cleanups";
+export const INSTR_JOBS_SUBMISSIONS = "helix.jobs.submissions";
+export const INSTR_JOBS_CALLBACKS = "helix.jobs.callbacks";
+export const INSTR_JOBS_FETCH_DISPATCHES = "helix.jobs.fetch.dispatches";
 /** CI deploy route decisions, by {@link REPO_DEPLOY_OUTCOMES} (ADR-0051). */
 export const INSTR_DEPLOY_REPO_REQUESTS = "helix.deploy.repo_requests";
 
@@ -86,6 +96,82 @@ export const ATTR_DATA_VERB = "helix.data.verb";
  * app data and never ride a span.
  */
 export const ATTR_DATA_MATCH_COUNT = "helix.data.match_count";
+/**
+ * Which signed internal jobs operation a signal is about — bounded by the six
+ * names in `JobsOperations` (`@azx-pbc/shared/jobsSigning`), and always taken
+ * from the ROUTE the receiver registered, never from the (unverified) token.
+ */
+export const ATTR_JOBS_OPERATION = "helix.jobs.operation";
+/**
+ * The jobs lifecycle generation a signal is about — a small non-negative
+ * integer the portal app model owns (ADR-0007). Never a personal value; the
+ * app's identity rides {@link ATTR_APP_ID}.
+ */
+export const ATTR_JOBS_GENERATION = "helix.jobs.generation";
+/**
+ * The qualified job type a jobs execution signal is about — a bounded
+ * deployment-catalogue dimension (the installed types are the catalogue's),
+ * never a caller-supplied name.
+ */
+export const ATTR_JOBS_TYPE = "helix.jobs.type";
+/**
+ * Which execution attempt of a job a signal is about — a small positive
+ * integer (1-based). A span attribute; job attempt numbers are never metric
+ * dimensions.
+ */
+export const ATTR_JOBS_ATTEMPT = "helix.jobs.attempt";
+/**
+ * The job's public reference id — a bounded opaque server-local string, as a
+ * span attribute so an operator can join a trace to the snapshot the app
+ * polls. Never a metric dimension.
+ */
+export const ATTR_JOBS_JOB_ID = "helix.jobs.job_id";
+/**
+ * Whether a lifecycle signal's generation closes the app (an archive —
+ * `true`) or opens one (creation/unarchive — `false`). Bounded boolean.
+ */
+export const ATTR_JOBS_ARCHIVED = "helix.jobs.archived";
+/**
+ * How many per-target intents a lifecycle transition recorded — one per
+ * configured serving/retiring server, so bounded by the deployment map.
+ */
+export const ATTR_JOBS_LIFECYCLE_TARGETS = "helix.jobs.lifecycle.targets";
+/**
+ * How many still-active job records one lifecycle delivery stamped with
+ * cancellation intent — every queued/running job the applied state closes,
+ * in both environments. Bounded by the store's own capacity; the records'
+ * convergence to their terminal outcomes is the recovery paths'.
+ */
+export const ATTR_JOBS_LIFECYCLE_STAMPED = "helix.jobs.lifecycle.stamped";
+/**
+ * How many app lifecycle states the portal sender's per-target
+ * synchronization step enqueued for that target — bounded by the `apps`
+ * table. Never an app id; the count is the only identity the step records.
+ */
+export const ATTR_JOBS_LIFECYCLE_SYNC_ENQUEUED = "helix.jobs.lifecycle.sync.enqueued";
+/**
+ * Which configured jobs server a signal is about — a deployment-map server id
+ * (`JobServerIdSchema`: 1–63 lowercase letters/digits/hyphens). Bounded by the
+ * deployment map, so a span attribute and a health-check detail word; never a
+ * metric dimension the map's operator cannot name in advance.
+ */
+export const ATTR_JOBS_SERVER = "helix.jobs.server";
+/**
+ * How many expired results one jobs cleanup pass removed from live storage —
+ * bounded by the pass's own batch cap.
+ */
+export const ATTR_JOBS_CLEANUP_RESULTS_REMOVED = "helix.jobs.cleanup.results_removed";
+/**
+ * How many job records (each with its runner row) one jobs cleanup pass
+ * retired — bounded by the pass's own batch cap.
+ */
+export const ATTR_JOBS_CLEANUP_RECORDS_RETIRED = "helix.jobs.cleanup.records_retired";
+/**
+ * Whether one jobs intake apply changed the store's durable accepting state
+ * (`true` only when the row's previous state differed from the configured
+ * one). Bounded boolean; the state itself rides {@link ATTR_OUTCOME}.
+ */
+export const ATTR_JOBS_INTAKE_CHANGED = "helix.jobs.intake.changed";
 /** How many apps the registry projection loaded. Bounded by the tenant. */
 export const ATTR_REGISTRY_APPS = "helix.registry.apps";
 /**
@@ -164,6 +250,98 @@ export const SPAN_CONNECTIONS_MINE = "helix.connections.mine";
 /** The portal's disconnect route — the one-transaction
  * invalidation that stops the caller's own Helix access. */
 export const SPAN_CONNECTIONS_DISCONNECT = "helix.connections.disconnect";
+/** The jobs receiver's signed-operation routes (one span each, named for the
+ * operation the ROUTE serves — never a name read from the token). */
+export const SPAN_JOBS_SUBMIT = "helix.jobs.submit";
+/**
+ * The prod edge's app-facing jobs submission route (`POST
+ * /_api/jobs/:server/types/:type`) — the caller-facing half of the submission
+ * hop, whose forward lands in the receiver's `helix.jobs.submit` span. Named
+ * for the surface, not reusing the receiver's name: one trace shows both ends
+ * and neither can be mistaken for the other.
+ */
+export const SPAN_JOBS_SUBMIT_EDGE = "helix.jobs.submit.edge";
+/** The dev gateway's submission route (`POST /:slug/_api/jobs/:server/types/:type`). */
+export const SPAN_JOBS_SUBMIT_DEV = "helix.jobs.submit.dev";
+/**
+ * The prod edge's app-facing poll route (`GET /_api/jobs/:server/:jobId`) —
+ * the caller-facing half of the observation hop, whose forward lands in the
+ * receiver's own `helix.jobs.snapshot` span. Named for the surface, like the
+ * submission pair.
+ */
+export const SPAN_JOBS_SNAPSHOT_EDGE = "helix.jobs.snapshot.edge";
+/** The dev gateway's poll route (`GET /:slug/_api/jobs/:server/:jobId`). */
+export const SPAN_JOBS_SNAPSHOT_DEV = "helix.jobs.snapshot.dev";
+/** The prod edge's app-facing result read (`GET /_api/jobs/:server/:jobId/result`). */
+export const SPAN_JOBS_RESULT_EDGE = "helix.jobs.result.edge";
+/** The dev gateway's result read (`GET /:slug/_api/jobs/:server/:jobId/result`). */
+export const SPAN_JOBS_RESULT_DEV = "helix.jobs.result.dev";
+/** The prod edge's app-facing cancel route (`DELETE /_api/jobs/:server/:jobId`). */
+export const SPAN_JOBS_CANCEL_EDGE = "helix.jobs.cancel.edge";
+/** The dev gateway's cancel route (`DELETE /:slug/_api/jobs/:server/:jobId`). */
+export const SPAN_JOBS_CANCEL_DEV = "helix.jobs.cancel.dev";
+/**
+ * The jobs→edge fetch-callback routes — the receiver ends of the callback hop
+ * (ADR-0006): the production edge's `POST /internal/jobs/v1/fetch` and the dev
+ * gateway's same-path route. One root span each (the callback edge starts a new
+ * root — ADR-0009; jobs extracts only verified context on its side), named for
+ * the surface like the submission pair.
+ */
+export const SPAN_JOBS_FETCH_EDGE = "helix.jobs.fetch.edge";
+/** The dev gateway's callback route (`POST /internal/jobs/v1/fetch` on its own host). */
+export const SPAN_JOBS_FETCH_DEV = "helix.jobs.fetch.dev";
+/**
+ * The jobs worker's dispatch of its production fetch job's one governed GET —
+ * the mint→answer hop to the edge's signed callback (ADR-0006), a child of the
+ * attempt's own `helix.jobs.execute` span. The callback edge starts a new root
+ * (ADR-0009), so the trace shows the hop's jobs-side duration and outcome; the
+ * edge's own span carries the policy core's evidence for the same call.
+ */
+export const SPAN_JOBS_FETCH_DISPATCH = "helix.jobs.fetch.dispatch";
+export const SPAN_JOBS_SNAPSHOT = "helix.jobs.snapshot";
+export const SPAN_JOBS_RESULT = "helix.jobs.result";
+export const SPAN_JOBS_CANCEL = "helix.jobs.cancel";
+export const SPAN_JOBS_LIFECYCLE = "helix.jobs.lifecycle";
+/** The jobs worker's execution of one attempt of one job — a root consumer
+ * span (background work has no inbound request context to continue). */
+export const SPAN_JOBS_EXECUTE = "helix.jobs.execute";
+/** The jobs recovery sweeper's disposition of one interrupted job — a root
+ * consumer span, one per job the pass dispositioned (never for the passing
+ * through of consistent work). */
+export const SPAN_JOBS_RECOVER = "helix.jobs.recover";
+/** The jobs cleanup loop's physical-retention pass — a root consumer span,
+ * one per pass (the loop's cadence, not per row). Its removed-count
+ * attributes are the pass's own batch-bounded evidence. */
+export const SPAN_JOBS_CLEANUP = "helix.jobs.cleanup";
+/** The jobs service's intake apply — a root consumer span, one per apply
+ * attempt (boot-time work, no inbound request context to continue). It
+ * applies the process's configured `accepting` state to the durable intake
+ * row under the admission lock; its bounded evidence is the configured
+ * server id, the outcome and the changed flag. */
+export const SPAN_JOBS_INTAKE = "helix.jobs.intake";
+/** The portal's lifecycle outbox write — the transaction that commits app
+ * state, the next generation and the per-target intents together (ADR-0007).
+ * The receiver's `helix.jobs.lifecycle` route span is the delivery's other end. */
+export const SPAN_JOBS_LIFECYCLE_OUTBOX = "helix.jobs.lifecycle.outbox";
+/**
+ * The portal sender's delivery of one pending lifecycle intent to one target
+ * — a root consumer span (background work has no inbound context to
+ * continue), one per delivery attempt; a retry is a fresh attempt and a fresh
+ * span. The receiver's `helix.jobs.lifecycle` route span is the same hop's
+ * other end. Carries the target server, the delivered app and generation, and
+ * the bounded `helix.outcome` — never the endpoint URL or the instruction
+ * token.
+ */
+export const SPAN_JOBS_LIFECYCLE_DELIVER = "helix.jobs.lifecycle.deliver";
+/**
+ * The portal sender's per-target synchronization step — one root consumer
+ * span per configured target per pass. It enqueues every app's current
+ * lifecycle state the outbox holds no delivery intent for (initial
+ * enablement, re-enablement, or a transition written by a portal replica
+ * whose config did not list the target). Carries the target server and the
+ * enqueued count — never an app id, endpoint or token.
+ */
+export const SPAN_JOBS_LIFECYCLE_SYNC = "helix.jobs.lifecycle.sync";
 
 /**
  * `http.route` values. The literal route pattern, never the request URL —
@@ -188,6 +366,20 @@ export const ROUTE_CONNECTIONS_CALLBACK = "/connections/callback";
 export const ROUTE_CONNECTIONS_MINE = "/api/v1/connections/mine";
 export const ROUTE_CONNECTIONS_MINE_ID = "/api/v1/connections/mine/:id";
 export const ROUTE_EGRESS_EXCHANGE = "/exchange";
+export const ROUTE_JOBS_SUBMIT = "/_api/jobs/:server/types/:type";
+export const ROUTE_JOBS_SUBMIT_DEV = "/:slug/_api/jobs/:server/types/:type";
+/** The app-facing poll route — the snapshot and cancel spans share the pattern
+ * (the method carries the verb), so one constant is the single source. */
+export const ROUTE_JOBS_SNAPSHOT = "/_api/jobs/:server/:jobId";
+export const ROUTE_JOBS_CANCEL = ROUTE_JOBS_SNAPSHOT;
+/** The dev gateway's poll / cancel route pattern (same share, `:slug` prefixed). */
+export const ROUTE_JOBS_SNAPSHOT_DEV = "/:slug/_api/jobs/:server/:jobId";
+export const ROUTE_JOBS_CANCEL_DEV = ROUTE_JOBS_SNAPSHOT_DEV;
+export const ROUTE_JOBS_RESULT = "/_api/jobs/:server/:jobId/result";
+export const ROUTE_JOBS_RESULT_DEV = "/:slug/_api/jobs/:server/:jobId/result";
+/** The signed jobs→edge callback route, registered verbatim from the operation
+ * matrix (`JobsOperations.fetch.path`) on both receiver processes. */
+export const ROUTE_JOBS_FETCH = "/internal/jobs/v1/fetch";
 
 /**
  * Attribute keys that must never appear on a span, anywhere (ADR-0037
@@ -257,6 +449,594 @@ export type VisitRecordOutcome = (typeof VISIT_RECORD_OUTCOMES)[number];
  */
 export const PROVIDERS_RECONCILE_OUTCOMES = ["ok", "failed"] as const;
 export type ProvidersReconcileOutcome = (typeof PROVIDERS_RECONCILE_OUTCOMES)[number];
+
+/**
+ * How the jobs storage-readiness probe answered — the `helix.outcome`
+ * dimension on `helix.jobs.storage.probes`. Deliberately coarse: the
+ * *distinguishable* reasons (unreachable store, missing schema, queue-policy
+ * drift, missing runtime privileges) ride the `jobs_database` health check's
+ * body and the structured log events, which ADR-0009's body-aware alerts read;
+ * this counter's job is the rate — retries absorbed while the store is down
+ * must be visible, not silent. An attempt counter, like
+ * {@link PROVIDERS_RECONCILE_OUTCOMES}, not a failures-only one.
+ */
+export const JOBS_STORAGE_PROBE_OUTCOMES = ["ok", "unavailable"] as const;
+export type JobsStorageProbeOutcome = (typeof JOBS_STORAGE_PROBE_OUTCOMES)[number];
+
+/**
+ * How one configured jobs server answered the edge's reachability probe — the
+ * `helix.outcome` dimension on `helix.jobs.reachability.probes`, one point per
+ * server per pass. An attempt counter, like
+ * {@link JOBS_STORAGE_PROBE_OUTCOMES}: the *distinguishable* story (which
+ * server, since when, and what it reported when last reachable) is carried by
+ * the `jobs_reachability` health check's body and the edge's transition log
+ * events; this counter's job is the rate a body-aware alert keys on. The
+ * words are the forwarding seam's own endings for the same hop class:
+ *
+ * - `reachable` — a bounded answer whose body parses as the shared health
+ *   contract; the server is up and identifying itself.
+ * - `unreachable` — no answer within the probe's bound: transport failure or
+ *   the timeout expired.
+ * - `invalid_response` — an answer that is not the jobs service answering
+ *   the shared health contract: a redirect (never followed), a wrong status,
+ *   a body past the hop's response allowance, an unparseable body, or a
+ *   valid contract body naming ANOTHER helix service in its `service` field.
+ *   The endpoint is alive and answering, just not as the jobs service the
+ *   deployment map names — distinguishable from a dead endpoint, which is
+ *   `unreachable`'s word.
+ */
+export const JOBS_REACHABILITY_PROBE_OUTCOMES = [
+  "reachable",
+  "unreachable",
+  "invalid_response",
+] as const;
+export type JobsReachabilityProbeOutcome = (typeof JOBS_REACHABILITY_PROBE_OUTCOMES)[number];
+
+/**
+ * How a signed internal instruction was received — the `helix.outcome` values
+ * on the `helix.jobs.instructions` counter. An attempt counter over every
+ * presentation, refused or not:
+ *
+ * - `accepted` — verified and its `jti` durably burned; the operation proceeds.
+ * - `replayed` — verified but the `jti` was already spent: a transport replay,
+ *   refused before any side effect (criterion 56's replay exposure).
+ * - `rejected` — verification failed; the bounded reject reason rides the
+ *   span's `helix.reason` (`JOBS_INSTRUCTION_REJECT_REASONS`, plus `missing`
+ *   for a request with no instruction header at all), never a metric
+ *   dimension.
+ * - `unavailable` — the receiver could not reach its burn store, so the
+ *   instruction was denied without a verdict (fail closed).
+ */
+export const JOBS_INSTRUCTION_OUTCOMES = [
+  "accepted",
+  "replayed",
+  "rejected",
+  "unavailable",
+] as const;
+export type JobsInstructionOutcome = (typeof JOBS_INSTRUCTION_OUTCOMES)[number];
+
+/**
+ * The burn-store sweep pass's outcome — the `helix.outcome` dimension on
+ * `helix.jobs.burn.sweeps`. Passes that remove rows are routine silence; a run
+ * of `failed` with no `ok` is a store that stopped answering its cleanup, and
+ * the burn rows then grow with instruction volume until the store answers.
+ */
+export const JOBS_BURN_SWEEP_OUTCOMES = ["ok", "failed"] as const;
+export type JobsBurnSweepOutcome = (typeof JOBS_BURN_SWEEP_OUTCOMES)[number];
+
+/**
+ * How the jobs receiver applied one lifecycle delivery — the final
+ * `helix.outcome` on the `helix.jobs.lifecycle` route span (overwriting the
+ * verification verdict once the operation runs). Bounded by construction:
+ * each value is one exit of the apply.
+ *
+ * - `applied` — the delivery moved the app's durable generation forward.
+ * - `stale` — the delivery was not newer than the generation already applied
+ *   (a redelivery or an out-of-order older change): acknowledged with the
+ *   highest applied generation and deliberately without state change. A run
+ *   of `stale` is normal after redelivery, never a fault.
+ * - `invalid_body` — the delivery's body failed the lifecycle schema after
+ *   its instruction verified; answered 400 and never applied. (Deliberately
+ *   not `rejected` — that word is the instruction counter's verification
+ *   verdict, and one word must not mean two things on one span.)
+ * - `unavailable` — the lifecycle store could not answer, so nothing was
+ *   applied and nothing acknowledged (503, retryable by the sender).
+ */
+export const JOBS_LIFECYCLE_OUTCOMES = ["applied", "stale", "invalid_body", "unavailable"] as const;
+export type JobsLifecycleOutcome = (typeof JOBS_LIFECYCLE_OUTCOMES)[number];
+
+/**
+ * How the portal sender's delivery of one pending lifecycle intent ended —
+ * the final `helix.outcome` on the `helix.jobs.lifecycle.deliver` span. One
+ * word per ending, disjoint from the receiver's {@link JOBS_LIFECYCLE_OUTCOMES}
+ * (whose words describe the APPLY, not the hop): a sender `stale_ack` and a
+ * receiver `stale` must never be confusable on one trace.
+ *
+ * - `acknowledged` — a validated 200 ack whose `appliedGeneration` covers the
+ *   delivered row; the row (and any older pending row for the same app and
+ *   server) is cleared. The acknowledgement means the intent is durable on
+ *   the target, never that cancellation has finished running (criterion 50).
+ * - `stale_ack` — a validated ack naming a generation OLDER than the row's:
+ *   evidence of a receiver that has not caught up or is not the one the map
+ *   addresses. Nothing is cleared — a stale acknowledgement can never clear
+ *   newer pending work; the row stays pending and ages into health.
+ * - `refused` — the receiver answered a validated jobs error response; the
+ *   bounded error code rides `helix.reason`. Retryable by the next pass.
+ * - `unreachable` — no answer: transport failure or the per-attempt bound
+ *   expired. The server's remaining rows skip the rest of the pass (one
+ *   failed attempt per unavailable server per pass); the next pass retries.
+ * - `invalid_response` — the receiver answered an unusable body or status:
+ *   a misbehaving or wrong receiver, never retried within the pass.
+ */
+export const JOBS_LIFECYCLE_DELIVERY_OUTCOMES = [
+  "acknowledged",
+  "stale_ack",
+  "refused",
+  "unreachable",
+  "invalid_response",
+] as const;
+export type JobsLifecycleDeliveryOutcome = (typeof JOBS_LIFECYCLE_DELIVERY_OUTCOMES)[number];
+
+/**
+ * How the jobs service decided one submission — the final `helix.outcome` on
+ * the `helix.jobs.submit` route span (overwriting the verification verdict
+ * once the operation runs). One word, one meaning on this span: the
+ * instruction counter's `replayed` (a spent nonce) is deliberately not
+ * reused for keyed recovery.
+ *
+ * - `accepted` — new work: the runner job and its wrapper record committed
+ *   together; answered 202 with the new reference.
+ * - `recovered` — a keyed resubmission whose exact original bytes matched a
+ *   retained key: the original job's reference and current status returned,
+ *   no new work created.
+ * - `conflict` — a keyed resubmission whose bytes differ from the retained
+ *   key's original (409 `idempotency_conflict`); no work created.
+ * - `invalid_input` — new work whose input failed the type's validation
+ *   (400 `payload_invalid`); no job, no key claim.
+ * - `type_unknown` — the instruction named a qualified type this server has
+ *   no installed policy for (403 `forbidden`); no job, no key claim.
+ * - `closed` — the app's lifecycle generation is applied and archived, or
+ *   older than the applied one: new work refused 403, final.
+ * - `intake_closed` — new work refused because this server's intake is
+ *   closed — by this process's configuration or the durable intake row
+ *   (`JOBS_ACCEPTING`/the `jobs.intake` row). Answered 503 `jobs_disabled`:
+ *   a closed intake may reopen on the same store, and a client's earlier
+ *   uncertain submission is still recovered by retrying its key. Retained-key
+ *   recovery is decided before it and unaffected; no job, no key claim.
+ * - `unseen` — the claimed generation is newer than anything the portal has
+ *   delivered (or the app is not known here): retryable 503 until the
+ *   control-plane delivery opens it (ADR-0007).
+ * - `capacity_exceeded` — new work that fits no unfinished or retained
+ *   capacity cap (per app/environment or server-wide): refused 429
+ *   `jobs_capacity_exceeded`, no job, no key claim, nothing evicted. A busy
+ *   refusal — clients back off and retry; the specific saturated cap and the
+ *   occupancy numbers ride the refusal's log event, never a dimension here.
+ * - `not_found` — an identical-bytes keyed replay of a job whose public
+ *   record access has expired (the 30-day record horizon passed while the
+ *   row is still physically retained): answered 404 like an unknown job, no
+ *   work created, no slot taken. Different bytes still conflict (`conflict`)
+ *   — the key-holder's own claim is what the 409 answers.
+ * - `unavailable` — the acceptance store could not answer; nothing
+ *   committed, answered with the retryable 503.
+ */
+export const JOBS_SUBMIT_OUTCOMES = [
+  "accepted",
+  "recovered",
+  "conflict",
+  "invalid_input",
+  "type_unknown",
+  "closed",
+  "intake_closed",
+  "unseen",
+  "capacity_exceeded",
+  "not_found",
+  "unavailable",
+] as const;
+export type JobsSubmitOutcome = (typeof JOBS_SUBMIT_OUTCOMES)[number];
+
+/**
+ * How the edge's app-facing submission route answered — the `helix.outcome`
+ * values on the `helix.jobs.submit.edge` / `.dev` spans, and the dimension on
+ * the `helix.jobs.submissions` counter. Bounded by construction: each value is
+ * exactly one early return of the handler. The receiver's own
+ * {@link JOBS_SUBMIT_OUTCOMES} vocabulary is deliberately NOT reused — that one
+ * describes the admission decision; this one describes what the caller-facing
+ * route answered, including the local refusals that never mint an instruction.
+ *
+ * - `accepted` — a validated 202 acceptance (or keyed recovery) was forwarded.
+ * - `server_refused` — the jobs service answered and its validated error
+ *   response was forwarded as received (any status; the specific refusal is
+ *   the response's own code).
+ * - `unreachable` — no answer: a transport failure or the request bound
+ *   expired after the instruction was sent. Answered with the retryable 503 —
+ *   acceptance is uncertain (the client's keyed retry recovers a committed job).
+ * - `invalid_response` — the jobs service answered an unusable body (or an
+ *   acceptance whose reference did not match the requested server). Also the
+ *   retryable 503, never a fabricated 202.
+ * - `disabled` — no configured servers (fully disabled jobs): 503.
+ * - `server_unknown` — the requested server id is not configured: 400.
+ * - `forbidden` — the jobs authorization check refused the principal (not an
+ *   authenticated user/dev caller) or no current grant covers the type: 403.
+ * - `unauthorized` — the serving/caller gates denied; their existing responses
+ *   are preserved (this word only records it).
+ * - `unavailable` — the serving surface could not answer (stale registry,
+ *   unknown app, archived): the serving gate's own response is preserved.
+ * - `key_invalid` — an `Idempotency-Key` header that is repeated or not a
+ *   valid retry key: 400.
+ * - `payload_invalid` — the body errored before it could be read to bytes
+ *   (an unreadable request): 400, before any comparison.
+ * - `payload_too_large` — input over the 64-KiB bound: 413, before anything
+ *   was forwarded.
+ * - `rate_limited` — the submission throttle refused: a per-app/environment
+ *   or the deployment-wide fixed window was exhausted (429 `rate_limited`).
+ *   The attempt still counted — windows count attempts, they never refund.
+ */
+export const JOBS_SUBMISSION_OUTCOMES = [
+  "accepted",
+  "server_refused",
+  "unreachable",
+  "invalid_response",
+  "disabled",
+  "server_unknown",
+  "forbidden",
+  "unauthorized",
+  "unavailable",
+  "key_invalid",
+  "payload_invalid",
+  "payload_too_large",
+  "rate_limited",
+] as const;
+export type JobsSubmissionOutcome = (typeof JOBS_SUBMISSION_OUTCOMES)[number];
+
+/**
+ * How the edge's signed jobs→edge fetch-callback route answered — the final
+ * `helix.outcome` on the `helix.jobs.fetch.edge` / `.dev` spans and the
+ * dimension on `helix.jobs.callbacks`. Bounded by construction: each value is
+ * one early return of the receiver (`gateway/jobsCallback.ts`). Before the
+ * operation runs, the verification verdict is the outcome (the same words the
+ * jobs receiver's route spans carry); once the dispatch runs, its own outcome
+ * supersedes.
+ *
+ * - `disabled` — the callback is not wired (no configured servers, or the
+ *   fetch machinery/ledger/burn store is unconfigured): 503, fail closed.
+ * - `rejected` — instruction verification failed (401); the bounded reject
+ *   reason rides `helix.reason`, never a dimension.
+ * - `replayed` — verified but the nonce was already spent: 401 before any
+ *   effect (the burn caught the replay).
+ * - `unavailable` — the burn store could not answer: 503, denied without a
+ *   verdict (fail closed).
+ * - `wrong_tier` — verified but signed for the opposite environment tier
+ *   (403): the production edge and the dev gateway are separate nonce spaces
+ *   and separate registries, so neither ever serves the other's callbacks.
+ * - `payload_invalid` — the presented body was unreadable, or verified and
+ *   turned out not to be a `{url}` fetch input: 400.
+ * - `payload_too_large` — the presented body over the platform's input bound:
+ *   413, before verification.
+ * - `forbidden` — a fetch-policy denial that is not the delegated one
+ *   (unknown/archived app, stale lifecycle generation, origin not granted):
+ *   403 `outbound_forbidden`; the core's denial reason rides `helix.reason`.
+ * - `delegated_unattended` — the origin spends a user's delegated connection:
+ *   403 `delegated_unattended`, refused before minting with no keyless
+ *   fallback.
+ * - `quota_blocked` — the app's fetch budget is exhausted: 429
+ *   `outbound_quota_exceeded`.
+ * - `dispatched` — the upstream answered 2xx and its bytes streamed to jobs.
+ * - `upstream_refused` — the upstream answered non-2xx: the bounded
+ *   `upstream_error` refusal, never the upstream body.
+ * - `upstream_failed` — the forward failed after minting (transport, or the
+ *   caller's abort): the bounded `upstream_error` refusal.
+ */
+export const JOBS_FETCH_CALLBACK_OUTCOMES = [
+  "disabled",
+  "rejected",
+  "replayed",
+  "unavailable",
+  "wrong_tier",
+  "payload_invalid",
+  "payload_too_large",
+  "forbidden",
+  "delegated_unattended",
+  "quota_blocked",
+  "dispatched",
+  "upstream_refused",
+  "upstream_failed",
+] as const;
+export type JobsFetchCallbackOutcome = (typeof JOBS_FETCH_CALLBACK_OUTCOMES)[number];
+
+/**
+ * How the jobs service's outbound fetch handler saw its dispatch of one job's
+ * governed GET — the final `helix.outcome` on the `helix.jobs.fetch.dispatch`
+ * span and the dimension on `helix.jobs.fetch.dispatches`. Bounded by
+ * construction: each value is one early return of the dispatch
+ * (`apps/jobs/src/fetchJob.ts`). The edge receiver's own vocabulary
+ * ({@link JOBS_FETCH_CALLBACK_OUTCOMES}) is deliberately NOT reused — that one
+ * describes what the receiver answered, including the verification verdicts
+ * jobs never sees; this one describes what the dispatching side saw.
+ *
+ * - `dispatched` — the edge answered 200 and the complete body arrived within
+ *   the platform's bounds. Whether those bytes are a valid JSON result is the
+ *   result interpretation's answer, carried by the attempt's own failure
+ *   reason when it fails.
+ * - `refused` — the edge answered a bounded jobs error before any upstream
+ *   dispatch (policy refusal, delegated prohibition, budget): the error code
+ *   rides `helix.reason`, never a dimension.
+ * - `upstream_error` — the edge answered its bounded upstream-failure refusal
+ *   (the upstream non-2xx, or a failed forward — the edge answers both the
+ *   same and keeps them distinguishable on its own span).
+ * - `unreachable` — no answer: a transport failure on the jobs→edge hop, the
+ *   dispatch's own bound expired, or the attempt was aborted. The job's
+ *   terminal classification (timeout, cancelled, platform error) rides
+ *   `helix.reason`.
+ * - `callback_unavailable` — the edge answered a bounded error that is its
+ *   own machinery failing (unwired, unauthorized, unable to decide): a
+ *   platform failure, never the upstream's.
+ * - `invalid_response` — the edge answered something the callback contract
+ *   does not define (an unparsable or non-protocol failure body): answered
+ *   as a platform failure, never guessed at.
+ * - `result_invalid` / `result_too_large` — the edge streamed a 200 body that
+ *   is not a complete JSON value, or one that passed the platform's result
+ *   allowance (the stream stopped at the cap): the job's terminal reasons,
+ *   visible here because the hop itself delivered the bytes.
+ */
+export const JOBS_FETCH_DISPATCH_OUTCOMES = [
+  "dispatched",
+  "refused",
+  "upstream_error",
+  "unreachable",
+  "callback_unavailable",
+  "invalid_response",
+  "result_invalid",
+  "result_too_large",
+] as const;
+export type JobsFetchDispatchOutcome = (typeof JOBS_FETCH_DISPATCH_OUTCOMES)[number];
+
+/**
+ * How the edge's app-facing reference routes (poll / result / cancel) answered
+ * — the `helix.outcome` values on the `helix.jobs.snapshot` / `.result` /
+ * `.cancel` `.edge` / `.dev` spans. Bounded by construction: each value is one
+ * early return shared by all three handlers. The receiver's own vocabularies
+ * (`JOBS_SNAPSHOT_OUTCOMES` etc.) are deliberately NOT reused — those describe
+ * the admission decision about a record this store holds; these describe what
+ * the caller-facing route answered, including the local refusals that never
+ * mint an instruction.
+ *
+ * - `found` — a validated success was forwarded as received: the complete
+ *   snapshot, the raw JSON result (JSON `null` included), or the cancellation
+ *   acknowledgement — each naming the addressed reference.
+ * - `server_refused` — the jobs service answered a validated jobs error
+ *   response (the unknown-job 404, the lapsed-grant 403, the stateful 409s,
+ *   the 410) and it was forwarded with its own status.
+ * - `unreachable` — no answer: a transport failure or the request bound
+ *   expired after the instruction was sent. Answered with the retryable 503 —
+ *   an observation failure, never an execution one, and never a fabricated
+ *   404 or acknowledgement.
+ * - `invalid_response` — the jobs service answered an unusable body (or a
+ *   success naming another reference). Also the retryable 503.
+ * - `disabled` — no configured servers (fully disabled jobs): 503.
+ * - `server_unknown` — the addressed server is not configured: a reference
+ *   operation reads the same 404 `job_not_found` as an unknown job (never the
+ *   submission's 400 — there is no namespace to search).
+ * - `reference_invalid` — the addressed job id is not a job id, so it names no
+ *   job on any server: the same 404 `job_not_found`.
+ * - `forbidden` — the origin guard (cancel is a mutation) or the jobs
+ *   authorization check refused the principal: 403.
+ * - `unauthorized` — the serving/caller gates denied; their existing responses
+ *   are preserved (this word only records it).
+ * - `unavailable` — the serving surface could not answer (stale registry,
+ *   unknown app, archived): the serving gate's own response is preserved.
+ */
+export const JOBS_REFERENCE_OUTCOMES = [
+  "found",
+  "server_refused",
+  "unreachable",
+  "invalid_response",
+  "disabled",
+  "server_unknown",
+  "reference_invalid",
+  "forbidden",
+  "unauthorized",
+  "unavailable",
+] as const;
+export type JobsReferenceOutcome = (typeof JOBS_REFERENCE_OUTCOMES)[number];
+
+/**
+ * How the jobs service answered one owner-cancellation request — the final
+ * `helix.outcome` on the `helix.jobs.cancel` route span (overwriting the
+ * verification verdict once the operation runs). Bounded by construction:
+ * each value is one exit of the cancellation decision.
+ *
+ * - `requested` — the intent is durable (including a harmless repeat while
+ *   the job is still active) and the runner cancellation was driven; answered
+ *   202. The acknowledgement confirms intent, not a terminal outcome.
+ * - `not_found` — no record answers the reference, or its identity does not
+ *   match the signed caller: the same 404 an unknown job answers with, never
+ *   a disclosure of someone else's job.
+ * - `forbidden` — the signed caller's grants do not cover the record's job
+ *   type: 403, nothing recorded.
+ * - `terminal` — the job already carries a terminal outcome: 409 with that
+ *   status, and the outcome is left exactly as it was.
+ * - `unavailable` — the cancellation store could not answer: nothing was
+ *   recorded, answered with the retryable 503.
+ */
+export const JOBS_CANCEL_OUTCOMES = [
+  "requested",
+  "not_found",
+  "forbidden",
+  "terminal",
+  "unavailable",
+] as const;
+export type JobsCancelOutcome = (typeof JOBS_CANCEL_OUTCOMES)[number];
+
+/**
+ * How the jobs service answered one owner status poll — the final
+ * `helix.outcome` on the `helix.jobs.snapshot` route span (overwriting the
+ * verification verdict once the operation runs). One word, one meaning on
+ * this span:
+ *
+ * - `found` — the authorized owner's complete latest snapshot answered 200.
+ * - `not_found` — no record answers the reference, its identity does not
+ *   match the signed caller, or its public record access has expired (the
+ *   30-day record horizon): the same 404 an unknown job answers with, never
+ *   a disclosure of someone else's or an expired job.
+ * - `forbidden` — the signed caller's grants do not cover the job's type:
+ *   403, nothing disclosed about the state.
+ * - `unavailable` — the observation store could not answer: the retryable
+ *   503, and the last known state stays visibly stale (an observation
+ *   failure, never an execution one).
+ */
+export const JOBS_SNAPSHOT_OUTCOMES = ["found", "not_found", "forbidden", "unavailable"] as const;
+export type JobsSnapshotOutcome = (typeof JOBS_SNAPSHOT_OUTCOMES)[number];
+
+/**
+ * How the jobs service answered one owner result read — the final
+ * `helix.outcome` on the `helix.jobs.result` route span. One word, one
+ * meaning on this span:
+ *
+ * - `found` — the job's successful result answered 200 as the raw JSON
+ *   value, JSON `null` included.
+ * - `not_ready` — the job is unfinished (queued or running): the stateful
+ *   409 `job_not_ready` with the job's status.
+ * - `terminal` — the job reached a terminal outcome without a successful
+ *   result (failed, crashed, cancelled): the stateful 409 `job_terminal`
+ *   with that status and error.
+ * - `expired` — the successful result's seven-day lifetime ended (the job
+ *   reads `expired`): 410 `result_expired`, however delayed the physical
+ *   cleanup is.
+ * - `not_found` / `forbidden` / `unavailable` — as the snapshot's, the same
+ *   answers an unknown, ungranted or unreadable store gives.
+ */
+export const JOBS_RESULT_OUTCOMES = [
+  "found",
+  "not_found",
+  "forbidden",
+  "not_ready",
+  "terminal",
+  "expired",
+  "unavailable",
+] as const;
+export type JobsResultOutcome = (typeof JOBS_RESULT_OUTCOMES)[number];
+
+/**
+ * How the jobs worker disposed of one execution attempt — the final
+ * `helix.outcome` on the `helix.jobs.execute` span, and the dimension on the
+ * `helix.jobs.executions` counter. One word, one meaning, and every value is
+ * one exit of the attempt wrapper:
+ *
+ * - `succeeded` — the handler returned a result inside the platform's bounds,
+ *   the runner claim was settled (its own fenced complete), and the wrapper
+ *   record projects the durable success.
+ * - `failed` — the attempt ended in a failure the wrapper projected durably
+ *   (a handler-reported reason, an execution-time input refusal, an
+ *   unregistered handler, or an oversized/invalid result). The bounded
+ *   `JobError` code rides the span's `helix.reason`, never a dimension;
+ *   whether a retry follows is the type's own policy.
+ * - `gate_refused` — the worker-start gate refused to run the job (its
+ *   lifecycle generation is closed, or not yet delivered): the handler never
+ *   executed and the wrapper record stays untouched.
+ * - `deadline_exceeded` — the worker-start gate refused to run the job because
+ *   its absolute deadline (from acceptance, queue wait and retries included)
+ *   had passed, and terminated it with the platform's timeout outcome in the
+ *   same transaction: recovery never authorizes execution after the deadline.
+ * - `cancelled` — the worker-start gate found the record's durable
+ *   cancellation intent and committed its terminal `cancelled` outcome in the
+ *   gate's own transaction: the handler never executed, and the intent can
+ *   never turn into a run or a retry.
+ * - `terminal_fenced` — the attempt was fenced and no outcome was projected:
+ *   the record was already terminal when the worker reached it, or the
+ *   runner claim had lapsed before the attempt could settle (a late
+ *   completion after a claim timeout, or a failure racing an already-settled
+ *   claim).
+ * - `unavailable` — the execution store could not answer; the attempt failed
+ *   through the runner's own retry policy without a projected outcome.
+ */
+export const JOBS_EXECUTE_OUTCOMES = [
+  "succeeded",
+  "failed",
+  "gate_refused",
+  "deadline_exceeded",
+  "cancelled",
+  "terminal_fenced",
+  "unavailable",
+] as const;
+export type JobsExecuteOutcome = (typeof JOBS_EXECUTE_OUTCOMES)[number];
+
+/**
+ * How the recovery sweeper disposed of one interrupted job — the final
+ * `helix.outcome` on the `helix.jobs.recover` span and the dimension on the
+ * `helix.jobs.recoveries` counter. One word, one meaning; every value is one
+ * disposition of the reconciliation decision:
+ *
+ * - `deadline_exceeded` — the job's absolute deadline (from acceptance) had
+ *   passed: the work was terminated with the timeout outcome and will not
+ *   execute. Queue wait and retry delays consumed the deadline (criterion 24).
+ * - `crashed` — the runner row said the execution was lost (its claim expired
+ *   or its row settled without a projected outcome) with no attempt left: the
+ *   wrapper record projects `crashed` with the platform-error reason.
+ * - `failed` — the runner row carried a worker-reported failure whose wrapper
+ *   projection had been lost (an execution-store outage during the attempt):
+ *   the reported reason is projected now.
+ * - `requeued` — the runner row was waiting to retry while the wrapper record
+ *   still read `running`: the record is put back to `queued` with the failed
+ *   attempt's attribution retained, and the next claim re-drives the work.
+ * - `cancelled` — the runner row was cancelled while the wrapper record was
+ *   not yet terminal; or the record carried a pending owner/lifecycle
+ *   cancellation intent on a runner row still waiting or active (the pass
+ *   re-drives that runner cancellation first); or the record's intent was
+ *   pending on a code-less failed settle — the fence's own signature (the
+ *   claim refused because the intent committed, or the drive was lost and
+ *   the claim expired), never a platform crash: the cancellation is
+ *   projected (recovery never reissues cancelled work).
+ * - `row_missing` — no runner row answered for a non-terminal record: the
+ *   store is inconsistent (the acceptance transaction commits both), reported
+ *   loudly and left for the deadline arm's bounded termination.
+ * - `fenced` — the reconciliation's conditional write lost a race against a
+ *   concurrent terminal write (another replica's sweeper, a worker settling,
+ *   a cancellation), or a pending cancellation's runner re-drive could not
+ *   confirm the row stopped and the projection was left for the next pass:
+ *   nothing was changed.
+ */
+export const JOBS_RECOVER_OUTCOMES = [
+  "deadline_exceeded",
+  "crashed",
+  "failed",
+  "requeued",
+  "cancelled",
+  "row_missing",
+  "fenced",
+] as const;
+export type JobsRecoverOutcome = (typeof JOBS_RECOVER_OUTCOMES)[number];
+
+/**
+ * How one jobs cleanup pass ended — the `helix.outcome` dimension on
+ * `helix.jobs.cleanups` and the final `helix.outcome` on the per-pass
+ * `helix.jobs.cleanup` span. Pass-shaped, like the burn sweep's: routine
+ * passes (including ones that remove nothing) are `ok`, and only a pass that
+ * could not run is `failed` — a run of `failed` with no `ok` is a store that
+ * stopped answering its cleanup. The pass's removed counts ride the span's
+ * `helix.jobs.cleanup.*` attributes, and the lag/saturation evidence the pass
+ * measured is graded by the `jobs_cleanup` / `jobs_capacity` health checks,
+ * never a dimension here.
+ */
+export const JOBS_CLEANUP_OUTCOMES = ["ok", "failed"] as const;
+export type JobsCleanupOutcome = (typeof JOBS_CLEANUP_OUTCOMES)[number];
+
+/**
+ * How one jobs intake apply ended — the final `helix.outcome` on the
+ * `helix.jobs.intake` span. Bounded by construction: each value is one exit
+ * of the apply transaction.
+ *
+ * - `opened` — the configured `accepting: true` is applied to the durable
+ *   intake row (whether or not the row already said so).
+ * - `closed` — the configured `accepting: false` is applied: new work is
+ *   refused from this point, on every replica, once the transaction commits.
+ * - `refused` — the store is bound to another server's namespace (its intake
+ *   row's `server`, or any job record's): nothing was written. An operator
+ *   must repoint the configuration or the store; the apply never retries.
+ * - `unavailable` — the store could not answer; nothing was written and the
+ *   apply retries on its capped backoff.
+ */
+export const JOBS_INTAKE_OUTCOMES = ["opened", "closed", "refused", "unavailable"] as const;
+export type JobsIntakeOutcome = (typeof JOBS_INTAKE_OUTCOMES)[number];
 
 /**
  * Why a `shared` list call was denied — the {@link ATTR_REASON} value on the

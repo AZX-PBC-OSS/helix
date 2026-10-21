@@ -17,12 +17,17 @@ in `docs/design/` and update status here as work ships.
 - **Testing:** Vitest throughout; Playwright for portal e2e when the UI warrants it.
 - **Tooling:** pnpm workspaces monorepo; VS Code dev container.
 
-**Planned jobs extension (ADR-0045):** one TypeScript/pg-boss worker/API with its
-own private database and migrations, behind the edge's HTTP boundary. Qualified
-`jobs:fetch` grants and `{server, jobId}` references allow later independently
-deployed job services; a Python runtime is not part of initial delivery. The
-[jobs-plane design](design/background-jobs-plane.md) owns the contract and delivery
-gate. This is planned work, not an addition to the shipped-service inventory.
+**Jobs extension (ADR-0045):** one TypeScript/pg-boss worker/API (`apps/jobs`)
+with its own private database and migrations, behind the edge's HTTP boundary.
+Qualified `jobs:fetch` grants and `{server, jobId}` references allow later
+independently deployed job services; a Python runtime is not part of initial
+delivery. The service, its local stack wiring, its Azure definitions and
+alerts are implemented and verified against real services in this
+repository; enabling it on a production install is a separate operator
+rollout. The [jobs-plane design](design/background-jobs-plane.md) owns the
+contract and delivery gate, and
+[Operating background jobs](../apps/docs/src/deploy/jobs.md) owns the operator
+procedures and measured capacity figures.
 
 ## 2. Monorepo layout
 

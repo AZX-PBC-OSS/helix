@@ -3,15 +3,15 @@ name: run-helix
 description: Build, run, and drive the Helix platform locally — boots helix-edge, helix-portal, helix-egress, the dev IdP and the portal SPA, then exercises them end to end. Use when asked to run or start Helix, smoke-test a change, verify a dependency bump, screenshot the portal UI, or check that the apps still work after an edit.
 ---
 
-Helix is three services that only mean anything together: **edge** (data/policy plane, https), **portal** (control plane + SPA), **egress** (mechanism plane), plus **dev-idp** and the **portal SPA**. Drive all of it with one command:
+Helix is three services that only mean anything together: **edge** (data/policy plane, https), **portal** (control plane + SPA), **egress** (mechanism plane), the **dev-gateway** (dev-mode surface), the **jobs** service (background work), plus **dev-idp** and the **portal SPA**. Drive all of it with one command:
 
 ```bash
 node .claude/skills/run-helix/smoke.mjs
 ```
 
-That boots every service, waits for health, runs 34 checks against the running system (including a real Chromium render of the SPA), cleans up, and exits non-zero on any failure. Paths below are relative to the repo root.
+That boots every service, waits for health, runs the check set against the running system (including a real Chromium render of the SPA), cleans up, and exits non-zero on any failure. Paths below are relative to the repo root.
 
-**It boots its own stack and never touches yours.** By default everything runs at a `+1000` port offset (edge `9080`, egress `9081`, dev-gateway `9082`, portal `4001`, dev-idp `4002`, SPA `6173`) against its own `helix_smoke` database and `app-bundles-smoke` blob container. Run it with `pnpm dev:*` up and your servers keep running and your dev database stays clean. The whole stack is resolved by `scripts/stack-env.mjs`; `--offset 0` opts back into the shared dev ports and database.
+**It boots its own stack and never touches yours.** By default everything runs at a `+1000` port offset (edge `9080`, egress `9081`, dev-gateway `9082`, portal `4001`, dev-idp `4002`, jobs `4003`, SPA `6173`) against its own `helix_smoke` database, `helix_jobs_smoke` jobs database and `app-bundles-smoke` blob container. Run it with `pnpm dev:*` up and your servers keep running and your dev database stays clean. The whole stack — including the jobs plane's credentials — is resolved by `scripts/stack-env.mjs`; `--offset 0` opts back into the shared dev ports and database, and `--no-jobs` runs the composition fully disabled (no jobs service, no jobs credentials anywhere). `HELIX_JOBS_DIAGNOSTICS=1` opts the stack's non-production jobs plane into the diagnostic job type (`jobs:diagnostic`), off by default.
 
 ## Prerequisites
 
@@ -29,12 +29,13 @@ The driver needs `PORTAL_DEV_TOKEN` and `DATABASE_URL` (both preset in the conta
 node .claude/skills/run-helix/smoke.mjs                 # everything
 node .claude/skills/run-helix/smoke.mjs --only edge     # one group
 node .claude/skills/run-helix/smoke.mjs --no-browser    # skip Chromium
+node .claude/skills/run-helix/smoke.mjs --no-jobs       # fully disabled jobs composition
 node .claude/skills/run-helix/smoke.mjs --keep          # leave services up to poke by hand
-node .claude/skills/run-helix/smoke.mjs --offset 2000   # a different isolated stack
+node .claude/skills/run-helix/smoke.mjs --offset 3000   # a different isolated stack
 node .claude/skills/run-helix/smoke.mjs --offset 0      # share the dev ports + database
 ```
 
-Groups: `idp`, `portal`, `edge`, `egress`, `spa`, `browser`, `cli`.
+Groups: `idp`, `portal`, `edge`, `egress`, `jobs`, `spa`, `browser`, `cli`.
 
 Output is one line per check. Screenshots and per-service logs land in a printed temp dir (`/tmp/helix-smoke-*/`) — `signed-out.png`, `dashboard.png`, `apps-list.png`, and `edge.log`, `portal.log`, etc. **Look at the screenshots**; a mounted-but-blank page still passes the DOM assertion.
 
@@ -44,7 +45,7 @@ After `--keep`, stop everything with (the run prints this line with its own port
 node scripts/free-port.mjs $(node scripts/stack-env.mjs --ports --offset 1000)
 ```
 
-What it covers: OIDC authorization_code + PKCE through to an ID token; Prisma read + write + zod rejection; edge host routing, CSP injection, session gate (both branches), unknown-host 404; egress rejecting a forged instruction; the vite build served by the portal with hashed assets; the SPA rendering in real Chromium signed-out and signed-in; the esbuild CLI bundle querying the live portal.
+What it covers: OIDC authorization_code + PKCE through to an ID token; Prisma read + write + zod rejection; edge host routing, CSP injection, session gate (both branches), unknown-host 404; egress rejecting a forged instruction; the jobs service storage-ready in the composition with the portal advertising its catalogue and the edge reporting `jobs_reachability` ok (or — with `--no-jobs` — the whole jobs plane verifiably dark); the vite build served by the portal with hashed assets; the SPA rendering in real Chromium signed-out and signed-in; the esbuild CLI bundle querying the live portal.
 
 Because the stack starts with an empty registry, the run first **seeds** it — deploying a one-file fixture app twice (`smoke-public`, `smoke-internal`) through the real `helix create` / `helix deploy --promote` path, so the edge and CLI groups always have something live to exercise. The slugs are fixed, so later runs reuse them instead of accumulating rows. Nothing SKIPs any more just because you happened to have no apps deployed.
 
@@ -58,7 +59,10 @@ Each service separately, in its own terminal:
 pnpm dev:idp      # :3002   pnpm dev:portal   # :3001
 pnpm dev:egress   # :8081   pnpm dev:edge     # :8080 (https)
 pnpm dev:web      # :5173   Vite dev server, proxies /api to :3001
+pnpm dev:jobs     # :3003   needs the jobs env — see apps/jobs/README.md
 ```
+
+For an isolated second stack, prefix every terminal with the resolved env — `env $(node scripts/stack-env.mjs --env --offset 1000) pnpm dev:portal` — which also mints the jobs plane for that stack (each terminal resolves the same roots, so the services agree). A fresh suffix's databases don't exist yet: either run the smoke once (its prep creates and migrates them), or run the same prep by hand — `node scripts/ensure-db.mjs <owner-dsn> <jobs-dsn>` with the resolved DSNs. On the shared dev stack, jobs credentials come from your own settings (`apps/jobs/.env.local`); without them the rest of the stack runs fully disabled.
 
 Apps are at `https://<slug>.local.helix.azxlabs.io:8080`. That wildcard resolves publicly to `127.0.0.1`, so no `/etc/hosts` edit is needed.
 
@@ -74,7 +78,7 @@ Required to pass before calling any change done. The smoke test is complementary
 
 - **`fetch()` cannot simulate a browser navigation.** Node's global `fetch` unconditionally sets `Sec-Fetch-Mode: cors` and silently drops whatever you pass. The edge's `isNavigation()` (`apps/edge/src/auth/gate.ts`) treats that header as authoritative, so a `fetch` to a gated app always takes the 401 subresource branch and never redirects. Use the `rawGet()` helper (`node:https`) in `smoke.mjs`.
 - **The edge's TLS cert has no `localhost` SAN.** It covers `*.local.helix.azxlabs.io` and the bare base domain only. `https://localhost:8080/health` fails TLS verification even though the socket is listening — it looks exactly like "the service didn't start." Always address the edge by its base domain.
-- **`apps/edge/.env.local` overrides the container env to real Entra.** `EDGE_OIDC_ISSUER` is `login.microsoftonline.com/...`, not `localhost:3002`, so the edge's login flow leaves the machine and **dev-idp is not in the edge's path**. The driver tests oidc-provider by driving `:3002` directly. Don't chase this as a bug.
+- **`apps/edge/.env.local` overrides the container env to real Entra — for YOUR dev-stack terminals.** `EDGE_OIDC_ISSUER` is `login.microsoftonline.com/...`, not `localhost:3002`, so your edge's login flow leaves the machine and **dev-idp is not in your edge's path**. The driver tests oidc-provider by driving `:3002` directly. Under a resolved stack (the smoke, or `--env` at a non-zero offset) this doesn't apply: the stack env is authoritative (`HELIX_STACK_ENV`) and the services skip their `.env.local` files — a second stack cannot boot cross-wired into your credentials. Don't chase this as a bug.
 - **The session gate is content-negotiated.** 401 JSON for API-style requests, 302 to `auth.<base>/start` only for navigations. A bare `curl` against a gated app returns 401 and looks broken. It isn't.
 - **`pnpm dev:*` does not forward SIGTERM** to the `tsx` child it spawns. Kill the process group (`spawn(..., {detached:true})` then `process.kill(-pid)`) or just run `scripts/free-port.mjs`. Ports routinely survive a previous session.
 - **Every `dev` script frees its port before binding**, and the port it frees now comes from the env (`${EDGE_PORT:-8080}` and friends), not a literal. That is what makes a second stack safe: `env $(node scripts/stack-env.mjs --env --offset 1000) pnpm dev:portal` binds `:4001` and leaves `:3001` alone. Before this, any offset stack still SIGKILLed the base port.

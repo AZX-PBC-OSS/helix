@@ -35,7 +35,11 @@ import { openAiCodec } from "./gateway/openaiCodec.js";
 import { makeOpenAiModelsHandler } from "./gateway/openaiModels.js";
 import { makeDataHandlers } from "./gateway/data-handler.js";
 import { makeFetchHandler } from "./gateway/fetch.js";
+import { makeJobsSubmitHandler, makeJobsRecordHandler } from "./gateway/jobs.js";
+import { makeJobsFetchCallbackHandler, type JobsCallbackRuntime } from "./gateway/jobsCallback.js";
+import type { JobsCallbackBurnStore } from "./jobs/burns.js";
 import { DenialThrottle } from "./gateway/denialThrottle.js";
+import { JobsSubmissionThrottle } from "./gateway/jobsThrottle.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeConnectionsProxyHandler } from "./routing/connectionsProxy.js";
 import { makeConsentStartHandler } from "./routing/consentStart.js";
@@ -54,7 +58,22 @@ import {
 import type { LlmProvider } from "./gateway/provider.js";
 import type { UsageStore } from "./gateway/usage.js";
 import type { AppDataStore } from "./gateway/data.js";
-import { ROUTE_OPENAI, ROUTE_CONSENT_CANCEL } from "@azx-pbc/shared/telemetry";
+import type { JobsForwarder } from "./jobs/forwarder.js";
+import { jobsReachabilityCheck, type JobsReachabilitySnapshot } from "./jobs/reachability.js";
+import {
+  ROUTE_JOBS_CANCEL,
+  ROUTE_JOBS_FETCH,
+  ROUTE_JOBS_RESULT,
+  ROUTE_JOBS_SNAPSHOT,
+  ROUTE_JOBS_SUBMIT,
+  ROUTE_OPENAI,
+  ROUTE_CONSENT_CANCEL,
+  SPAN_JOBS_CANCEL_EDGE,
+  SPAN_JOBS_FETCH_EDGE,
+  SPAN_JOBS_RESULT_EDGE,
+  SPAN_JOBS_SNAPSHOT_EDGE,
+  SPAN_JOBS_SUBMIT_EDGE,
+} from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
 
 /**
@@ -89,6 +108,33 @@ export interface EdgeDeps {
   appData?: AppDataStore | null;
   /** Egress client for the fetch-proxy (M4.5); null = the capability 503s. */
   egress?: EgressProvider | null;
+  /**
+   * The signed jobs forwarding seam over the configured servers; null = jobs
+   * is fully disabled and the routes answer 503 `jobs_disabled`.
+   */
+  jobsForwarder?: JobsForwarder | null;
+  /**
+   * The jobs reachability observation, read per request — `/health`'s
+   * `jobs_reachability` check grades the probe loop's snapshot, never a live
+   * probe. null (no configured servers — fully disabled jobs) leaves the
+   * check out of the body entirely: a disabled install carries no jobs
+   * dependency (criterion 8).
+   */
+  jobsReachability?: (() => JobsReachabilitySnapshot) | null;
+  /**
+   * The jobs-callback nonce burn store (the `jobs_callback_jti` table, this
+   * process's `prod` tier); the signed jobs→edge callback route burns
+   * through it. null = the callback refuses fail-closed even with servers
+   * configured.
+   */
+  jobsCallbackBurns?: JobsCallbackBurnStore | null;
+  /**
+   * The submission throttle buckets over the SHARED counter store
+   * (server.ts injects the PG-backed one so the limit holds across the edge
+   * fleet); omitted, the fallback in-memory store keeps single-process dev
+   * and tests working — per-replica, like every other fallback here.
+   */
+  jobsSubmissionThrottle?: JobsSubmissionThrottle | null;
   /**
    * Portal client for the auth-host `/connections/*` reverse proxy; null = the
    * surface 503s fail-closed.
@@ -169,6 +215,11 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     // A fresh UUID per request, never the caller's: every request here comes
     // from untrusted app code (ADR-0019).
     ...requestIdOptions(),
+    // The reference grammar's bound: job ids are legal to 128 characters, and
+    // the router's own default (100) would refuse them 414 before the jobs
+    // routes' handlers ran. It is a router-level option in this Fastify, so
+    // every parametric route here shares the bound.
+    routerOptions: { maxParamLength: 128 },
     // Which proxy addresses to trust when deriving `req.ip` (the rate-limit /
     // login-throttle key). Default false = the socket peer. Behind Container
     // Apps' Envoy ingress that peer is the ingress, so per-client limits need
@@ -217,6 +268,16 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // ledger write amplification, it is not a security budget, so a per-replica
   // count is fine and a DB round-trip on the abusive path would be self-defeating.
   const denialThrottle = new DenialThrottle(fallbackCounters);
+  // The jobs refusal rows' own denial budget — a distinct key namespace, so a
+  // fetch-allowlist flood cannot spend this ledger's denial window (or vice
+  // versa). In-memory for the same reason as the fetch one above.
+  const jobsDenialThrottle = new DenialThrottle(fallbackCounters, { keyPrefix: "jobs-denial:" });
+  // The submission throttle buckets (design §4): server.ts injects the
+  // PG-backed one (fleet-wide limits); the fallback in-memory store keeps
+  // single-process dev / tests working, like every other fallback here.
+  const jobsSubmissionThrottle =
+    deps.jobsSubmissionThrottle ??
+    new JobsSubmissionThrottle(fallbackCounters, config.jobs.submissionLimits);
   const recordVisit = deps.visits
     ? makeVisitRecorder({
         store: deps.visits,
@@ -304,6 +365,93 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           instructionKey: deps.instructionKey ?? null,
         })
       : null;
+  // The jobs submission route (background-jobs-plane design §1): one handler
+  // for both serving surfaces, distinguished here by the span name + route
+  // pattern. Unconfigured jobs (no servers) is the fail-closed 503 inward —
+  // the route exists whenever the gateway runtime does, so an unconfigured
+  // deployment answers a distinguishable refusal rather than disappearing.
+  const jobsRuntime =
+    appApiRuntime && resolveCaller
+      ? {
+          registry: deps.registry,
+          resolveCaller,
+          checkOrigin,
+          forwarder: deps.jobsForwarder ?? null,
+          submissionThrottle: jobsSubmissionThrottle,
+          denialThrottle: jobsDenialThrottle,
+          usage: deps.usage ?? null,
+          refuseDiagnosticTypes: config.jobs.refuseDiagnosticTypes,
+        }
+      : null;
+  const handleJobsSubmit = jobsRuntime
+    ? makeJobsSubmitHandler(jobsRuntime, {
+        span: SPAN_JOBS_SUBMIT_EDGE,
+        route: ROUTE_JOBS_SUBMIT,
+      })
+    : null;
+  // The three reference operations on an existing job — poll, result read,
+  // cancellation — over the same runtime and forwarding seam.
+  const handleJobsSnapshot = jobsRuntime
+    ? makeJobsRecordHandler(
+        jobsRuntime,
+        {
+          span: SPAN_JOBS_SNAPSHOT_EDGE,
+          route: ROUTE_JOBS_SNAPSHOT,
+        },
+        "snapshot",
+      )
+    : null;
+  const handleJobsResult = jobsRuntime
+    ? makeJobsRecordHandler(
+        jobsRuntime,
+        {
+          span: SPAN_JOBS_RESULT_EDGE,
+          route: ROUTE_JOBS_RESULT,
+        },
+        "result",
+      )
+    : null;
+  const handleJobsCancel = jobsRuntime
+    ? makeJobsRecordHandler(
+        jobsRuntime,
+        {
+          span: SPAN_JOBS_CANCEL_EDGE,
+          route: ROUTE_JOBS_CANCEL,
+        },
+        "cancel",
+      )
+    : null;
+  // The signed jobs→edge callback receiver (background-jobs-plane design §2):
+  // the tier this process serves is "prod", the same tier its burn store is
+  // pinned with. The runtime needs the fetch machinery (egress + instruction
+  // key), the metering ledger and the burns; anything absent leaves the ROUTE
+  // in place answering the fail-closed 503 — the callback is never absent, it
+  // is refused (and its verification never skips: the route requires no
+  // session, no dev bypass counts, and no app host reaches it).
+  const jobsCallbackVerificationKeys = new Map(
+    Object.values(config.jobs.servers).map((s) => [s.server, s.jobsToEdgeKey]),
+  );
+  const jobsCallbackRuntime: JobsCallbackRuntime | null =
+    deps.egress &&
+    deps.usage &&
+    deps.instructionKey &&
+    deps.jobsCallbackBurns &&
+    jobsCallbackVerificationKeys.size > 0
+      ? {
+          env: "prod",
+          registry: deps.registry,
+          verificationKeys: jobsCallbackVerificationKeys,
+          burns: deps.jobsCallbackBurns,
+          egress: deps.egress,
+          usage: deps.usage,
+          instructionKey: deps.instructionKey,
+          denialThrottle,
+          maxBodyBytes: config.fetch.maxBodyBytes,
+        }
+      : null;
+  const handleJobsFetchCallback = makeJobsFetchCallbackHandler(jobsCallbackRuntime, {
+    span: SPAN_JOBS_FETCH_EDGE,
+  });
   // The CSP report sink is unauthenticated (browsers send no credentials with
   // report beacons) and always available — it only ever appends.
   const handleCspReport = makeCspReportHandler({
@@ -427,6 +575,9 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       const checks = [
         registryFreshnessCheck(deps.registry.freshness(), config.reconcileIntervalMs),
         trustProxyCheck(trustProxyObserver.snapshot()),
+        // Composed only when jobs servers are configured — a fully disabled
+        // install reports no jobs dependency at all (criterion 8).
+        ...(deps.jobsReachability ? [jobsReachabilityCheck(deps.jobsReachability())] : []),
       ];
       reply.header("cache-control", "no-store"); // a degraded body must not be cached
       return HealthStatusSchema.parse({
@@ -614,7 +765,6 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       sendNotFound(reply);
     },
   });
-
   // OpenAI-compatible surface (same runtime + policy, OpenAI wire). An app points
   // its OpenAI client at `baseURL = <origin>/_api/openai/v1`; the `__Host-session`
   // cookie authenticates same-origin, so the SDK `apiKey` is ignored. App hosts only.
@@ -692,6 +842,72 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       doneRegister();
     });
   }
+
+  // The jobs routes (background-jobs-plane design §1). App hosts only. The
+  // same passthrough-parser encapsulation as the fetch scope: the submission
+  // forwards EXACT request bytes (the signed instruction binds their digest),
+  // so nothing may parse or normalize a body first — the record operations
+  // carry no body at all.
+  if (jobsRuntime) {
+    void app.register((jobsScope, _opts, doneRegister) => {
+      jobsScope.removeAllContentTypeParsers();
+      jobsScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+      jobsScope.route({
+        method: "POST",
+        url: ROUTE_JOBS_SUBMIT,
+        handler: async (req, reply) => {
+          if (req.hostClass.kind === "app" && handleJobsSubmit) {
+            await handleJobsSubmit(req, reply, req.hostClass.slug);
+            return;
+          }
+          sendNotFound(reply);
+        },
+      });
+      for (const [method, url, handler] of [
+        ["GET", ROUTE_JOBS_SNAPSHOT, handleJobsSnapshot],
+        ["GET", ROUTE_JOBS_RESULT, handleJobsResult],
+        ["DELETE", ROUTE_JOBS_CANCEL, handleJobsCancel],
+      ] as const) {
+        jobsScope.route({
+          method,
+          url,
+          handler: async (req, reply) => {
+            if (req.hostClass.kind === "app" && handler) {
+              await handler(req, reply, req.hostClass.slug);
+              return;
+            }
+            sendNotFound(reply);
+          },
+        });
+      }
+      doneRegister();
+    });
+  }
+
+  // The signed jobs→edge callback route (background-jobs-plane design §2) —
+  // a PLATFORM-host surface, never an app host's: a hosted app must not be
+  // able to present instructions at it (criterion 58's "using an app host"),
+  // so an app host answers the platform-namespace 404 and the route verifies
+  // only where it is deployed to receive. Its own passthrough-parser
+  // encapsulation keeps `req.raw` streamable — the instruction binds the exact
+  // body bytes, and nothing may parse or cap them first (the handler bounds
+  // the read itself).
+  void app.register((jobsCallbackScope, _opts, doneRegister) => {
+    jobsCallbackScope.removeAllContentTypeParsers();
+    jobsCallbackScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+    jobsCallbackScope.route({
+      method: "POST",
+      url: ROUTE_JOBS_FETCH,
+      handler: async (req, reply) => {
+        if (req.hostClass.kind === "platform") {
+          await handleJobsFetchCallback(req, reply);
+          return;
+        }
+        sendNotFound(reply);
+      },
+    });
+    doneRegister();
+  });
 
   // CSP violation sink (§6.2): the app's `report-uri` posts here, same-origin.
   // App hosts only; the report is appended (or dropped) and always 204s.

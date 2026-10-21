@@ -409,7 +409,9 @@ build well:
 
 ## Key files
 
-- `apps/edge/src/gateway/fetch.ts` — `makeFetchHandler`, the policy plane.
+- `apps/edge/src/gateway/fetchPolicy.ts` — the shared fetch-policy/execution core: allowlist, credential source, budget, instruction minting, the egress forward, and ledger/metering, behind an explicit browser-vs-unattended caller authority (ADR-0006).
+- `apps/edge/src/gateway/fetch.ts` — `makeFetchHandler`, the browser route adapter around the core: serving/caller gates, CSRF, target parse, and reply delivery.
+- `apps/edge/src/gateway/jobsCallback.ts` — `makeJobsFetchCallbackHandler`, the signed jobs callback's unattended adapter around the same core: instruction verification + nonce burn, the tier refusal, and the `JobRequestError` response vocabulary (background-jobs-plane design §2).
 - `apps/edge/src/routing/connectionStatus.ts` — the app-facing connection-status read.
 - `apps/edge/src/serving/shim.ts` + `assets.ts` — the shim script + serve-time injection.
 - `apps/edge/src/serving/connectHelper.ts` — the `window.helix.connect` helper script.

@@ -58,6 +58,32 @@ describe("loadConfig", () => {
     expect(config.allowInsecureConnection).toBe(false);
   });
 
+  // The port resolution rides the shared resolveServicePort helper (its own
+  // contract is pinned in packages/shared/src/lifecycle.test.ts); what this
+  // call site owns is the wiring — which key wins, in which order, and the
+  // fallback — so that is what is pinned here.
+  describe("port", () => {
+    it("falls back to 8081 when neither port key is set", () => {
+      expect(loadConfig(ENV).port).toBe(8081);
+    });
+
+    it("prefers EGRESS_PORT over PORT", () => {
+      expect(loadConfig({ ...ENV, EGRESS_PORT: "9000", PORT: "9001" }).port).toBe(9000);
+      expect(loadConfig({ ...ENV, PORT: "9001" }).port).toBe(9001);
+    });
+
+    it("a set-but-unusable EGRESS_PORT is a boot error naming that key, never a silent fallback", () => {
+      for (const raw of ["", "   ", "abc", "0", "65536"]) {
+        expect(() => loadConfig({ ...ENV, EGRESS_PORT: raw })).toThrow(
+          /EGRESS_PORT must be a TCP port/,
+        );
+      }
+      // The unusable value must not fall through to PORT either: the key was
+      // set, so the operator pointed it somewhere, and the pointing is wrong.
+      expect(() => loadConfig({ ...ENV, EGRESS_PORT: "abc", PORT: "9001" })).toThrow(/EGRESS_PORT/);
+    });
+  });
+
   it("throws a clear error on missing requirements", () => {
     expect(() => loadConfig({})).toThrow(/HELIX_INSTRUCTION_SECRET is required/);
     expect(() => loadConfig({ HELIX_INSTRUCTION_SECRET: "short" })).toThrow(/at least 32 bytes/);

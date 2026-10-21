@@ -468,6 +468,28 @@ export function classifyChange(effective: unknown, requested: unknown): Classify
     );
   }
 
+  // ── jobs types (background jobs, ADR-0001) ──
+  // Both directions are baseline, deliberately: a type is platform-authored
+  // work bounded by platform defaults, not an app-chosen exposure, so adding
+  // one commits with the save (spec criterion 6 — "type additions are baseline
+  // changes under the existing manifest/approval classifier") and removing one
+  // — including the last, which drops the grant — rides the ordinary write
+  // path. Whether a *new* type may be granted at all is deployment-aware
+  // validation at the write entry points, not a classification question; the
+  // catalogue membership never gates a delta here, or a saved withdrawn type
+  // could not be re-saved. Risk is display-only on baseline deltas: `med`
+  // because the app gains unattended platform-side execution (it ranks beside
+  // taking the offline grant), never `high` while nothing elevates.
+  const effJobTypes = eff.jobs?.types ?? [];
+  const reqJobTypes = req.jobs?.types ?? [];
+  const jobTypes = diffArray(effJobTypes, reqJobTypes);
+  for (const t of jobTypes.added) {
+    push({ path: `jobs.types[+${t}]`, to: t, risk: "med" }, false);
+  }
+  for (const t of jobTypes.removed) {
+    push({ path: `jobs.types[-${t}]`, from: t, risk: "low" }, false);
+  }
+
   return {
     baselineDeltas: baseline,
     elevatedDeltas: elevated,
@@ -593,7 +615,7 @@ export function classifyVisibilityChange(
  * never absorb a `[`) without restricting what items may contain.
  */
 const ARRAY_PATH =
-  /^(mcp|externalOrigins|llm\.models|fetch\.origins|data\.(?:collections|sharedRead|sharedWrite|sharedReadPrefixes|sharedWritePrefixes))\[([+-])(.*)\]$/;
+  /^(mcp|externalOrigins|llm\.models|fetch\.origins|jobs\.types|data\.(?:collections|sharedRead|sharedWrite|sharedReadPrefixes|sharedWritePrefixes))\[([+-])(.*)\]$/;
 
 /**
  * Parse a membership delta path back into its parts — the read-side of the same
@@ -679,6 +701,15 @@ function applyArray(caps: Capabilities, field: string, op: "+" | "-", item: stri
       caps.fetch = { ...fetch, origins };
       return;
     }
+    case "jobs.types": {
+      // A jobs block present with no types is not a grant and does not parse,
+      // so removing the LAST type drops the block rather than storing an empty
+      // one — the grant is present-with-types or absent, nothing between.
+      const types = add(caps.jobs?.types ?? []);
+      if (types.length === 0) delete caps.jobs;
+      else caps.jobs = { types };
+      return;
+    }
     default:
       // Unreachable by construction — ARRAY_PATH is anchored on exactly the
       // case set above — but a silent fall-through here is the bug shape
@@ -758,7 +789,16 @@ function ensureFetch(caps: Capabilities) {
 
 // ── Conflict detection (optimistic concurrency, §5) ──────────────────────────
 
-const AREAS = ["llm", "data", "mcp", "externalOrigins", "fetch", "offline", "visibility"] as const;
+const AREAS = [
+  "llm",
+  "data",
+  "mcp",
+  "externalOrigins",
+  "fetch",
+  "offline",
+  "jobs",
+  "visibility",
+] as const;
 type Area = (typeof AREAS)[number];
 
 function deltaArea(path: string): Area {
@@ -770,6 +810,10 @@ function deltaArea(path: string): Area {
   // ergonomics they serve — the block stays at the fetch-shim classification.
   if (path.startsWith("fetch") || path.startsWith("shim")) return "fetch";
   if (path.startsWith("offline")) return "offline";
+  // The jobs type paths name their own area rather than falling through to the
+  // externalOrigins fallback below: a jobs delta staked against an unrelated
+  // origins edit would be the misarea the fallback quietly produces.
+  if (path.startsWith("jobs")) return "jobs";
   return "externalOrigins";
 }
 

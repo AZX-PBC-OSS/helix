@@ -224,7 +224,7 @@ export interface LoggerOptions {
    * Service env prefix — makes `<PREFIX>_LOG_LEVEL` win over `LOG_LEVEL`.
    * Omitted (the dev gateway aside) only by callers that want the shared knob.
    */
-  prefix?: "EDGE" | "PORTAL" | "EGRESS";
+  prefix?: "EDGE" | "PORTAL" | "EGRESS" | "JOBS";
   /** Injected for tests; defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
   /**

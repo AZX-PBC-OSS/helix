@@ -56,3 +56,7 @@ and the portal can reset the dev partition when you want a clean start.
 
 Connecting a user account in dev works a little differently; see
 [Connected accounts](./connected-accounts#in-the-dev-gateway).
+
+Background jobs started through the dev gateway are dev jobs. They are kept
+apart from production jobs, and they are counted separately; see
+[Developing with the dev gateway](./jobs#developing-with-the-dev-gateway).

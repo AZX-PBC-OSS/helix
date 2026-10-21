@@ -19,6 +19,7 @@ async function seedApp(
     userOid?: string;
     capability?: string;
     model?: string;
+    env?: string;
     inputTokens?: number;
     outputTokens?: number;
     /** Frozen as-charged cost in micro-USD — what the edge would have written. */
@@ -37,12 +38,13 @@ async function seedApp(
     payload: { slug, displayName: "Usage Test" },
   });
   const id = created.json().id as string;
-  for (const c of calls) {
+  for (const [index, c] of calls.entries()) {
     await t.prisma.gatewayCall.create({
       data: {
         appId: id,
         userOid: c.userOid ?? "user-1",
         capability: c.capability ?? "llm",
+        env: c.env ?? "prod",
         model: c.model ?? "claude-opus-4-8",
         inputTokens: c.inputTokens ?? 0,
         outputTokens: c.outputTokens ?? 0,
@@ -50,6 +52,16 @@ async function seedApp(
         outcome: c.outcome ?? "ok",
         path: c.path ?? null,
         method: c.method ?? null,
+        // Strictly increasing, one second apart. The rows default to client
+        // `now()` timestamps at millisecond precision, and two creates routinely
+        // land in the same millisecond — where the audit page's uuid tie-break
+        // is not insertion-monotonic, so every newest-first assertion under this
+        // helper was racy. The ordering the reads pin is stated here, the same
+        // way `ownedApp` states its own. Residual: a run starting within the
+        // backdate window of an hour or midnight boundary can split the
+        // bucket/today assertions — ~0.1% versus the ~40% tie-break flake this
+        // replaces.
+        createdAt: new Date(Date.now() - (calls.length - 1 - index) * 1000),
       },
     });
   }
@@ -229,6 +241,26 @@ describe("GET /api/v1/gateway/audit", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().rows[0]).toMatchObject({ outcome: "conflict" });
+  });
+
+  it("carries a jobs submission's environment tier and qualified type on the wire", async () => {
+    // The portal views label these rows as recorded submission requests with
+    // their environment (ADR-0004); the tier is the recorded partition the edge
+    // wrote, never a request choice — so the wire must not drop it.
+    const { slug } = await seedApp([
+      { capability: "jobs", model: "jobs:fetch", env: "dev", outcome: "ok" },
+      { capability: "jobs", model: "jobs:fetch", outcome: "error" },
+    ]);
+    const res = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/gateway/audit?app=${slug}`,
+      headers: authHeader(),
+    });
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().rows as Array<{ capability: string; env: string; model: string }>;
+    // Newest-first: the error row was inserted last, so it comes back first.
+    expect(rows[0]).toMatchObject({ capability: "jobs", env: "prod", model: "jobs:fetch" });
+    expect(rows[1]).toMatchObject({ capability: "jobs", env: "dev", model: "jobs:fetch" });
   });
 
   it("treats an empty outcome param as no filter, not as a bad one", async () => {

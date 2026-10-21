@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EnvSchema } from "./env.js";
 import { PrincipalKindSchema } from "./principal.js";
 
 /**
@@ -149,6 +150,14 @@ export const GatewayCallSchema = z.object({
    */
   userKind: PrincipalKindSchema.nullable(),
   capability: z.string(),
+  /**
+   * The environment tier the call ran in (`prod` | `dev`) — recorded from the
+   * caller's resolved partition, never a request choice. Jobs submission views
+   * surface it because production and development jobs are independent
+   * namespaces (an env=dev submission is not the app's live workload); the
+   * column predates that use (dev-mode §5.1 budgets).
+   */
+  env: EnvSchema,
   model: z.string(),
   inputTokens: z.int().nonnegative(),
   outputTokens: z.int().nonnegative(),

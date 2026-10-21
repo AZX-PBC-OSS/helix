@@ -34,6 +34,7 @@ function deltaIcon(d: Delta): IconName {
   if (d.path.startsWith("fetch") || d.path.startsWith("shim")) return "ext";
   if (d.path.startsWith("mcp")) return "key";
   if (d.path.startsWith("offline")) return "download";
+  if (d.path.startsWith("jobs")) return "clock";
   return "shield";
 }
 

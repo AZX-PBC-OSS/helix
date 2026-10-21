@@ -12,12 +12,30 @@ import { makeOpenAiModelsHandler } from "../gateway/openaiModels.js";
 import { makeDataHandlers } from "../gateway/data-handler.js";
 import { makeFetchHandler } from "../gateway/fetch.js";
 import { DenialThrottle } from "../gateway/denialThrottle.js";
+import { JobsSubmissionThrottle } from "../gateway/jobsThrottle.js";
 import { InMemoryCounterStore } from "../gateway/counterStore.js";
 import type { LlmProvider } from "../gateway/provider.js";
 import type { EgressProvider } from "../gateway/egressProvider.js";
 import type { UsageStore } from "../gateway/usage.js";
 import type { AppDataStore } from "../gateway/data.js";
-import { ROUTE_OPENAI } from "@azx-pbc/shared/telemetry";
+import type { JobsForwarder } from "../jobs/forwarder.js";
+import { jobsReachabilityCheck, type JobsReachabilitySnapshot } from "../jobs/reachability.js";
+import { makeJobsSubmitHandler, makeJobsRecordHandler } from "../gateway/jobs.js";
+import { makeJobsFetchCallbackHandler, type JobsCallbackRuntime } from "../gateway/jobsCallback.js";
+import type { JobsCallbackBurnStore } from "../jobs/burns.js";
+import {
+  ROUTE_JOBS_CANCEL_DEV,
+  ROUTE_JOBS_FETCH,
+  ROUTE_JOBS_RESULT_DEV,
+  ROUTE_JOBS_SNAPSHOT_DEV,
+  ROUTE_JOBS_SUBMIT_DEV,
+  ROUTE_OPENAI,
+  SPAN_JOBS_CANCEL_DEV,
+  SPAN_JOBS_FETCH_DEV,
+  SPAN_JOBS_RESULT_DEV,
+  SPAN_JOBS_SNAPSHOT_DEV,
+  SPAN_JOBS_SUBMIT_DEV,
+} from "@azx-pbc/shared/telemetry";
 import { makeDevTokenResolver } from "./resolver.js";
 import { makeDevConsentStartHandler } from "./consentStart.js";
 import { makeDevConnectionStatusHandler } from "./connectionStatus.js";
@@ -82,6 +100,25 @@ export interface DevGatewayDeps {
   egress: EgressProvider | null;
   instructionKey: Buffer | null;
   /**
+   * The signed jobs forwarding seam over the configured servers; null = jobs
+   * is fully disabled and the route answers 503 `jobs_disabled` (the same
+   * fail-closed posture the edge's surface takes).
+   */
+  jobsForwarder: JobsForwarder | null;
+  /**
+   * The jobs reachability observation, read per request — `/health`'s
+   * `jobs_reachability` check grades the probe loop's snapshot, never a live
+   * probe. Optional (absent = fully disabled jobs, no jobs dependency in the
+   * body), the same posture the edge's own health takes.
+   */
+  jobsReachability?: (() => JobsReachabilitySnapshot) | null;
+  /**
+   * The dev tier's jobs-callback nonce burn store (`jobs_callback_jti`, the
+   * `dev` RLS partition); the signed jobs→edge callback route burns through
+   * it. null = the callback refuses fail-closed even with servers configured.
+   */
+  jobsCallbackBurns: JobsCallbackBurnStore | null;
+  /**
    * Portal client for the dev tier's consent consult; null — or an unset
    * internal mint key — leaves the
    * consent start route answering a fail-closed 503, like every other seam.
@@ -113,6 +150,9 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     // app-chosen target URL, credentials and all, becomes our query string.
     logger: loggerOption(undefined, { prefix: "EDGE", mixin: traceContextMixin }),
     ...requestIdOptions(),
+    // The reference grammar's bound, as on the edge: job ids are legal to 128
+    // characters and the router's default (100) would refuse them first.
+    routerOptions: { maxParamLength: 128 },
     trustProxy: config.trustProxy,
     ...(deps.https ? { https: deps.https } : {}),
   }) as unknown as FastifyInstance;
@@ -165,6 +205,77 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     usage: deps.usage,
     instructionKey: deps.instructionKey,
   });
+  // The dev tier's jobs routes — the edge's own handler factories over the
+  // dev resolver seams, so a dev submission carries `env: 'dev'` and the dev
+  // principal, and never the production tier's. The reference operations
+  // (poll, result, cancellation) share the runtime and the forwarding seam.
+  // The throttle buckets and the refusal-denial budget run on the in-memory
+  // store — single-process by construction, like the fetch denial throttle
+  // below — and the ledger is the same `UsageStore` the dev tier's other
+  // capabilities write.
+  const jobsRuntime = {
+    registry: deps.registry,
+    resolveCaller,
+    checkOrigin,
+    forwarder: deps.jobsForwarder,
+    submissionThrottle: new JobsSubmissionThrottle(
+      new InMemoryCounterStore(),
+      config.jobs.submissionLimits,
+    ),
+    denialThrottle: new DenialThrottle(new InMemoryCounterStore(), {
+      keyPrefix: "jobs-denial:",
+    }),
+    usage: deps.usage,
+    refuseDiagnosticTypes: config.jobs.refuseDiagnosticTypes,
+  };
+  const handleJobsSubmit = makeJobsSubmitHandler(jobsRuntime, {
+    span: SPAN_JOBS_SUBMIT_DEV,
+    route: ROUTE_JOBS_SUBMIT_DEV,
+  });
+  const handleJobsSnapshot = makeJobsRecordHandler(
+    jobsRuntime,
+    { span: SPAN_JOBS_SNAPSHOT_DEV, route: ROUTE_JOBS_SNAPSHOT_DEV },
+    "snapshot",
+  );
+  const handleJobsResult = makeJobsRecordHandler(
+    jobsRuntime,
+    { span: SPAN_JOBS_RESULT_DEV, route: ROUTE_JOBS_RESULT_DEV },
+    "result",
+  );
+  const handleJobsCancel = makeJobsRecordHandler(
+    jobsRuntime,
+    { span: SPAN_JOBS_CANCEL_DEV, route: ROUTE_JOBS_CANCEL_DEV },
+    "cancel",
+  );
+  // The dev tier's callback receiver — the same handler factory, `dev` tier
+  // (matching the burn store's RLS pin above): the production edge's callbacks
+  // and this process's never share a nonce space, and each refuses the other's
+  // signed tier before any burn.
+  const jobsCallbackVerificationKeys = new Map(
+    Object.values(config.jobs.servers).map((s) => [s.server, s.jobsToEdgeKey]),
+  );
+  const jobsCallbackRuntime: JobsCallbackRuntime | null =
+    deps.egress &&
+    deps.usage &&
+    deps.instructionKey &&
+    deps.jobsCallbackBurns &&
+    jobsCallbackVerificationKeys.size > 0
+      ? {
+          env: "dev",
+          registry: deps.registry,
+          verificationKeys: jobsCallbackVerificationKeys,
+          burns: deps.jobsCallbackBurns,
+          egress: deps.egress,
+          usage: deps.usage,
+          instructionKey: deps.instructionKey,
+          // Single-process by construction, like the fetch denial throttle.
+          denialThrottle: new DenialThrottle(new InMemoryCounterStore()),
+          maxBodyBytes: config.fetch.maxBodyBytes,
+        }
+      : null;
+  const handleJobsFetchCallback = makeJobsFetchCallbackHandler(jobsCallbackRuntime, {
+    span: SPAN_JOBS_FETCH_DEV,
+  });
 
   // The dev tier's consent entry — the bearer POST that returns
   // the single-use popup URL. Same dev resolver seam as every other route
@@ -216,6 +327,9 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
       const checks = [
         registryFreshnessCheck(deps.registry.freshness(), deps.config.reconcileIntervalMs),
         trustProxyCheck(trustProxyObserver.snapshot()),
+        // Composed only when jobs servers are configured — a fully disabled
+        // install reports no jobs dependency at all (criterion 8).
+        ...(deps.jobsReachability ? [jobsReachabilityCheck(deps.jobsReachability())] : []),
       ];
       reply.header("cache-control", "no-store");
       return HealthStatusSchema.parse({
@@ -322,6 +436,46 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
       method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
       url: "/:slug/_api/fetch/*",
       handler: (req, reply) => handleFetch(req, reply, slugOf(req)),
+    });
+    doneRegister();
+  });
+
+  // The dev tier's jobs routes — the same passthrough-parser encapsulation as
+  // the fetch scope (the submission forward binds exact request bytes; nothing
+  // may parse them first; the record operations carry no body).
+  void app.register((jobsScope, _opts, doneRegister) => {
+    jobsScope.removeAllContentTypeParsers();
+    jobsScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+    jobsScope.route({
+      method: "POST",
+      url: ROUTE_JOBS_SUBMIT_DEV,
+      handler: (req, reply) => handleJobsSubmit(req, reply, slugOf(req)),
+    });
+    for (const [method, url, handler] of [
+      ["GET", ROUTE_JOBS_SNAPSHOT_DEV, handleJobsSnapshot],
+      ["GET", ROUTE_JOBS_RESULT_DEV, handleJobsResult],
+      ["DELETE", ROUTE_JOBS_CANCEL_DEV, handleJobsCancel],
+    ] as const) {
+      jobsScope.route({
+        method,
+        url,
+        handler: (req, reply) => handler(req, reply, slugOf(req)),
+      });
+    }
+    doneRegister();
+  });
+
+  // The dev tier's callback receiver — the same fixed internal path (the dev
+  // callback URL is this process's own host, no `/:slug` prefix: the claims
+  // carry the app id, and the registry resolves it). Same raw-body parser
+  // scope: the instruction binds exact bytes.
+  void app.register((jobsCallbackScope, _opts, doneRegister) => {
+    jobsCallbackScope.removeAllContentTypeParsers();
+    jobsCallbackScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
+    jobsCallbackScope.route({
+      method: "POST",
+      url: ROUTE_JOBS_FETCH,
+      handler: (req, reply) => handleJobsFetchCallback(req, reply),
     });
     doneRegister();
   });

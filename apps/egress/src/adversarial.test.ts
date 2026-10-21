@@ -486,6 +486,10 @@ describe("egress body-size cap (issue #8)", () => {
         res.end();
         return;
       }
+      if (req.url === "/oversized") {
+        res.end(bytes(CAP * 5)); // a truthful content-length over the cap
+        return;
+      }
       if (req.url === "/small") {
         res.end(bytes(40)); // content-length: 40, under the cap
         return;
@@ -534,6 +538,33 @@ describe("egress body-size cap (issue #8)", () => {
     }
     expect(got).toBeLessThanOrEqual(CAP); // counter cut it at the cap
     expect(got).toBeLessThan(320); // the full body never reached the app
+  });
+
+  it("refuses a truthful oversized content-length response without an unhandled stream error", async () => {
+    // Abandoning the unread upstream body must not surface undici's
+    // RequestAbortedError as an uncaught 'error' — that would kill egress.
+    const uncaught: unknown[] = [];
+    const onUncaught = (err: unknown): void => {
+      uncaught.push(err);
+    };
+    process.on("uncaughtException", onUncaught);
+    try {
+      const res = await undiciRequest(`${base}/proxy`, {
+        method: "POST",
+        headers: {
+          [INSTRUCTION_HEADER]: await mint(capOrigin),
+          [TARGET_HEADER]: `${capOrigin}/oversized`,
+          [METHOD_HEADER]: "GET",
+        },
+      });
+      expect(res.statusCode).toBe(502);
+      expect(await res.body.text()).toContain("upstream_error");
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off("uncaughtException", onUncaught);
+    }
   });
 
   it("streams an under-cap response through intact (no false trip)", async () => {

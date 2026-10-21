@@ -284,7 +284,8 @@ describe("export + delete", () => {
   it("keeps the newest rows when the collection outgrows the export cap", async () => {
     // The one case that separates "capped" from "capped at the wrong end". A
     // single createMany makes the real boundary cheap enough to assert against
-    // the route (~0.5s) rather than trusting the unit test alone.
+    // the route rather than trusting the unit test alone: ~0.5 s in the dev
+    // container, but past the default 5 s timeout on a loaded CI runner.
     const { id, slug } = await seedCollection(0);
     const base = Date.now() - 20_000_000;
     await t.prisma.appCollectionItem.createMany({
@@ -308,7 +309,7 @@ describe("export + delete", () => {
     // and the one that must survive. Still emitted oldest-first within the window.
     expect(items[0]!.item.n).toBe(1);
     expect(items.at(-1)!.item.n).toBe(MAX_EXPORT_ROWS);
-  });
+  }, 30_000);
 
   it("derives columns from the oldest row first", async () => {
     // Column ties break on first appearance in scan order, so the scan direction

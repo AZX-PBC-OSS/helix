@@ -60,6 +60,8 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
     },
     offline: null,
     shim: null,
+    jobs: null,
+    jobsGeneration: "1",
     ...overrides,
   };
 }
@@ -67,6 +69,7 @@ export function registryEntry(overrides: Partial<RegistryEntry> & { slug: string
 /** In-memory registry for unit tests. */
 export class FakeRegistry implements RegistryReader, RegistryFreshnessReader {
   #entries = new Map<string, RegistryEntry>();
+  #byId = new Map<string, RegistryEntry>();
   #loaded: boolean;
   /**
    * Mutable so a test can age a loaded registry mid-flight (`/health` degrades
@@ -79,13 +82,20 @@ export class FakeRegistry implements RegistryReader, RegistryFreshnessReader {
     entries: RegistryEntry[] = [],
     opts: { loaded?: boolean; freshness?: Partial<RegistryFreshness> } = {},
   ) {
-    for (const entry of entries) this.#entries.set(entry.slug, entry);
+    for (const entry of entries) {
+      this.#entries.set(entry.slug, entry);
+      this.#byId.set(entry.appId, entry);
+    }
     this.#loaded = opts.loaded ?? true;
     this.freshnessOverride = opts.freshness ?? {};
   }
 
   getApp(slug: string): RegistryEntry | undefined {
     return this.#entries.get(slug);
+  }
+
+  getAppById(appId: string): RegistryEntry | undefined {
+    return this.#byId.get(appId);
   }
 
   isLoaded(): boolean {

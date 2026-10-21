@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# create-roles.sh — create the four least-privilege Postgres runtime roles on a
-# fresh install, from inside the VNet.
+# create-roles.sh — create the least-privilege Postgres runtime roles on an
+# install, from inside the VNet.
 #
 # WHY THIS EXISTS
 # The Bicep deploy provisions the server and the `helix` DB, but the runtime
-# roles (helix_{portal,edge,egress,dev}) are data-plane, not infrastructure:
-# they are created by sql/01-roles.sql, run once as the admin. Postgres is
-# private-endpoint-only, so nothing outside the VNet can reach it — not a
-# laptop, not a hosted CI runner. A throwaway Container Apps Job in the apps
-# environment is inside the VNet, and the `postgres:16` image ships psql.
+# roles (helix_{portal,edge,egress,dev,jobs} + the jobs migration identity) are
+# data-plane, not infrastructure: they are created by sql/01-roles.sql, run as
+# the admin. Postgres is private-endpoint-only, so nothing outside the VNet can
+# reach it — not a laptop, not a hosted CI runner. A throwaway Container Apps
+# Job in the apps environment is inside the VNet, and the `postgres:16` image
+# ships psql.
 #
-# Run this ONCE per install, AFTER the infra-only apply (deployApps=false) and
-# BEFORE the first migration — the migrations' per-table GRANTs are guarded by
-# an IF EXISTS (pg_roles …) check, so the roles must exist first. CREATE ROLE
-# is not idempotent: a second run fails with "role already exists". That is
-# safety, not breakage — to change a role's password later, ALTER ROLE through
-# the same throwaway-job shape, don't re-run this.
+# Run AFTER the infra-only apply (deployApps=false) and BEFORE the first
+# migration — the migrations' per-table GRANTs are guarded by an
+# IF EXISTS (pg_roles …) check, so the roles must exist first. The role SQL is
+# idempotent — it creates only what is missing and never rotates an existing
+# password — so this is also the way an install that predates a role or the
+# jobs database gets the current ACL posture. To change a role's password, do
+# NOT re-run this (the existing password is deliberately kept); ALTER ROLE
+# through the same throwaway-job shape.
 #
 # THE JOB MUST BE DELETED AFTERWARDS — it carries the admin DSN as a readable
 # job secret. This script deletes it in a trap, and tells you how to do it by
@@ -45,20 +48,21 @@ done
 
 missing=()
 for name in RG PREFIX HELIX_PG_ADMIN_PASSWORD HELIX_EDGE_DB_PASSWORD \
-  HELIX_PORTAL_DB_PASSWORD HELIX_EGRESS_DB_PASSWORD HELIX_DEV_DB_PASSWORD; do
+  HELIX_PORTAL_DB_PASSWORD HELIX_EGRESS_DB_PASSWORD HELIX_DEV_DB_PASSWORD \
+  HELIX_JOBS_DB_PASSWORD HELIX_JOBS_MIGRATE_DB_PASSWORD; do
   [[ -n "${!name:-}" ]] || missing+=("$name")
 done
 ((${#missing[@]} == 0)) || die "missing required environment: ${missing[*]}"
 
 sql_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../sql/01-roles.sql"
 [[ -f "$sql_file" ]] || die "roles SQL not found at ${sql_file}"
-
 # Every DB password is interpolated into a DSN URL by the template, and the
 # role passwords additionally sit inside SQL literals below. Reject the
 # characters that would corrupt either — generate base64url instead:
 #   openssl rand -base64 24 | tr '+/' '-_' | tr -d '='
 for name in HELIX_PG_ADMIN_PASSWORD HELIX_EDGE_DB_PASSWORD HELIX_PORTAL_DB_PASSWORD \
-  HELIX_EGRESS_DB_PASSWORD HELIX_DEV_DB_PASSWORD; do
+  HELIX_EGRESS_DB_PASSWORD HELIX_DEV_DB_PASSWORD HELIX_JOBS_DB_PASSWORD \
+  HELIX_JOBS_MIGRATE_DB_PASSWORD; do
   if [[ "${!name}" =~ [+/=@:?#\&] ]]; then
     die "${name} contains a URL-reserved character (+ / = @ : ? # &) — use base64url"
   fi
@@ -78,7 +82,11 @@ log "server   ${pg} (${fqdn}), admin ${admin}"
 log "job      ${job} (deleted when this finishes)"
 
 admin_url="postgresql://${admin}:${HELIX_PG_ADMIN_PASSWORD}@${fqdn}:5432/helix?sslmode=require"
-roles_sql_b64=$(base64 -w0 "$sql_file")
+# The whole sql/ directory travels (01 is the ACL authority, 02 the portal
+# bootstrap; a later file sorts after and runs after), extracted in the job.
+sql_dir="$(dirname "$sql_file")"
+[[ -f "$sql_dir/02-portal-bootstrap-grants.sql" ]] || die "bootstrap SQL not found at ${sql_dir}/02-portal-bootstrap-grants.sql"
+roles_sql_tar_b64=$(tar -C "$sql_dir" -cf - . | base64 -w0)
 
 # MUST run even on failure: the job holds the admin DSN.
 cleanup() {
@@ -99,7 +107,8 @@ body=$(
   # shellcheck disable=SC2016 # the $VAR refs inside are read by python/the container
   ADMIN_URL="$admin_url" EDGE_PW="$HELIX_EDGE_DB_PASSWORD" \
     PORTAL_PW="$HELIX_PORTAL_DB_PASSWORD" EGRESS_PW="$HELIX_EGRESS_DB_PASSWORD" \
-    DEV_PW="$HELIX_DEV_DB_PASSWORD" ROLES_SQL_B64="$roles_sql_b64" \
+    DEV_PW="$HELIX_DEV_DB_PASSWORD" JOBS_PW="$HELIX_JOBS_DB_PASSWORD" \
+    JOBS_MIGRATE_PW="$HELIX_JOBS_MIGRATE_DB_PASSWORD" ROLES_SQL_TAR_B64="$roles_sql_tar_b64" \
     ENV_ID="$env_id" LOCATION="$location" \
     python3 -c '
 import json, os
@@ -118,6 +127,8 @@ print(json.dumps({
         {"name": "portal-pw", "value": os.environ["PORTAL_PW"]},
         {"name": "egress-pw", "value": os.environ["EGRESS_PW"]},
         {"name": "dev-pw", "value": os.environ["DEV_PW"]},
+        {"name": "jobs-pw", "value": os.environ["JOBS_PW"]},
+        {"name": "jobs-migrate-pw", "value": os.environ["JOBS_MIGRATE_PW"]},
       ],
     },
     "template": {
@@ -125,11 +136,14 @@ print(json.dumps({
         "name": "roles",
         "image": "postgres:16",
         "command": ["/bin/sh", "-c"],
-        "args": ["echo \"$ROLES_SQL_B64\" | base64 -d > /tmp/roles.sql && "
+        "args": ["mkdir -p /tmp/sql && "
+                 "echo \"$ROLES_SQL_TAR_B64\" | base64 -d | tar -x -C /tmp/sql && "
+                 "for f in /tmp/sql/*.sql; do "
                  "psql \"$ADMIN_URL\" "
                  "-v edge_password=\"$EDGE_PW\" -v portal_password=\"$PORTAL_PW\" "
                  "-v egress_password=\"$EGRESS_PW\" -v dev_password=\"$DEV_PW\" "
-                 "-v ON_ERROR_STOP=1 -f /tmp/roles.sql"],
+                 "-v jobs_password=\"$JOBS_PW\" -v jobs_migrate_password=\"$JOBS_MIGRATE_PW\" "
+                 "-v ON_ERROR_STOP=1 -f \"$f\"; done"],
         "resources": {"cpu": 0.5, "memory": "1Gi"},
         "env": [
           {"name": "ADMIN_URL", "secretRef": "admin-url"},
@@ -137,7 +151,9 @@ print(json.dumps({
           {"name": "PORTAL_PW", "secretRef": "portal-pw"},
           {"name": "EGRESS_PW", "secretRef": "egress-pw"},
           {"name": "DEV_PW", "secretRef": "dev-pw"},
-          {"name": "ROLES_SQL_B64", "value": os.environ["ROLES_SQL_B64"]},
+          {"name": "JOBS_PW", "secretRef": "jobs-pw"},
+          {"name": "JOBS_MIGRATE_PW", "secretRef": "jobs-migrate-pw"},
+          {"name": "ROLES_SQL_TAR_B64", "value": os.environ["ROLES_SQL_TAR_B64"]},
         ],
       }]
     },

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
+import { developerLocalOverridesSkipped, installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildDevGateway, SERVICE_NAME } from "./app.js";
 import { loadDevGatewayConfig, type DevGatewayConfig } from "../config.js";
@@ -14,6 +14,9 @@ import { PgAppDataStore } from "../gateway/data.js";
 import type { LlmProvider } from "../gateway/provider.js";
 import { HttpPortalProvider } from "../routing/portalProvider.js";
 import { PgDevTokenStore } from "./devTokenStore.js";
+import { PgJobsCallbackBurnStore } from "../jobs/burns.js";
+import { HttpJobsForwarder, type JobsForwarder } from "../jobs/forwarder.js";
+import { JobsReachability, probeJobsHealth } from "../jobs/reachability.js";
 import type { PoolClientErrorPhase } from "../db/pool.js";
 
 /**
@@ -25,6 +28,12 @@ import type { PoolClientErrorPhase } from "../db/pool.js";
  */
 
 function loadDotEnvLocal(): void {
+  // A resolved stack boots with the stack env authoritative: the
+  // developer-local override file is the dev-stack convention, and a resolved
+  // stack obeying it would boot cross-wired — silently pointing this
+  // service's credentials at the developer's own (the isolation the port
+  // offset exists to provide). One home for the flag and its spellings.
+  if (developerLocalOverridesSkipped(process.env)) return;
   let text: string;
   try {
     // devGateway/server.ts → apps/edge/.env.local
@@ -134,6 +143,21 @@ const devTokens = new PgDevTokenStore(devDatabaseUrl, {
   onClientError,
 });
 
+// The dev tier's jobs-callback nonce burn store (background-jobs-plane design
+// §3): same store, `dev` tier — the env-literal row-level policy pins this
+// role's rows, so the dev gateway can never consume, read, or clear a prod
+// nonce. The dev callback receiver that consumes burns is the callback route's
+// own seam (registration and dispatch), not this file's.
+const jobsCallbackBurns = new PgJobsCallbackBurnStore({
+  databaseUrl: devDatabaseUrl,
+  env: "dev",
+  statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
+  log: {
+    warn: (obj, msg) => logRef.current.warn(obj, msg),
+  },
+});
+
 // Fetch-proxy + LLM ride the same EgressProvider seam as the edge; env=dev is
 // carried in the attested instruction (step 1). Fail-closed when unconfigured.
 const egress: EgressProvider | null = config.fetch.egressUrl
@@ -164,6 +188,36 @@ const llmProvider: LlmProvider | null =
 // on the shared gateway config. Unset ⇒ the consent route 503s fail-closed.
 const portal = config.portalUrl ? new HttpPortalProvider(config.portalUrl) : null;
 
+// The jobs forwarding seam — the same EDGE_JOBS_CONFIG document the edge
+// loads; this process forwards with its own trusted dev tier (the resolver's
+// env) and the same server endpoints. An empty map is fully disabled.
+const jobsForwarder: JobsForwarder | null =
+  Object.keys(config.jobs.servers).length > 0
+    ? new HttpJobsForwarder(Object.values(config.jobs.servers), {
+        timeoutMs: config.jobs.timeoutMs,
+      })
+    : null;
+
+// The jobs reachability observation (ADR-0009) — the same bounded probe loop
+// the edge runs, over the same configured servers; `/health`'s
+// `jobs_reachability` check grades its snapshot. Only configured with the
+// forwarder: a fully disabled install adds no jobs dependency.
+const jobsReachability =
+  jobsForwarder === null
+    ? null
+    : new JobsReachability({
+        servers: Object.values(config.jobs.servers).map(({ server, endpoint }) => ({
+          server,
+          endpoint,
+        })),
+        probe: probeJobsHealth,
+        log: {
+          info: (obj, msg) => logRef.current.info(obj, msg),
+          warn: (obj, msg) => logRef.current.warn(obj, msg),
+          error: (obj, msg) => logRef.current.error(obj, msg),
+        },
+      });
+
 const app = buildDevGateway({
   config,
   registry,
@@ -173,6 +227,9 @@ const app = buildDevGateway({
   llmProvider,
   egress,
   instructionKey,
+  jobsForwarder,
+  jobsReachability: jobsReachability ? () => jobsReachability.snapshot() : null,
+  jobsCallbackBurns,
   portal,
   https,
 });
@@ -186,8 +243,11 @@ app.addHook("onClose", async () => {
   await usage.close();
   await appData.close();
   await devTokens.close();
+  await jobsReachability?.stop();
+  await jobsCallbackBurns.stop();
   await egress?.close();
   await llmProvider?.close();
+  await jobsForwarder?.close();
   await portal?.close();
   // Last, after everything that could still record.
   await telemetry.shutdown();
@@ -201,6 +261,8 @@ installGracefulShutdown(app, app.log);
 
 try {
   await registry.start();
+  jobsCallbackBurns.start();
+  jobsReachability?.start();
   await app.listen({ port: config.devGateway.port, host });
   app.log.info(
     {
@@ -215,5 +277,10 @@ try {
   );
 } catch (err) {
   app.log.error(err);
+  // The listener never came up — the failed-partial-initialization exit.
+  // Release what boot acquired (the probe loop's timer, the burn store's pool
+  // and sweep timer) here, not only on the shutdown path; stop() is safe twice.
+  await jobsReachability?.stop();
+  await jobsCallbackBurns.stop();
   process.exit(1);
 }

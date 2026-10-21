@@ -6,7 +6,15 @@ import { DataCapabilitySchema, INTERNAL_AUTH_HEADER } from "@azx-pbc/shared";
 import { hashDevToken } from "@azx-pbc/shared/devToken";
 import { spanUrlAttributes } from "@azx-pbc/shared/logging";
 import { FORBIDDEN_URL_ATTRS } from "@azx-pbc/shared/telemetry";
-import { SPAN_CONSENT_STATUS_DEV, SPAN_CONSENT_STATUS_EDGE } from "@azx-pbc/shared/telemetry";
+import {
+  SPAN_CONSENT_STATUS_DEV,
+  SPAN_CONSENT_STATUS_EDGE,
+  SPAN_JOBS_CANCEL_EDGE,
+  SPAN_JOBS_RESULT_EDGE,
+  SPAN_JOBS_SNAPSHOT_EDGE,
+  SPAN_JOBS_SUBMIT_DEV,
+  SPAN_JOBS_SUBMIT_EDGE,
+} from "@azx-pbc/shared/telemetry";
 import { withRootSpan } from "./telemetry.js";
 import { buildApp } from "./app.js";
 import { buildDevGateway } from "./devGateway/app.js";
@@ -24,6 +32,16 @@ import {
   FakeUsageStore,
   registryEntry,
 } from "./test/fakes.js";
+import {
+  buildDevJobsEdge,
+  buildJobsEdge,
+  FakeJobsForwarder,
+  JOBS_DEV_BEARER,
+  JOBS_DEV_ORIGIN,
+  JOBS_HOST,
+  JOBS_ORIGIN,
+  seedJobsSession,
+} from "./test/jobsGateway.js";
 
 /**
  * ADR-0037 decision 10's redaction case — the direct sibling of
@@ -467,6 +485,8 @@ describe("span attributes never carry a credential", () => {
         llmProvider: null,
         egress: null,
         instructionKey: null,
+        jobsForwarder: null,
+        jobsCallbackBurns: null,
         portal,
       });
     }
@@ -615,6 +635,8 @@ describe("span attributes never carry a credential", () => {
         llmProvider: null,
         egress: null,
         instructionKey: null,
+        jobsForwarder: null,
+        jobsCallbackBurns: null,
         portal,
       });
 
@@ -635,6 +657,112 @@ describe("span attributes never carry a credential", () => {
       expect(dump).not.toContain("?");
       const routeSpan = recording.spans().find((s) => s.name === SPAN_CONSENT_STATUS_DEV);
       expect(routeSpan?.attributes["url.path"]).toBe("/myapp/_api/connections/asana/status");
+      for (const span of recording.spans()) {
+        for (const key of Object.keys(span.attributes)) {
+          expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);
+        }
+      }
+    });
+  });
+
+  /**
+   * The app-facing jobs routes. The caller plants everything here — its
+   * session cookie, the submission's retry key, an input body whose URL
+   * carries a keyed vendor credential — and the dev tier's POST carries its
+   * bearer token. The journey crosses five route spans (submit, snapshot,
+   * result and cancel on the edge, submit on the dev gateway); none of the
+   * plants may appear on any of their attributes.
+   */
+  describe("the app-facing jobs routes", () => {
+    const PLANTED_RETRY_KEY = "PLANTED-JOBS-RETRY-KEY";
+    const PLANTED_INPUT_SECRET = "PLANTED-JOBS-INPUT-SECRET";
+    const PLANTED_BODY_URL = `https://api.vendor.test/v1?api_key=${PLANTED_INPUT_SECRET}`;
+
+    it("leaks no session token, retry key, input body or dev bearer — across every attribute", async () => {
+      const harness = buildJobsEdge();
+      const token = await seedJobsSession(harness.sessions, "alice");
+
+      const submitted = await harness.app.inject({
+        method: "POST",
+        url: "/_api/jobs/jobs/types/fetch",
+        headers: {
+          host: JOBS_HOST.host,
+          "sec-fetch-mode": "cors",
+          "content-type": "application/json",
+          origin: JOBS_ORIGIN,
+          cookie: `${SESSION_COOKIE}=${token}`,
+          "idempotency-key": PLANTED_RETRY_KEY,
+        },
+        payload: JSON.stringify({ url: PLANTED_BODY_URL }),
+      });
+      expect(submitted.statusCode).toBe(202);
+
+      const polled = await harness.app.inject({
+        method: "GET",
+        url: "/_api/jobs/jobs/job-123",
+        headers: { host: JOBS_HOST.host, cookie: `${SESSION_COOKIE}=${token}` },
+      });
+      expect(polled.statusCode).toBe(200);
+
+      const result = await harness.app.inject({
+        method: "GET",
+        url: "/_api/jobs/jobs/job-123/result",
+        headers: { host: JOBS_HOST.host, cookie: `${SESSION_COOKIE}=${token}` },
+      });
+      expect(result.statusCode).toBe(200);
+
+      const cancelled = await harness.app.inject({
+        method: "DELETE",
+        url: "/_api/jobs/jobs/job-123",
+        headers: {
+          host: JOBS_HOST.host,
+          origin: JOBS_ORIGIN,
+          cookie: `${SESSION_COOKIE}=${token}`,
+        },
+      });
+      expect(cancelled.statusCode).toBe(202);
+      await harness.app.close();
+
+      const devApp = await buildDevJobsEdge(new FakeJobsForwarder("jobs"));
+      const devSubmitted = await devApp.inject({
+        method: "POST",
+        url: "/myapp/_api/jobs/jobs/types/fetch",
+        headers: {
+          host: "dev-api.local.helix.azxlabs.io",
+          "content-type": "application/json",
+          origin: JOBS_DEV_ORIGIN,
+          authorization: `Bearer ${JOBS_DEV_BEARER}`,
+        },
+        payload: JSON.stringify({ url: PLANTED_BODY_URL }),
+      });
+      expect(devSubmitted.statusCode).toBe(202);
+      await devApp.close();
+
+      // At least one span per operation ran, so the scan below is never
+      // vacuous.
+      for (const name of [
+        SPAN_JOBS_SUBMIT_EDGE,
+        SPAN_JOBS_SNAPSHOT_EDGE,
+        SPAN_JOBS_RESULT_EDGE,
+        SPAN_JOBS_CANCEL_EDGE,
+        SPAN_JOBS_SUBMIT_DEV,
+      ]) {
+        expect(
+          recording.spans().some((sp) => sp.name === name),
+          name,
+        ).toBe(true);
+      }
+
+      const dump = JSON.stringify(recording.spans().map((s) => s.attributes));
+      for (const secret of [
+        token,
+        PLANTED_RETRY_KEY,
+        PLANTED_BODY_URL,
+        PLANTED_INPUT_SECRET,
+        JOBS_DEV_BEARER,
+      ]) {
+        expect(dump, `a span attribute leaked ${secret}`).not.toContain(secret);
+      }
       for (const span of recording.spans()) {
         for (const key of Object.keys(span.attributes)) {
           expect(FORBIDDEN_URL_ATTRS, `${key} is a whole-URL attribute`).not.toContain(key);

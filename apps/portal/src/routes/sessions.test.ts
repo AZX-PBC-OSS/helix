@@ -187,7 +187,10 @@ describe("GET /api/v1/sessions", () => {
     await seedSession({ appId: a.id, userOid: `sub-${randomUUID()}`, userKind: "future-kind" });
 
     const res = await t.app.inject({ method: "GET", url: "/api/v1/sessions", headers: admin });
-    expect(res.statusCode).toBe(200);
+    // The body rides the assertion message: tests run with the portal logger
+    // off (`loggerOption` returns false for NODE_ENV=test), so a rare 500's
+    // only evidence is the response it produced.
+    expect(res.statusCode, res.payload).toBe(200);
     const body = res.json();
     const mine = body.rows.filter((r: { userOid: string }) => r.userOid === alice);
     // 3, not 2: the refresh-due row is live too (the gate treats it as an
@@ -228,7 +231,7 @@ describe("GET /api/v1/sessions", () => {
       url: "/api/v1/sessions?limit=1",
       headers: admin,
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode, res.payload).toBe(200);
     expect(res.json().rows).toHaveLength(1);
   });
 
@@ -261,7 +264,7 @@ describe("GET /api/v1/sessions", () => {
         url: "/api/v1/sessions",
         headers: admin,
       });
-      expect(res.statusCode).toBe(200);
+      expect(res.statusCode, res.payload).toBe(200);
       const body = res.json();
       expect(body.groupsResolved).toBe(false);
       expect(body.groupNames).toEqual({});

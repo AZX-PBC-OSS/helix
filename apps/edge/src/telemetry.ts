@@ -16,6 +16,10 @@ import {
   INSTR_APP_VISITS,
   INSTR_GATEWAY_CALLS,
   INSTR_GATEWAY_DURATION,
+  INSTR_JOBS_BURN_SWEEPS,
+  INSTR_JOBS_CALLBACKS,
+  INSTR_JOBS_REACHABILITY_PROBES,
+  INSTR_JOBS_SUBMISSIONS,
   INSTR_REGISTRY_LOAD_FAILURES,
   INSTR_REGISTRY_STALE_FOR_MS,
   INSTR_SESSION_GATE_DENIED,
@@ -69,6 +73,41 @@ export interface EdgeInstruments {
   trustProxyUnresolved: ObservableGauge;
   /** `appId`, `outcome` ∈ `VISIT_RECORD_OUTCOMES` (ADR-0050). */
   appVisits: Counter;
+  /**
+   * `outcome` ∈ `JOBS_BURN_SWEEP_OUTCOMES` — the jobs-callback burn store's
+   * sweep passes (`jobs/burns.ts`). The same instrument name the jobs plane
+   * emits for its own burn store, so one alert covers both planes' cleanup.
+   * Which service emitted a point is resource-level `service.name` — each
+   * process boots telemetry under its own name; this module's meter scope is
+   * always `helix-edge`, including in the dev-gateway process that shares it.
+   */
+  jobsBurnSweeps: Counter;
+  /**
+   * `outcome` ∈ `JOBS_SUBMISSION_OUTCOMES` — the app-facing jobs submission
+   * routes' answers (`gateway/jobs.ts`), one point per request including the
+   * local refusals that never mint an instruction. The receiver counts the
+   * instructions it presented (`helix.jobs.instructions`); this is the
+   * caller-facing half, and the two are never reconciled. Per-app attribution
+   * is the request ledger's job, never this counter's.
+   */
+  jobsSubmissions: Counter;
+  /**
+   * `outcome` ∈ `JOBS_FETCH_CALLBACK_OUTCOMES` — the signed jobs→edge callback
+   * routes' answers (`gateway/jobsCallback.ts`), one point per presentation
+   * including the verification verdicts that never dispatch. The burn store's
+   * own sweep counter is `jobsBurnSweeps`; per-app attribution is the fetch
+   * ledger's job (the policy core writes it), never this counter's.
+   */
+  jobsCallbacks: Counter;
+  /**
+   * `outcome` ∈ `JOBS_REACHABILITY_PROBE_OUTCOMES` — the edge's bounded
+   * jobs-reachability probe (`jobs/reachability.ts`), one point per configured
+   * server per pass, independent of user requests. The *reason* and the
+   * per-server story ride the `jobs_reachability` health check's body and the
+   * `edge.jobs_reachability.*` transition events; this counter's job is the
+   * rate a body-aware alert keys on.
+   */
+  jobsReachabilityProbes: Counter;
 }
 
 /**
@@ -127,6 +166,29 @@ export function instruments(): EdgeInstruments {
       description:
         "Hosted-app document loads the edge tried to record, by outcome. Operational only — " +
         "the owner-facing counts come from app_visits.",
+    }),
+    jobsBurnSweeps: meter.createCounter(INSTR_JOBS_BURN_SWEEPS, {
+      description:
+        "Jobs-callback burn-store sweep passes by outcome. Operational only — a run of " +
+        "failed with no ok is a store that stopped answering its cleanup.",
+    }),
+    jobsSubmissions: meter.createCounter(INSTR_JOBS_SUBMISSIONS, {
+      description:
+        "App-facing jobs submission route answers by outcome. Operational only — never " +
+        "an accepted-job count (keyed replays and uncertain failures are all in here).",
+    }),
+    jobsCallbacks: meter.createCounter(INSTR_JOBS_CALLBACKS, {
+      description:
+        "Signed jobs→edge callback route answers by outcome, one point per presentation. " +
+        "Operational only — a run of replayed is a capture-and-replay attempt, a run of " +
+        "rejected a forged or misconfigured minter (the bounded reason rides the span).",
+    }),
+    jobsReachabilityProbes: meter.createCounter(INSTR_JOBS_REACHABILITY_PROBES, {
+      description:
+        "Configured jobs servers' /health probe answers by outcome, one point per server " +
+        "per pass. Operational only — a run of unreachable with no reachable is a jobs " +
+        "server this edge cannot forward to, and the reason rides the jobs_reachability " +
+        "check's body, never a dimension here.",
     }),
   };
   return cached;

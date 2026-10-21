@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
+import { developerLocalOverridesSkipped, installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
 import {
   createSecretStore,
   managedIdentityTokenProviderFromEnv,
@@ -31,6 +31,12 @@ const BURN_SWEEP_INTERVAL_MS = 60_000;
  * Hand-rolled (no `dotenv`) — mirrors apps/edge/src/server.ts.
  */
 function loadDotEnvLocal(): void {
+  // A resolved stack boots with the stack env authoritative: the
+  // developer-local override file is the dev-stack convention, and a resolved
+  // stack obeying it would boot cross-wired — silently pointing this
+  // service's credentials at the developer's own (the isolation the port
+  // offset exists to provide). One home for the flag and its spellings.
+  if (developerLocalOverridesSkipped(process.env)) return;
   let text: string;
   try {
     text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");

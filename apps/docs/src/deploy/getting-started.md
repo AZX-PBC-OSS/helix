@@ -195,11 +195,20 @@ export HELIX_EDGE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '
 export HELIX_PORTAL_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
 export HELIX_EGRESS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
 export HELIX_DEV_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+# The jobs plane's two identities (created in step 4): the runtime role, and
+# the separate migration identity — which is never installed in a runtime image.
+export HELIX_JOBS_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
+export HELIX_JOBS_MIGRATE_DB_PASSWORD=$(openssl rand -base64 24 | tr '+/' '-_' | tr -d '=')
 # Signing secrets are base64-DECODED by the apps — standard base64 here.
 # A base64url value makes the edge crash on boot.
 export HELIX_EDGE_AUTH_SECRET=$(openssl rand -base64 48)
 export HELIX_PORTAL_SECRET=$(openssl rand -base64 48)
 export HELIX_INSTRUCTION_SECRET=$(openssl rand -base64 48)
+# The jobs service's three signing roots, one per direction: exactly 32 bytes
+# each, generated separately (the deploy refuses a repeated or malformed root).
+export HELIX_JOBS_EDGE_TO_JOBS_ROOT=$(openssl rand -base64 32)
+export HELIX_JOBS_JOBS_TO_EDGE_ROOT=$(openssl rand -base64 32)
+export HELIX_JOBS_PORTAL_TO_JOBS_ROOT=$(openssl rand -base64 32)
 export HELIX_EDGE_OIDC_PRIVATE_KEY=$(base64 -w0 edge-key.pem)
 export HELIX_EDGE_OIDC_CERTIFICATE=$(base64 -w0 edge-cert.pem)
 export HELIX_EDGE_OIDC_CLIENT_ID=<helix-edge client id>
@@ -217,9 +226,10 @@ recoverable from a *running* install —
 over the control plane (the API resolves the Key Vault references), and the
 Postgres admin password is also in the platform vault as
 `postgres-admin-password` — but recovery needs a healthy install, so capture
-stays the primary path. (The one value held in no container is
-`HELIX_DEV_DB_PASSWORD` on an install with the dev surface off: set a fresh
-one with `ALTER ROLE helix_dev` rather than hunting the original.)
+stays the primary path. (The values held in no container: `HELIX_DEV_DB_PASSWORD`
+on an install with the dev surface off, and the jobs migration identity's
+password, which never reaches a runtime image at all. Set a fresh one with `ALTER ROLE <role>` rather than
+hunting the original.)
 
 ::: tip Preview first
 `az deployment group what-if -g <rg> -f main.bicep -p main.bootstrap.bicepparam`
@@ -232,11 +242,16 @@ already bound, the what-if must **not** show a delete of
 ## Step 4: Create the database roles
 
 The deploy created the Postgres server and the `helix` database, but not the
-four least-privilege runtime roles the services connect as (`helix_portal`,
-`helix_edge`, `helix_egress`, `helix_dev`). Those come from the committed
-`infra/azure/sql/01-roles.sql`, run once as the admin — and they must exist
-before the first migration, because the migrations' table grants only apply to
-roles that already exist.
+least-privilege identities the services connect as: the four platform runtime
+roles (`helix_portal`, `helix_edge`, `helix_egress`, `helix_dev`) plus the jobs
+plane's two — the `helix_jobs` runtime role and the separate
+`helix_jobs_migrate` migration identity (never installed in a runtime image) —
+and the private `helix_jobs` database. Those come from the committed
+`infra/azure/sql/01-roles.sql`, run as the admin. The SQL is idempotent — it
+creates only what is missing and never rotates an existing password — so
+re-running it is how an install that predates a role or the jobs database comes
+current. Either way it must have run before the first migration, because the
+migrations' table grants only apply to roles that already exist.
 
 Postgres is private-endpoint-only, so this runs as a throwaway Container Apps
 job inside the VNet. A script in the repo wraps the whole operation — build the
@@ -246,10 +261,12 @@ job, run the SQL in it, poll the result, and delete the job afterwards:
 RG=<rg> PREFIX=<namePrefix> infra/azure/scripts/create-roles.sh
 ```
 
-It reads the same `HELIX_*` variables you exported in step 3 — set all five,
-including `HELIX_DEV_DB_PASSWORD`. The `helix_dev` role is created even when
-the dev gateway stays off: the extra role is harmless without its app, and
-adding it later means re-running migrations to pick up its grants.
+It reads the same `HELIX_*` variables you exported in step 3 — set all seven,
+including `HELIX_DEV_DB_PASSWORD` and the two `HELIX_JOBS_*` passwords. The
+`helix_dev` role is created even when the dev gateway stays off, and the jobs
+identities even on an install that parks the jobs plane (`deployJobs=false`):
+the extra roles are harmless without their apps, and adding them later means
+re-running migrations to pick up their grants.
 
 The job deletes itself when the script finishes — it carries the admin password
 as a job secret, so it must not be left lying around (if the cleanup itself
@@ -270,14 +287,15 @@ az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam \
   --parameters deployApps=true
 ```
 
-Images come from `ghcr.io/azx-pbc-oss` (edge, portal, egress). CI publishes
-them on every push to the main branch and on `v*` tags. The three GHCR packages
-must be **public** for the default anonymous pull to work — the repo being
-public does not make its packages public; flip each one under
-*Package settings → Change visibility*. To keep them private instead, pass a
-`registries` credential to the container apps (see the infra README).
+Images come from `ghcr.io/azx-pbc-oss`. CI publishes five of them on every
+push to the main branch and on `v*` tags: edge, portal, egress, certbot, and
+jobs. The GHCR packages must be **public** for the default anonymous pull
+to work — the repo being public does not make its packages public; flip each
+one under *Package settings → Change visibility*. To keep them private
+instead, pass a `registries` credential to the container apps (see the infra
+README).
 
-This pass also creates the `<namePrefix>-migrate` job used next. The apps boot
+This pass also creates the two migrate jobs used in step 6. The apps boot
 before the schema exists: they answer `/health` but fail real requests until
 step 6 lands. That is expected on a fresh install — nothing has been delegated
 in DNS yet, so nothing external can reach them.
@@ -290,32 +308,41 @@ with your own (they are literals by design — and keep every line: a parameter
 left unset falls back to composing a database DSN from an *empty* password,
 which the apply would then write into the vault). On a `deployDevGateway=true`
 install, also uncomment the `edgeDevDatabaseUrl` line — that secret exists only
-where the dev surface deploys. The vault was created with
+where the dev surface deploys. With the jobs plane on (the default), uncomment
+the five jobs lines too — the two jobs DSNs and the three signing roots; the
+apply refuses to run without them. The vault was created with
 `enabledForTemplateDeployment`, and your deploy principal needs
 `Microsoft.KeyVault/vaults/deploy/action` (Owner/Contributor include it) —
 nothing else has to change hands.
 
 ## Step 6: Run the first migration
 
-The `<namePrefix>-migrate` job runs the portal image inside the VNet and reads
-the Postgres admin password from Key Vault with its own managed identity — no
-credential passes through your shell. Pin it to the tag being deployed, start
-it, and then read the result:
+Two migration jobs were created by the apps apply: `<namePrefix>-migrate`
+(the platform schema, running the portal image) and — with the jobs plane
+enabled, which is the default — `<namePrefix>-jobs-migrate` (the jobs store's
+own schema and queue policy, running the helix-jobs image). Both read their
+credentials from Key Vault with their own managed identities — no credential
+passes through your shell. Pin each to the tag being deployed, start it, and
+then read the result:
 
 ```bash
 az containerapp job update -g <rg> -n <namePrefix>-migrate \
   --image ghcr.io/azx-pbc-oss/helix-portal:<tag>
 az containerapp job start  -g <rg> -n <namePrefix>-migrate
 
-# a job that starts is not a job that succeeded — check the execution
+az containerapp job update -g <rg> -n <namePrefix>-jobs-migrate \
+  --image ghcr.io/azx-pbc-oss/helix-jobs:<tag>
+az containerapp job start  -g <rg> -n <namePrefix>-jobs-migrate
+
+# a job that starts is not a job that succeeded — check each execution
 az containerapp job execution list -g <rg> -n <namePrefix>-migrate \
   --query "[0].{name:name,status:properties.status,start:properties.startTime}"
 ```
 
-Expect `Succeeded`. On `Failed`, the Prisma output in the job's logs is the
+Expect `Succeeded`. On `Failed`, the migration output in the job's logs is the
 explanation — see [reading the migrate job's
-output](/deploy/database#reading-the-migrate-jobs-output). Once it succeeds,
-every app that was waiting on the schema comes up on its own.
+output](/deploy/database#reading-the-migrate-jobs-output). Once they succeed,
+every app that was waiting on a schema comes up on its own.
 
 Migrations are forward-only and run before the apps on every later update too —
 that routine is in [Deploying updates](/deploy/updates).

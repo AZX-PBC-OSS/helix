@@ -1,0 +1,746 @@
+import { describe, expect, test, vi } from "vitest";
+
+import {
+  HealthStatusSchema,
+  JOBS_CAPACITY_CHECK,
+  JOBS_CLEANUP_CHECK,
+  JOBS_DATABASE_CHECK,
+  JOBS_INTAKE_CHECK,
+  JOBS_LIFECYCLE_RECOVERY_CHECK,
+  JOBS_SWEEPER_CHECK,
+  JOBS_WORKER_CHECK,
+  JobErrorMessages,
+  resolveJobsCapacityLimits,
+} from "@azx-pbc/shared";
+
+import type { JobsAdmission } from "./acceptance.js";
+import { buildApp } from "./app.js";
+import type { JobsCancellation } from "./cancellation.js";
+import type { JobsCleanupSnapshot } from "./cleanup.js";
+import type { JobsStorageCompatibility } from "./compat.js";
+import { loadJobsConfig } from "./config.js";
+import type { JobsInstructionAuth } from "./instructionAuth.js";
+import type { JobsIntakeSnapshot } from "./intake.js";
+import type { JobsLifecycleApplier } from "./lifecycle.js";
+import type { JobsObservation } from "./observation.js";
+import type { JobsRecoverySnapshot } from "./recovery.js";
+import type { JobsRunnerSnapshot } from "./runner.js";
+import { JobsStorage } from "./storage.js";
+import {
+  cancelSpec,
+  instructionHeaders,
+  makeReceiver,
+  MemoryAdmission,
+  MemoryCancellation,
+  MemoryLifecycle,
+  MemoryObservation,
+  mint,
+  runningCleanup,
+  submitSpec,
+  TEST_BODY,
+  TEST_IAT,
+  TEST_IDENTITY,
+  TEST_JOB_ID,
+  TEST_KEYS,
+} from "./test/instructions.js";
+
+/**
+ * The listener's health contract and the unmatched-route behaviour, through
+ * the real composition (`buildApp`) with the storage lifecycle driven by an
+ * injected probe: the always-200 body, the honest roll-up, and the 503 the
+ * service answers for its operations while the store is unusable. The signed
+ * routes' own behavior is `operations.test.ts`; these legs only need the
+ * receiver seam present.
+ */
+
+const CONFIG = loadJobsConfig({
+  JOBS_SERVER_ID: "jobs",
+  JOBS_DATABASE_URL: "postgresql://helix_jobs:pw@db:5432/helix_jobs_test",
+  JOBS_ACCEPTING: "true",
+  JOBS_EDGE_TO_JOBS_SECRET: "uFEfLTTVeHJK0+P/dQEWv8ccOyFrkZw7InR0I52V4/0=",
+  JOBS_PORTAL_TO_JOBS_SECRET: "jUwQKa33JNljh0jULeithrh3JOL8dUmxPJknzGCjQBA=",
+  JOBS_JOBS_TO_EDGE_SECRET: "gDZ5bWRVuYC58CVmc4rXPjvCzEtuoQZ4Hn0v2UXPUaU=",
+  JOBS_EDGE_PROD_URL: "https://edge.internal.helix",
+  JOBS_EDGE_DEV_URL: "https://edge.dev.internal.helix",
+});
+
+const COMPATIBLE: JobsStorageCompatibility = { kind: "compatible", schemaVersion: 45 };
+
+/** A storage lifecycle in the wanted state, without a cluster. */
+async function storageIn(state: "pending" | "ready" | "unavailable"): Promise<JobsStorage> {
+  const storage = new JobsStorage({
+    databaseUrl: CONFIG.databaseUrl,
+    statementTimeoutMs: CONFIG.statementTimeoutMs,
+    check: async () => (state === "ready" ? COMPATIBLE : { kind: "schema_missing" }),
+    log: { info: () => {}, warn: () => {}, error: () => {} },
+  });
+  if (state !== "pending") {
+    // The state must come from a completed probe, not a test's say-so.
+    storage.start();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return storage;
+}
+
+/** The full deps: the storage state under test plus the receiver seam. The
+ * worker's, the sweeper's and the cleanup loop's supervision states are the
+ * leg's to set — the health body reads them per request like the storage
+ * snapshot. */
+async function depsWith(
+  storage: JobsStorage,
+  worker: JobsRunnerSnapshot = RUNNING_WORKER,
+  recovery: () => JobsRecoverySnapshot = () => RUNNING_RECOVERY(),
+  cleanup: () => JobsCleanupSnapshot = runningCleanup,
+  intake: () => JobsIntakeSnapshot = RUNNING_INTAKE,
+) {
+  return {
+    storage,
+    instructions: makeReceiver().auth,
+    lifecycle: new MemoryLifecycle(),
+    admission: new MemoryAdmission(),
+    cancellation: new MemoryCancellation(),
+    observation: new MemoryObservation(),
+    worker: () => worker,
+    recovery,
+    cleanup,
+    intake,
+    capacityLimits: resolveJobsCapacityLimits(),
+  };
+}
+
+/** The supervision state of a serving composition: the runner up, worker on it. */
+const RUNNING_WORKER: JobsRunnerSnapshot = { started: true, workerRegistered: true };
+
+/** The supervision state of a serving composition: the sweeper mid-cadence, its last pass fresh. */
+const RUNNING_RECOVERY = (): JobsRecoverySnapshot => ({
+  started: true,
+  passes: 1,
+  lastPassAt: new Date().toISOString(),
+  lastOkPassAt: new Date().toISOString(),
+  reconciled: 0,
+  lifecycle: { outstanding: 0, oldestPendingAt: null },
+});
+
+/** The supervision state of a serving composition: the configured intake applied open. */
+const RUNNING_INTAKE = (): JobsIntakeSnapshot => ({
+  configuredAccepting: true,
+  phase: "applied",
+  boundServer: null,
+  appliedAt: new Date().toISOString(),
+  lastAttemptAt: new Date().toISOString(),
+});
+
+describe("GET /health", () => {
+  test("answers 200 with a schema-valid body while readiness is still unknown", async () => {
+    const storage = await storageIn("pending");
+    const app = buildApp(await depsWith(storage));
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+
+    const body = HealthStatusSchema.parse(res.json());
+    expect(body.service).toBe("helix-jobs");
+    // Unknown readiness never appears healthy: the roll-up is error before any
+    // probe has answered.
+    expect(body.status).toBe("error");
+    expect(body.checks).toEqual([
+      {
+        name: JOBS_DATABASE_CHECK,
+        status: "error",
+        detail: expect.stringMatching(/never been verified/),
+        metrics: { probes: 0 },
+      },
+      { name: JOBS_WORKER_CHECK, status: "ok" },
+      {
+        name: JOBS_SWEEPER_CHECK,
+        status: "ok",
+        metrics: { passes: 1, reconciled: 0 },
+        lastSuccessAt: expect.any(String),
+      },
+      {
+        name: JOBS_CAPACITY_CHECK,
+        status: "ok",
+        metrics: { retainedServer: 0, unfinishedServer: 0 },
+        lastSuccessAt: expect.any(String),
+      },
+      {
+        name: JOBS_LIFECYCLE_RECOVERY_CHECK,
+        status: "ok",
+        metrics: { passes: 1, reconciled: 0, outstanding: 0, oldestSeconds: 0 },
+        lastSuccessAt: expect.any(String),
+      },
+      {
+        name: JOBS_CLEANUP_CHECK,
+        status: "ok",
+        metrics: { passes: 1, resultsRemoved: 0, recordsRetired: 0 },
+        lastSuccessAt: expect.any(String),
+      },
+      { name: JOBS_INTAKE_CHECK, status: "ok" },
+    ]);
+    await app.close();
+    await storage.stop();
+  });
+
+  test("a verified store reports ok, with the check named for the alert rules", async () => {
+    const storage = await storageIn("ready");
+    const app = buildApp(await depsWith(storage));
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+
+    const body = HealthStatusSchema.parse(res.json());
+    expect(body.status).toBe("ok");
+    expect(body.checks?.[0]?.name).toBe(JOBS_DATABASE_CHECK);
+    expect(body.checks?.[0]?.status).toBe("ok");
+    expect(body.checks?.[0]?.lastSuccessAt).toEqual(expect.any(String));
+    expect(body.checks?.[1]?.name).toBe(JOBS_WORKER_CHECK);
+    expect(body.checks?.[1]?.status).toBe("ok");
+    await app.close();
+    await storage.stop();
+  });
+
+  test("a started runner with no worker registered reports error — a listener without execution is not healthy", async () => {
+    const storage = await storageIn("ready");
+    const app = buildApp(await depsWith(storage, { started: true, workerRegistered: false }));
+    const res = await app.inject({ method: "GET", url: "/health" });
+    expect(res.statusCode).toBe(200);
+    const body = HealthStatusSchema.parse(res.json());
+    expect(body.status).toBe("error");
+    expect(body.checks?.[1]?.name).toBe(JOBS_WORKER_CHECK);
+    expect(body.checks?.[1]?.status).toBe("error");
+    expect(body.checks?.[1]?.detail).toMatch(/no worker is registered/);
+    await app.close();
+    await storage.stop();
+  });
+
+  test("a sweeper that never ran reports error, and a stale one degrades — recovery is never silently absent", async () => {
+    const storage = await storageIn("ready");
+    const notStarted = buildApp(
+      await depsWith(storage, RUNNING_WORKER, () => ({
+        started: false,
+        passes: 0,
+        lastPassAt: null,
+        lastOkPassAt: null,
+        reconciled: 0,
+        lifecycle: null,
+      })),
+    );
+    const neverPassed = buildApp(
+      await depsWith(storage, RUNNING_WORKER, () => ({
+        started: true,
+        passes: 3,
+        lastPassAt: new Date().toISOString(),
+        lastOkPassAt: null,
+        reconciled: 0,
+        lifecycle: null,
+      })),
+    );
+    const stale = buildApp(
+      await depsWith(storage, RUNNING_WORKER, () => ({
+        started: true,
+        passes: 3,
+        lastPassAt: new Date().toISOString(),
+        lastOkPassAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        reconciled: 2,
+        lifecycle: { outstanding: 0, oldestPendingAt: null },
+      })),
+    );
+    try {
+      const notStartedBody = HealthStatusSchema.parse(
+        (await notStarted.inject({ method: "GET", url: "/health" })).json(),
+      );
+      expect(notStartedBody.status).toBe("error");
+      expect(notStartedBody.checks?.[2]?.name).toBe(JOBS_SWEEPER_CHECK);
+      expect(notStartedBody.checks?.[2]?.status).toBe("error");
+      expect(notStartedBody.checks?.[2]?.detail).toMatch(/sweeper is not running/);
+
+      const neverPassedBody = HealthStatusSchema.parse(
+        (await neverPassed.inject({ method: "GET", url: "/health" })).json(),
+      );
+      expect(neverPassedBody.checks?.[2]?.status).toBe("error");
+      expect(neverPassedBody.checks?.[2]?.detail).toMatch(/no successful pass/);
+
+      const staleBody = HealthStatusSchema.parse(
+        (await stale.inject({ method: "GET", url: "/health" })).json(),
+      );
+      expect(staleBody.status).toBe("degraded");
+      expect(staleBody.checks?.[2]?.status).toBe("degraded");
+      expect(staleBody.checks?.[2]?.detail).toMatch(/last successful pass was \d+s ago/);
+      expect(staleBody.checks?.[2]?.metrics).toEqual({ passes: 3, reconciled: 2 });
+    } finally {
+      await notStarted.close();
+      await neverPassed.close();
+      await stale.close();
+      await storage.stop();
+    }
+  });
+
+  test("a stopped cleanup loop reads error in both of its checks, and the body rolls up to error", async () => {
+    // The route wiring of the two cleanup-graded checks in a non-ok state:
+    // both grade the ONE cleanup getter, so a loop that is not running must
+    // surface as error in both — `jobs_capacity` (its occupancy evidence's
+    // producer) and `jobs_cleanup` (its remover) — and the roll-up must carry
+    // the degradation. The ok shape is pinned by the exact-body leg; this is
+    // the body an operator reads while the loop is down.
+    const storage = await storageIn("ready");
+    const app = buildApp(
+      await depsWith(
+        storage,
+        RUNNING_WORKER,
+        () => RUNNING_RECOVERY(),
+        () => ({
+          started: false,
+          passes: 0,
+          lastPassAt: null,
+          lastOkPassAt: null,
+          resultsRemoved: 0,
+          recordsRetired: 0,
+          evidence: null,
+        }),
+      ),
+    );
+    try {
+      const res = await app.inject({ method: "GET", url: "/health" });
+      expect(res.statusCode).toBe(200);
+      const body = HealthStatusSchema.parse(res.json());
+      expect(body.status).toBe("error");
+      expect(body.checks?.[3]?.name).toBe(JOBS_CAPACITY_CHECK);
+      expect(body.checks?.[3]?.status).toBe("error");
+      expect(body.checks?.[3]?.detail).toMatch(/no occupancy evidence.*not running/s);
+      expect(body.checks?.[5]?.name).toBe(JOBS_CLEANUP_CHECK);
+      expect(body.checks?.[5]?.status).toBe("error");
+      expect(body.checks?.[5]?.detail).toMatch(/cleanup loop is not running/);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("an unusable store reports error in the body — and still answers 200", async () => {
+    const storage = await storageIn("unavailable");
+    const app = buildApp(await depsWith(storage));
+    const res = await app.inject({ method: "GET", url: "/health" });
+    // The status code does not carry the degradation; a non-200 would let a
+    // liveness probe restart a replica that is serving correctly.
+    expect(res.statusCode).toBe(200);
+
+    const body = HealthStatusSchema.parse(res.json());
+    expect(body.status).toBe("error");
+    expect(body.checks?.[0]?.detail).toMatch(/runner schema is not installed/);
+    await app.close();
+    await storage.stop();
+  });
+
+  test("HEAD /health answers like GET", async () => {
+    const storage = await storageIn("ready");
+    const app = buildApp(await depsWith(storage));
+    const res = await app.inject({ method: "HEAD", url: "/health" });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+    await storage.stop();
+  });
+
+  test("/health and the 503 gate read the supervisor's CURRENT snapshot on every request", async () => {
+    // One app, one storage lifecycle whose store degrades and recovers under
+    // it: each request must answer the readiness as of THAT request. A handler
+    // (or a buildApp refactor) that captured the snapshot at composition time
+    // would keep reporting the boot state — health frozen at ok or at error —
+    // which is the silent-wrong-answer direction this contract forbids.
+    let verdict: JobsStorageCompatibility = COMPATIBLE;
+    const storage = new JobsStorage({
+      databaseUrl: CONFIG.databaseUrl,
+      statementTimeoutMs: CONFIG.statementTimeoutMs,
+      check: async () => verdict,
+      readyIntervalMs: 5,
+      log: { info: () => {}, warn: () => {}, error: () => {} },
+    });
+    storage.start();
+    const app = buildApp(await depsWith(storage));
+    try {
+      const eventuallyState = async (state: "ready" | "unavailable"): Promise<void> => {
+        const deadline = Date.now() + 5_000;
+        while (Date.now() < deadline && storage.snapshot().state !== state) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect(storage.snapshot().state, `the store never became ${state}`).toBe(state);
+      };
+
+      await eventuallyState("ready");
+      expect((await app.inject({ method: "GET", url: "/health" })).json().status).toBe("ok");
+      expect((await app.inject({ method: "GET", url: "/no/such/route" })).statusCode).toBe(404);
+
+      verdict = { kind: "unreachable", message: "connect ECONNREFUSED" };
+      await eventuallyState("unavailable");
+      const dead = await app.inject({ method: "GET", url: "/health" });
+      expect(dead.json().status).toBe("error");
+      expect(dead.json().checks?.[0]?.detail).toMatch(/did not answer/);
+      const gated = await app.inject({ method: "GET", url: "/no/such/route" });
+      expect(gated.statusCode).toBe(503);
+      expect(gated.json().code).toBe("jobs_unavailable");
+
+      verdict = COMPATIBLE;
+      await eventuallyState("ready");
+      expect((await app.inject({ method: "GET", url: "/health" })).json().status).toBe("ok");
+      expect((await app.inject({ method: "GET", url: "/no/such/route" })).statusCode).toBe(404);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+});
+
+describe("unmatched routes", () => {
+  test("while the store is unusable, an unmatched request answers 503 with the protocol's unavailable error", async () => {
+    // The signed operation routes now exist (operations.test.ts); the gate
+    // covers what is left unmatched, which is the operation surface's
+    // fallback while any route has not landed.
+    for (const state of ["pending", "unavailable"] as const) {
+      const storage = await storageIn(state);
+      const app = buildApp(await depsWith(storage));
+      const res = await app.inject({ method: "POST", url: "/internal/jobs/v1/not-a-route" });
+      expect(res.statusCode, `storage ${state}`).toBe(503);
+      expect(res.headers["cache-control"], `storage ${state}`).toBe("no-store");
+      expect(res.json(), `storage ${state}`).toEqual({
+        code: "jobs_unavailable",
+        message: JobErrorMessages.jobs_unavailable,
+      });
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("on a ready service an unknown route is a 404, not an availability statement", async () => {
+    const storage = await storageIn("ready");
+    const app = buildApp(await depsWith(storage));
+    const res = await app.inject({ method: "GET", url: "/no/such/route" });
+    expect(res.statusCode).toBe(404);
+    await app.close();
+    await storage.stop();
+  });
+
+  test("an inbound x-helix-request-id is never adopted — the request id stays self-minted", async () => {
+    // The wiring is `requestIdOptions({ trustInbound: false })`: unauthenticated
+    // metadata carries no authority, so a caller's header must not become the
+    // correlation id. Egress is the one service that adopts a valid id — a
+    // copy-paste of that posture here would let a jobs caller forge
+    // correlations, so an exact match on the forged value is the red line.
+    const forged = "11111111-2222-3333-4444-555555555555";
+    const storage = await storageIn("ready");
+    const app = buildApp(await depsWith(storage));
+    const reqIds: string[] = [];
+    app.addHook("onResponse", async (req) => {
+      reqIds.push(req.id);
+    });
+    const res = await app.inject({
+      method: "GET",
+      url: "/health",
+      headers: { "x-helix-request-id": forged },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(reqIds).toHaveLength(1); // the hook observed the request...
+    expect(reqIds[0]).not.toBe(forged); // ...under a self-minted id, never the caller's
+    await app.close();
+    await storage.stop();
+  });
+});
+
+/**
+ * The wiring of the early re-probe: every store-failure 503 arm — and the
+ * burn store's 503 verdict in the signed-operation handler — asks the storage
+ * supervisor to re-probe now, so /health stops reporting a store that
+ * requests already cannot use. The spy rides a real ready `JobsStorage`; one
+ * memory seam per case is replaced with one that throws, the way a dead store
+ * surfaces at each route's own seam.
+ */
+describe("a store-failure 503 asks the storage supervisor for the early re-probe", () => {
+  const UNAVAILABLE_BODY = {
+    code: "jobs_unavailable",
+    message: JobErrorMessages.jobs_unavailable,
+  };
+
+  async function appWithFailingStore(overrides: {
+    admission?: JobsAdmission;
+    cancellation?: JobsCancellation;
+    observation?: JobsObservation;
+    lifecycle?: JobsLifecycleApplier;
+    instructions?: JobsInstructionAuth;
+  }) {
+    const storage = await storageIn("ready");
+    const spy = vi.spyOn(storage, "reportRequestFailure");
+    const app = buildApp({ ...(await depsWith(storage)), ...overrides });
+    return { app, storage, spy };
+  }
+
+  test("the submit route's admission failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      admission: {
+        admit: async () => {
+          throw new Error("injected admission-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/jobs/v1/jobs",
+        headers: {
+          "content-type": "application/json",
+          ...instructionHeaders(await mint(submitSpec()), "retry-key-1"),
+        },
+        payload: TEST_BODY,
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the cancel route's store failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      cancellation: {
+        requestCancel: async () => {
+          throw new Error("injected cancellation-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec())),
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the snapshot route's read failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      observation: {
+        snapshot: async () => {
+          throw new Error("injected observation-store failure");
+        },
+        result: async () => {
+          throw new Error("injected observation-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot" }))),
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the result route's read failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      observation: {
+        snapshot: async () => {
+          throw new Error("injected observation-store failure");
+        },
+        result: async () => {
+          throw new Error("injected observation-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}/result`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "result" }))),
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the lifecycle route's apply failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      lifecycle: {
+        apply: async () => {
+          throw new Error("injected lifecycle-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: {
+          "content-type": "application/json",
+          ...instructionHeaders(
+            await mint({
+              operation: "lifecycle",
+              server: "jobs",
+              appId: TEST_IDENTITY.appId,
+              body: new TextEncoder().encode('{"generation":"8","archived":true}'),
+              iatS: TEST_IAT,
+            }),
+          ),
+        },
+        payload: '{"generation":"8","archived":true}',
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the burn store's 503 verdict reports the request failure", async () => {
+    const receiver = makeReceiver();
+    receiver.burns.failBurns = true;
+    const { app, storage, spy } = await appWithFailingStore({ instructions: receiver.auth });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot" }))),
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("a forged instruction and the ready paths never ask for the re-probe", async () => {
+    const storage = await storageIn("ready");
+    const spy = vi.spyOn(storage, "reportRequestFailure");
+    const app = buildApp(await depsWith(storage));
+    try {
+      // A forged instruction is refused at the receiver, before any store
+      // seam runs and without a 503 verdict.
+      const forged = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(
+          await mint(cancelSpec({ operation: "snapshot" }), TEST_KEYS.other),
+        ),
+      });
+      expect(forged.statusCode).toBe(401);
+      expect(spy).not.toHaveBeenCalled();
+
+      // A ready admission accepted the submission — no failure to report.
+      const accepted = await app.inject({
+        method: "POST",
+        url: "/internal/jobs/v1/jobs",
+        headers: {
+          "content-type": "application/json",
+          ...instructionHeaders(await mint(submitSpec()), "retry-key-1"),
+        },
+        payload: TEST_BODY,
+      });
+      expect(accepted.statusCode).toBe(202);
+      expect(spy).not.toHaveBeenCalled();
+
+      // A ready lifecycle apply — ditto.
+      const applied = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: {
+          "content-type": "application/json",
+          ...instructionHeaders(
+            await mint({
+              operation: "lifecycle",
+              server: "jobs",
+              appId: TEST_IDENTITY.appId,
+              body: new TextEncoder().encode('{"generation":"8","archived":true}'),
+              iatS: TEST_IAT,
+            }),
+          ),
+        },
+        payload: '{"generation":"8","archived":true}',
+      });
+      expect(applied.statusCode).toBe(200);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+});
+
+/**
+ * Job operations answer 503 while the store is not verified (design §8): a
+ * store with a missing table would otherwise serve whichever operations its
+ * remaining tables allow while `/health` reports it unusable. The gate runs
+ * before verification, so no nonce is spent on a request that cannot run.
+ */
+describe("the job routes' readiness gate", () => {
+  test("submit, snapshot, result and cancel answer 503 jobs_unavailable until the store verifies, spending no nonce", async () => {
+    for (const state of ["pending", "unavailable"] as const) {
+      const storage = await storageIn(state);
+      const receiver = makeReceiver();
+      const app = buildApp({ ...(await depsWith(storage)), instructions: receiver.auth });
+      try {
+        const replies = [
+          await app.inject({
+            method: "POST",
+            url: "/internal/jobs/v1/jobs",
+            headers: {
+              "content-type": "application/json",
+              ...instructionHeaders(await mint(submitSpec()), "retry-key-1"),
+            },
+            payload: TEST_BODY,
+          }),
+          await app.inject({
+            method: "GET",
+            url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+            headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot" }))),
+          }),
+          await app.inject({
+            method: "GET",
+            url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}/result`,
+            headers: instructionHeaders(await mint(cancelSpec({ operation: "result" }))),
+          }),
+          await app.inject({
+            method: "DELETE",
+            url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+            headers: instructionHeaders(await mint(cancelSpec())),
+          }),
+        ];
+        for (const res of replies) {
+          expect(res.statusCode, `storage ${state}`).toBe(503);
+          expect(res.headers["cache-control"]).toBe("no-store");
+          expect(res.json()).toEqual({
+            code: "jobs_unavailable",
+            message: JobErrorMessages.jobs_unavailable,
+          });
+        }
+        expect(receiver.burns.seen.size, `storage ${state}`).toBe(0);
+      } finally {
+        await app.close();
+        await storage.stop();
+      }
+    }
+  });
+});

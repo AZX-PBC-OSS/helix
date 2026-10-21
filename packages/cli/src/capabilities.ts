@@ -45,6 +45,15 @@ export function formatCapabilities(c: CapabilityCatalogue): string {
     `  externalOrigins:  ${c.fetch.externalOriginsPermitted ? "may be requested" : "not permitted"}`,
     `  baseline:         ${n(b.fetchRequestsPerDay)} proxied requests/day`,
     "",
+    "Background jobs (capabilities.jobs)",
+    `  types:            ${
+      !c.jobs
+        ? "not deployed"
+        : c.jobs.types.length
+          ? c.jobs.types.map((t) => `${t.id} (${t.displayName})`).join(", ")
+          : "(none offered)"
+    }`,
+    "",
     `MCP:                ${c.mcp.enforced ? "enforced" : "carried in the manifest, not enforced"}`,
     `Offline:            ${c.offline.available ? `available — ${c.offline.scopeRule}` : "not available"}`,
     `Deploy limits:      ${n(c.deploy.maxFileMb)} MB per file, ${n(c.deploy.maxBundleMb)} MB per bundle`,
