@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 
 import {
   HealthStatusSchema,
+  JOBS_CAPACITY_DEFAULTS,
   JOBS_MAX_RESULT_BYTES,
   JOBS_REACHABILITY_CHECK,
 } from "@azx-pbc/shared";
@@ -107,6 +108,7 @@ function edgeConfig(jobsEndpoint: string | null): EdgeConfig {
         : {},
       timeoutMs: 30_000,
       refuseDiagnosticTypes: false,
+      submissionLimits: JOBS_CAPACITY_DEFAULTS,
     },
   });
 }

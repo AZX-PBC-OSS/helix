@@ -257,6 +257,25 @@ describe("the background-jobs author guide", () => {
     states(`within ${word} minutes of acceptance`, "the fetch job's deadline");
   });
 
+  it("says the submission numbers are defaults and that dev submissions are counted apart from the deployment-wide limit", () => {
+    // The dev gateway's role has no grant on the edge's shared counter table,
+    // so its throttle is process-local: a guide promising one shared
+    // deployment-wide count across both tiers would be wrong.
+    const prose = guide.replace(/\s+/g, " ");
+    expect(prose, "the per-app rate is stated as a default").toContain(
+      `By default, ${JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv} submission attempts per minute`,
+    );
+    expect(prose, "the operator can tune the submission rate").toContain(
+      "The operator can change these numbers.",
+    );
+    expect(prose, "the deployment-wide limit covers production submissions").toContain(
+      "a limit across the whole deployment for production submissions",
+    );
+    expect(prose, "the dev gateway's own count is explained").toContain(
+      "Dev submissions do not count toward the deployment-wide limit",
+    );
+  });
+
   it("stops the example client's polling at exactly the shipped terminal statuses", () => {
     const terminal = `[${JOB_TERMINAL_STATUSES.map((status) => `"${status}"`).join(", ")}]`;
     const client = /\n```js\n([\s\S]*?)\n```\n/.exec(guide)?.[1];

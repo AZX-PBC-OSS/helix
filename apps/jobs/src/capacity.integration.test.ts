@@ -31,6 +31,7 @@ import {
   startRealStack,
   waitFor,
   type AppSession,
+  type DevClient,
   type HttpReply,
   type PortalClient,
   type RealStack,
@@ -47,10 +48,11 @@ import {
  * recoveries visible in the exported telemetry and no retry key ever reaching
  * a log line or a telemetry payload.
  *
- * The edge's submission throttle is not operator-tunable: ten attempts per
- * app/environment per 60-second fixed window, one hundred per window
- * deployment-wide, and every authenticated attempt is charged — invalid input,
- * replays, refusals, and the throttled attempts themselves. Each scenario gets
+ * The edge's submission throttle defaults to ten attempts per app/environment
+ * per 60-second fixed window and one hundred per window deployment-wide, and
+ * every authenticated attempt is charged — invalid input, replays, refusals,
+ * and the throttled attempts themselves. One scenario retunes it through
+ * `EDGE_JOBS_LIMITS` on both gateways and restores the defaults. Each scenario gets
  * its own app, every burst checks the deployment-wide window's room first, and
  * a window's reset instant is compared against the platform database's own
  * `now()` — the counters live in its `rate_counters` table, and the test
@@ -71,8 +73,8 @@ let platformDb: Pool;
 /** Every Idempotency-Key the suite has ever sent — the final privacy scan's population. */
 const usedKeys = new Set<string>();
 
-type AppKey = "throttle" | "contend" | "lowered" | "retained";
-const APP_KEYS: readonly AppKey[] = ["throttle", "contend", "lowered", "retained"];
+type AppKey = "throttle" | "tuned" | "contend" | "lowered" | "retained";
+const APP_KEYS: readonly AppKey[] = ["throttle", "tuned", "contend", "lowered", "retained"];
 
 const apps = {} as Record<AppKey, { app: App; slug: string }>;
 const sessions = {} as Record<AppKey, AppSession>;
@@ -96,7 +98,8 @@ const SUBMIT_PATH = "/_api/jobs/jobs/types/diagnostic";
 const statusPath = (jobId: string): string => `/_api/jobs/jobs/${jobId}`;
 const resultPath = (jobId: string): string => `/_api/jobs/jobs/${jobId}/result`;
 
-type ApiClient = AppSession;
+/** An app session on the edge or a dev-token client on the dev gateway. */
+type ApiClient = Pick<DevClient, "api">;
 
 const newKey = (): string => `cap-${randomUUID()}`;
 
@@ -593,6 +596,115 @@ describe("the submission throttle", () => {
         await appRecordCount(appId),
         "the store holds the seven jobs plus the refused key's retry",
       ).toBe(8);
+    },
+  );
+});
+
+describe("operator-tuned submission limits", () => {
+  test(
+    "EDGE_JOBS_LIMITS retunes the edge's shared windows and the dev gateway's own throttle, dev submissions never touch the deployment-wide window, and a bad value stops both boots naming the key",
+    { timeout: 300_000 },
+    async () => {
+      const session = sessions.tuned;
+      const appId = apps.tuned.app.id;
+      const tuned = { submissionAttemptsPerAppEnv: 3, submissionWindowSeconds: 20 };
+
+      // A value the shared schema refuses stops each gateway at boot, naming
+      // the variable without echoing what it was set to.
+      const sentinel = `sentinel-${randomBytes(4).toString("hex")}`;
+      for (const name of ["edge", "devGateway"] as const) {
+        await stack.stop(name);
+        stack.setServiceEnv(name, {
+          EDGE_JOBS_LIMITS: JSON.stringify({ submissionWindowSeconds: sentinel }),
+        });
+        const boot = await stack.startExpectingExit(name, 30_000);
+        expect(boot.exitCode, `${name}: the refused boot exits non-zero`).not.toBe(0);
+        expect(boot.exitCode, `${name}: the process exited, it was not killed`).not.toBeNull();
+        expect(boot.output, `${name}: the error names EDGE_JOBS_LIMITS`).toContain(
+          "EDGE_JOBS_LIMITS",
+        );
+        expect(boot.output, `${name}: the refused value is not echoed`).not.toContain(sentinel);
+      }
+
+      for (const name of ["edge", "devGateway"] as const) {
+        stack.setServiceEnv(name, { EDGE_JOBS_LIMITS: JSON.stringify(tuned) });
+        await stack.start(name);
+      }
+
+      try {
+        // The edge: the tuned per-app window admits three and refuses the fourth.
+        await ensureDeploymentHeadroom(5);
+        for (let i = 0; i < tuned.submissionAttemptsPerAppEnv; i++) {
+          const reply = await submitInput(session, SHORT, newKey());
+          expect(
+            reply.status,
+            `edge submission ${i + 1} under the tuned window: ${reply.text}`,
+          ).toBe(202);
+        }
+        const edgeRefused = await submitInput(session, SHORT, newKey());
+        expect(edgeRefused.status, `the fourth edge attempt: ${edgeRefused.text}`).toBe(429);
+        expect(parseErrorCode(edgeRefused), "the fourth edge attempt's code").toBe("rate_limited");
+        const edgeBucket = must(await readBucket(appBucketKey(appId)), "the tuned app bucket");
+        expect(edgeBucket.count, "four attempts charged to the shared counter").toBe(4);
+        expect(
+          await appRecordCount(appId),
+          "only the admitted edge attempts reached the store",
+        ).toBe(3);
+
+        // The dev gateway: the same tuned per-app limit, counted in its own
+        // memory. The edge's shared deployment-wide row is untouched by it.
+        const deploymentBefore = await readBucket(DEPLOYMENT_BUCKET_KEY);
+        const minted = await bob.post(`/api/v1/apps/${apps.tuned.slug}/dev-tokens`, {
+          origins: ["http://localhost:5199"],
+        });
+        expect(minted.status, "the dev token mint").toBe(201);
+        const devToken = (minted.json() as { token: string }).token;
+        const dev = stack.devClient(apps.tuned.slug, devToken, "http://localhost:5199");
+        for (let i = 0; i < tuned.submissionAttemptsPerAppEnv; i++) {
+          const reply = await submitInput(dev, SHORT, newKey());
+          expect(
+            reply.status,
+            `dev submission ${i + 1} under the tuned window: ${reply.text}`,
+          ).toBe(202);
+        }
+        const devRefused = await submitInput(dev, SHORT, newKey());
+        expect(devRefused.status, `the fourth dev attempt: ${devRefused.text}`).toBe(429);
+        expect(parseErrorCode(devRefused), "the fourth dev attempt's code").toBe("rate_limited");
+        expect(
+          await appRecordCount(appId),
+          "the admitted dev attempts reached the store as real jobs",
+        ).toBe(6);
+        expect(
+          await readBucket(DEPLOYMENT_BUCKET_KEY),
+          "dev submissions never count toward the edge's deployment-wide window",
+        ).toEqual(deploymentBefore);
+        expect(
+          await readBucket(`jobs:submit:app:dev:${appId}`),
+          "the dev tier writes no shared counter row",
+        ).toBeNull();
+
+        // The tuned 20-second window rolls well before the default 60 would.
+        await waitFor(
+          stack,
+          "the tuned 20-second app window to reset",
+          { timeoutMs: (tuned.submissionWindowSeconds + 10) * 1_000 },
+          async () => {
+            const bucket = await readBucket(appBucketKey(appId));
+            return bucket === null || bucket.resetAtPassed ? true : undefined;
+          },
+        );
+        await ensureDeploymentHeadroom(1);
+        const afterReset = await submitInput(session, SHORT, newKey());
+        expect(
+          afterReset.status,
+          `the edge attempt after the tuned reset: ${afterReset.text}`,
+        ).toBe(202);
+      } finally {
+        for (const name of ["edge", "devGateway"] as const) {
+          stack.setServiceEnv(name, null);
+          await stack.restart(name);
+        }
+      }
     },
   );
 });

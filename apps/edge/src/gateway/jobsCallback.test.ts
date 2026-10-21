@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { request as undiciRequest } from "undici";
-import { INSTRUCTION_HEADER, type JobRequestError } from "@azx-pbc/shared";
+import { INSTRUCTION_HEADER, JOBS_CAPACITY_DEFAULTS, type JobRequestError } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey, mintJobsInstruction } from "@azx-pbc/shared/jobsSigning";
 import {
   ATTR_OUTCOME,
@@ -126,6 +126,7 @@ function buildCallbackEdge(
         },
         timeoutMs: 30_000,
         refuseDiagnosticTypes: false,
+        submissionLimits: JOBS_CAPACITY_DEFAULTS,
       },
     }),
     registry: new FakeRegistry([
@@ -647,6 +648,7 @@ describe("POST /internal/jobs/v1/fetch — instructions that cannot dispatch", (
           },
           timeoutMs: 30_000,
           refuseDiagnosticTypes: false,
+          submissionLimits: JOBS_CAPACITY_DEFAULTS,
         },
       }),
       registry: new FakeRegistry([
@@ -923,6 +925,7 @@ function buildDevCallbackEdge(): CallbackHarness & { devKey: Uint8Array } {
         },
         timeoutMs: 30_000,
         refuseDiagnosticTypes: false,
+        submissionLimits: JOBS_CAPACITY_DEFAULTS,
       },
     }),
     registry: new FakeRegistry([

@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
 import type { FastifyInstance } from "fastify";
 
-import { JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
+import { JOBS_CAPACITY_DEFAULTS, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
 
 import { JobsExecutionError, type JobsExecutionContext } from "./execution.js";
 import { JOBS_FETCH_OUTBOUND_TIMEOUT_MS, makeFetchJobHandler } from "./fetchJob.js";
@@ -105,6 +105,7 @@ function buildEdge(
         },
         timeoutMs: 30_000,
         refuseDiagnosticTypes: false,
+        submissionLimits: JOBS_CAPACITY_DEFAULTS,
       },
     }),
     registry: new FakeRegistry([

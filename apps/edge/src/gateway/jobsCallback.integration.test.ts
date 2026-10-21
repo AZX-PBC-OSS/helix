@@ -4,7 +4,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import type { FastifyInstance } from "fastify";
 
-import { INSTRUCTION_HEADER } from "@azx-pbc/shared";
+import { INSTRUCTION_HEADER, JOBS_CAPACITY_DEFAULTS } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey, mintJobsInstruction } from "@azx-pbc/shared/jobsSigning";
 
 import { TEST_DATABASE_URL } from "../test/seed.js";
@@ -121,6 +121,7 @@ function callbackJobsConfig() {
     },
     timeoutMs: 30_000,
     refuseDiagnosticTypes: false,
+    submissionLimits: JOBS_CAPACITY_DEFAULTS,
   };
 }
 

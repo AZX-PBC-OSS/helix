@@ -85,11 +85,13 @@ describe("JobsSubmissionThrottle", () => {
     expect(await t.consume("app-a", "prod")).toBe(false);
   });
 
-  it("defaults to the platform's capacity defaults when no limits are handed in", async () => {
-    // The composition builds the throttle with no explicit limits: the window
-    // that takes effect is the shared one (10 per app/env), not a local copy
-    // that could drift from the deployment schema's defaults.
-    const t = new JobsSubmissionThrottle(new InMemoryCounterStore());
+  it("applies the platform's capacity defaults when constructed with them", async () => {
+    // The composition builds the throttle with the config-resolved limits —
+    // the platform defaults when no override is configured. Constructing with
+    // the shared defaults explicitly pins that the window that takes effect
+    // is the shared one (10 per app/env), not a local copy that could drift
+    // from the deployment schema's defaults.
+    const t = new JobsSubmissionThrottle(new InMemoryCounterStore(), JOBS_CAPACITY_DEFAULTS);
     for (let i = 0; i < JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv; i += 1) {
       expect(await t.consume("app-a", "prod")).toBe(true);
     }

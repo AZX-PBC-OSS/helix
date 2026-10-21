@@ -196,7 +196,10 @@ const loginThrottle = new LoginThrottle(counterStore);
 // counter store — namespaced keys, one store, so the per-app/environment and
 // deployment-wide windows hold across the horizontally-scaled edge fleet, and
 // the one sweep below GCs these rows too.
-const jobsSubmissionThrottle = new JobsSubmissionThrottle(counterStore);
+const jobsSubmissionThrottle = new JobsSubmissionThrottle(
+  counterStore,
+  config.jobs.submissionLimits,
+);
 
 // The jobs-callback nonce burn store (background-jobs-plane design §3): this
 // edge's replay memory for signed jobs→edge callback instructions, in its own

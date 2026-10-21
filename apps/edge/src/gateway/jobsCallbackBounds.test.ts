@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { connect } from "node:net";
 import { describe, expect, it } from "vitest";
-import { INSTRUCTION_HEADER, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
+import { INSTRUCTION_HEADER, JOBS_CAPACITY_DEFAULTS, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey, mintJobsInstruction } from "@azx-pbc/shared/jobsSigning";
 import { ROUTE_JOBS_FETCH } from "@azx-pbc/shared/telemetry";
 import {
@@ -74,6 +74,7 @@ function buildCallbackEdge() {
         },
         timeoutMs: 30_000,
         refuseDiagnosticTypes: false,
+        submissionLimits: JOBS_CAPACITY_DEFAULTS,
       },
     }),
     registry: new FakeRegistry([

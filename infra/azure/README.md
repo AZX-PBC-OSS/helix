@@ -502,6 +502,13 @@ kv-platform and the jobs migrate job.
   own output would be a dependency cycle with its callbacks). After an apply,
   the `jobsEndpoint` output must equal `https://` + the `jobsFqdn` output; the
   edge's `jobs_reachability` health check reports a mismatch as unreachable.
+- **Capacity limits are the platform defaults.** The template sets neither
+  `JOBS_LIMITS` (the jobs service's capacity controls) nor `EDGE_JOBS_LIMITS`
+  (the edge's and dev gateway's submission throttle), so a deployed plane runs
+  the defaults in `apps/jobs/README.md` and `apps/edge/README.md`. To tune one
+  after sizing, add it as a plain environment entry on that container app in
+  `main.bicep`; neither carries a secret. Set `EDGE_JOBS_LIMITS` on the edge
+  and the dev gateway together: each process reads its own copy.
 - **Serving, closed, retiring, disabled.** `jobsServerState` is `serving` by
   default. `jobsIntakeOpen=false` keeps a serving server advertised but closes
   its intake: the jobs service gets `JOBS_ACCEPTING=false` and refuses new

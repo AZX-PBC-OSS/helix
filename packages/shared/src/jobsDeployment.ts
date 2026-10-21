@@ -118,6 +118,22 @@ export const JobsCapacityOverridesSchema = RawInputKeyScreen.pipe(CapacityOverri
 export type JobsCapacityOverrides = z.infer<typeof JobsCapacityOverridesSchema>;
 
 /**
+ * The edge's submission-throttle overrides (`EDGE_JOBS_LIMITS`): the three
+ * capacity controls the edge's own submission throttle enforces — the two
+ * attempt windows and their fixed window length. The remaining controls are
+ * the jobs service's, tuned by `JOBS_LIMITS` on that service; this schema
+ * refuses a jobs-owned key (e.g. `unfinishedPerAppEnv`) so one operator
+ * document cannot silently claim to tune a plane that never reads it.
+ */
+const SubmissionOverridesObject = CapacityLimitsObject.pick({
+  submissionAttemptsPerAppEnv: true,
+  submissionAttemptsDeployment: true,
+  submissionWindowSeconds: true,
+}).partial();
+export const JobsSubmissionOverridesSchema = RawInputKeyScreen.pipe(SubmissionOverridesObject);
+export type JobsSubmissionOverrides = z.infer<typeof JobsSubmissionOverridesSchema>;
+
+/**
  * The platform's initial capacity defaults — design §4's table, verbatim.
  * These are fairness and resource-protection controls, not entitlements:
  * manifests, inputs and approvals cannot change them, and operator overrides

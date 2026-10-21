@@ -3,9 +3,12 @@ import { z } from "zod";
 import {
   JobServerIdSchema,
   JobsInternalUrlSchema,
+  JobsSubmissionOverridesSchema,
   isValidJobsRootSecret,
+  resolveJobsCapacityLimits,
   strictWireObject,
   strictWireRecord,
+  type JobsCapacityLimits,
 } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./db/pool.js";
@@ -307,6 +310,15 @@ export interface EdgeJobsConfig {
    * instruction's grants — the non-production type never crosses this plane.
    */
   refuseDiagnosticTypes: boolean;
+  /**
+   * The resolved submission-throttle limits: the platform defaults with the
+   * optional `EDGE_JOBS_LIMITS` override applied. Only the three controls the
+   * edge's own throttle enforces are representable — the jobs service's
+   * remaining controls are tuned by `JOBS_LIMITS` there. Resolved in both the
+   * enabled and disabled branches of {@link loadEdgeJobsConfig}, so a bad
+   * value fails the boot even with no job servers configured.
+   */
+  submissionLimits: JobsCapacityLimits;
 }
 
 // The entry is a `strictWireObject`, not a bare z.strictObject: zod's strict
@@ -344,6 +356,40 @@ const EdgeJobsConfigDocumentSchema = strictWireObject({
 });
 
 /**
+ * Resolve the submission-throttle limits: the shared platform defaults, with
+ * this deployment's optional `EDGE_JOBS_LIMITS` override (the JSON form of the
+ * shared submission-override schema) applied through the one shared resolver.
+ * Absent or blank means the defaults unchanged; anything present that does not
+ * parse as a submission override — a jobs-owned control, an unknown key,
+ * zero, negative, non-finite, past the ceiling — is an explicit startup
+ * error, never a silently partial tuning.
+ */
+function loadSubmissionLimits(env: NodeJS.ProcessEnv): JobsCapacityLimits {
+  const raw = env.EDGE_JOBS_LIMITS;
+  if (raw === undefined || raw.trim() === "") {
+    return resolveJobsCapacityLimits();
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    // The cause rides along for whoever inspects it, but never into a
+    // default-rendered message: a parse error quotes fragments of the value,
+    // and the operator needs the key, not the quote.
+    throw new Error("EDGE_JOBS_LIMITS must be a JSON object of submission-limit overrides", {
+      cause: error,
+    });
+  }
+  const verdict = JobsSubmissionOverridesSchema.safeParse(parsed);
+  if (!verdict.success) {
+    throw new Error(
+      `EDGE_JOBS_LIMITS is not a valid submission-limit override — ${z.prettifyError(verdict.error)}`,
+    );
+  }
+  return resolveJobsCapacityLimits(verdict.data);
+}
+
+/**
  * Parse the jobs forwarding configuration from the environment. Absent or
  * blank means fully disabled (empty map) — the routes answer 503 and ordinary
  * hosting needs no jobs configuration. A present document must parse whole:
@@ -354,9 +400,18 @@ const EdgeJobsConfigDocumentSchema = strictWireObject({
  */
 export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
   const refuseDiagnosticTypes = env.NODE_ENV === "production";
+  // The submission limits resolve in BOTH branches — a bad EDGE_JOBS_LIMITS
+  // must fail the boot even when no job servers are configured, the same
+  // posture as a bad EDGE_JOBS_TIMEOUT_MS.
+  const submissionLimits = loadSubmissionLimits(env);
   const raw = env.EDGE_JOBS_CONFIG;
   if (raw === undefined || raw.trim() === "") {
-    return { servers: {}, timeoutMs: DEFAULT_JOBS_FORWARD_TIMEOUT_MS, refuseDiagnosticTypes };
+    return {
+      servers: {},
+      timeoutMs: DEFAULT_JOBS_FORWARD_TIMEOUT_MS,
+      refuseDiagnosticTypes,
+      submissionLimits,
+    };
   }
   let document: unknown;
   try {
@@ -385,6 +440,7 @@ export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
       "EDGE_JOBS_TIMEOUT_MS",
     ),
     refuseDiagnosticTypes,
+    submissionLimits,
   };
 }
 

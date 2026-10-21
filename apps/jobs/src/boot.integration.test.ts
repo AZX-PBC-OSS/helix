@@ -13,6 +13,7 @@ import {
   IDEMPOTENCY_KEY_HEADER,
   INSTRUCTION_HEADER,
   JOBS_CAPACITY_CHECK,
+  JOBS_CAPACITY_DEFAULTS,
   JOBS_CLEANUP_CHECK,
   JOBS_DATABASE_CHECK,
   JOBS_LIFECYCLE_RECOVERY_CHECK,
@@ -1115,6 +1116,7 @@ describe("signed instructions through the running process", () => {
             },
             timeoutMs: 30_000,
             refuseDiagnosticTypes: false,
+            submissionLimits: JOBS_CAPACITY_DEFAULTS,
           },
         }),
         registry: new FakeRegistry([

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
-import { INSTRUCTION_HEADER } from "@azx-pbc/shared";
+import { INSTRUCTION_HEADER, JOBS_CAPACITY_DEFAULTS } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey, signJobsInstructionClaims } from "@azx-pbc/shared/jobsSigning";
 import {
   JOBS_GOLDEN_TOKEN_VECTORS,
@@ -103,6 +103,7 @@ function receiverJobsConfig(server: string, keyId: string) {
     },
     timeoutMs: 30_000,
     refuseDiagnosticTypes: false,
+    submissionLimits: JOBS_CAPACITY_DEFAULTS,
   };
 }
 

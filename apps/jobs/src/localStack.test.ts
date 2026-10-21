@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   JobsDeploymentConfigSchema,
+  JOBS_CAPACITY_DEFAULTS,
   JOBS_DIAGNOSTIC_QUALIFIED_TYPE,
   advertisedJobTypes,
   jobsCatalogueServers,
@@ -600,6 +601,68 @@ describe("the local stack's jobs plane (scripts/stack-env.mjs)", () => {
       expect(disabledJobs.JOBS_DIAGNOSTICS).toBeUndefined();
     });
   });
+
+  describe("the HELIX_JOBS_SUBMISSION_LIMITS knob", () => {
+    it("the default resolution emits no EDGE_JOBS_LIMITS", () => {
+      expect(minted.EDGE_JOBS_LIMITS).toBeUndefined();
+    });
+
+    it("a set knob is emitted as EDGE_JOBS_LIMITS, changes no other key, and resolves through the edge's loader", () => {
+      const tuned = stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+        ...CHILD_ENV,
+        HELIX_JOBS_SUBMISSION_LIMITS: '{"submissionAttemptsDeployment":7}',
+      });
+      expect(tuned.EDGE_JOBS_LIMITS).toBe('{"submissionAttemptsDeployment":7}');
+      // The knob changes ONLY its own emitted key: the edge and portal
+      // documents are byte-identical to the default resolution's.
+      for (const [key, value] of Object.entries(minted)) {
+        expect(tuned[key], `${key} must not change with the knob`).toBe(value);
+      }
+      // The edge's (and, sharing the parse, the dev-gateway's) own boot
+      // resolves the emitted override over the platform defaults.
+      const edge = loadEdgeJobsConfig(tuned);
+      expect(edge.submissionLimits.submissionAttemptsDeployment).toBe(7);
+      expect(edge.submissionLimits.submissionAttemptsPerAppEnv).toBe(
+        JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv,
+      );
+    });
+
+    it("a value that is not a JSON object refuses the resolution, naming the knob", () => {
+      for (const bad of ["{not json", "[]", "5", "null"]) {
+        expect(
+          () =>
+            stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+              ...CHILD_ENV,
+              HELIX_JOBS_SUBMISSION_LIMITS: bad,
+            }),
+          bad,
+        ).toThrow(
+          /HELIX_JOBS_SUBMISSION_LIMITS must be a JSON object of submission-limit overrides/,
+        );
+      }
+    });
+
+    it("a disabled jobs plane emits nothing but still validates the knob", () => {
+      const disabled = stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+        ...CHILD_ENV,
+        HELIX_JOBS_ENABLED: "0",
+        HELIX_JOBS_SUBMISSION_LIMITS: '{"submissionAttemptsDeployment":7}',
+      });
+      for (const key of JOBS_KEYS) {
+        expect(disabled[key]).toBeUndefined();
+      }
+      expect(disabled.EDGE_JOBS_LIMITS).toBeUndefined();
+      // The validation holds on the disabled arm too — the typo posture.
+      expect(() =>
+        stackEnv(["--env", "--offset", String(OFFSET), "--suffix", SUFFIX], {
+          ...CHILD_ENV,
+          HELIX_JOBS_ENABLED: "0",
+          HELIX_JOBS_SUBMISSION_LIMITS: "{not json",
+        }),
+      ).toThrow(/HELIX_JOBS_SUBMISSION_LIMITS must be a JSON object of submission-limit overrides/);
+    });
+  });
+
   it("the developer stack (offset 0) is left exactly as configured", () => {
     const dev = stackEnv(["--env", "--offset", "0"]);
     expect(dev).toEqual({});

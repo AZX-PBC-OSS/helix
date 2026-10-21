@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { HealthCheck } from "@azx-pbc/shared";
-import { JOBS_REACHABILITY_CHECK } from "@azx-pbc/shared";
+import { JOBS_CAPACITY_DEFAULTS, JOBS_REACHABILITY_CHECK } from "@azx-pbc/shared";
 import { buildApp } from "./app.js";
 import type { EdgeConfig } from "./config.js";
 import { FakeBlobReader, FakeRegistry, registryEntry } from "./test/fakes.js";
@@ -54,7 +54,12 @@ function testConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig {
     },
     internalSecret: null,
     portalUrl: null,
-    jobs: { servers: {}, timeoutMs: 30_000, refuseDiagnosticTypes: false },
+    jobs: {
+      servers: {},
+      timeoutMs: 30_000,
+      refuseDiagnosticTypes: false,
+      submissionLimits: JOBS_CAPACITY_DEFAULTS,
+    },
     ...overrides,
   };
 }
@@ -163,6 +168,7 @@ describe("platform hosts", () => {
           },
           timeoutMs: 30_000,
           refuseDiagnosticTypes: false,
+          submissionLimits: JOBS_CAPACITY_DEFAULTS,
         },
       }),
       registry: new FakeRegistry([

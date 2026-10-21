@@ -1,5 +1,5 @@
 import type { Env } from "@azx-pbc/shared";
-import { resolveJobsCapacityLimits, type JobsCapacityLimits } from "@azx-pbc/shared";
+import type { JobsCapacityLimits } from "@azx-pbc/shared";
 import type { CounterStore } from "./counterStore.js";
 
 /**
@@ -8,7 +8,10 @@ import type { CounterStore } from "./counterStore.js";
  *
  *  - per app/environment (`submissionAttemptsPerAppEnv`, default 10), and
  *  - one deployment-wide aggregate (`submissionAttemptsDeployment`, default 100)
- *    shared across serving replicas, environments and every configured server.
+ *    shared across serving edge replicas and every configured server.
+ *
+ * Operators tune both windows and their length through `EDGE_JOBS_LIMITS`;
+ * the composition passes the resolved limits in, so there is no default here.
  *
  * A buggy client must not multiply its allowance: the bucket keys carry **no
  * server id and no type** — another server prefix (or a type rename) adds no
@@ -18,16 +21,18 @@ import type { CounterStore } from "./counterStore.js";
  * until the window rolls; adjacent-window bursts are the fixed-window
  * counter's own contract, not this class's.
  *
- * The store is the shared {@link CounterStore} primitive — Postgres-backed in
- * production so the limit holds across the edge fleet (issue #13's shape), in
- * memory for single-process tests and dev. Status/result/cancel never touch
- * these buckets: they keep their ordinary request controls.
+ * The store is the shared {@link CounterStore} primitive — Postgres-backed on
+ * the edge so the limit holds across the edge fleet (issue #13's shape), in
+ * memory for tests and for the dev gateway. The dev gateway's role has no
+ * grant on the shared counter table, so its dev-tier windows are its own and
+ * never count toward the edge's deployment-wide window. Status/result/cancel
+ * never touch these buckets: they keep their ordinary request controls.
  */
 export class JobsSubmissionThrottle {
   readonly #limits: JobsCapacityLimits;
   readonly #store: CounterStore;
 
-  constructor(store: CounterStore, limits: JobsCapacityLimits = resolveJobsCapacityLimits()) {
+  constructor(store: CounterStore, limits: JobsCapacityLimits) {
     this.#limits = limits;
     this.#store = store;
   }

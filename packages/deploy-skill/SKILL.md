@@ -660,8 +660,9 @@ stays, marked "not offered on this deployment".
 <!-- IF:DEV_API -->
 **On the dev gateway** (§5), the same four operations live under
 `{{DEV_API_BASE}}/<slug>/_api/jobs/…` with the dev bearer token. Dev jobs are a
-separate `dev` partition that production cannot see. A `401` there means the
-token expired or was revoked: mint a new one.
+separate `dev` partition that production cannot see. The dev gateway counts dev
+submissions itself, so they never use up production's submission allowance. A
+`401` there means the token expired or was revoked: mint a new one.
 <!-- /IF:DEV_API -->
 
 The [Background jobs guide]({{JOBS_GUIDE_URL}}) is the full contract: every

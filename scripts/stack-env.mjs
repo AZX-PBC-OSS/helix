@@ -15,7 +15,10 @@
 // (serving|retiring) and HELIX_JOBS_ACCEPTING (1/true|0/false) set the server's
 // state and intake; a retiring server always has closed intake.
 // HELIX_JOBS_DIAGNOSTICS=1|true opts a non-production stack into the diagnostic
-// job type; off by default.
+// job type; off by default. HELIX_JOBS_SUBMISSION_LIMITS=<json> is an operator
+// override of the submission-throttle limits the edge (and dev-gateway) enforce,
+// emitted verbatim as EDGE_JOBS_LIMITS; a value that is not a JSON object
+// refuses the resolution, like a typo'd toggle.
 //
 // Usage:
 //   node scripts/stack-env.mjs --ports
@@ -108,6 +111,34 @@ function jobsDiagnosticsEnabled(env) {
 }
 
 /**
+ * HELIX_JOBS_SUBMISSION_LIMITS: an optional JSON object of submission-throttle
+ * overrides, passed through (trimmed) as the consumers' EDGE_JOBS_LIMITS. The
+ * per-control validation is the edge's own boot parse — this only holds the
+ * JSON-object shape, and the parse error never quotes the value, whose
+ * fragments could carry material the operator did not mean to echo. Validated
+ * even where it emits nothing — a typo must refuse the resolution, never read
+ * as "the defaults".
+ */
+function jobsSubmissionLimits(env) {
+  const raw = env.HELIX_JOBS_SUBMISSION_LIMITS;
+  if (raw === undefined || raw.trim() === "") return undefined;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      "HELIX_JOBS_SUBMISSION_LIMITS must be a JSON object of submission-limit overrides",
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(
+      "HELIX_JOBS_SUBMISSION_LIMITS must be a JSON object of submission-limit overrides",
+    );
+  }
+  return raw.trim();
+}
+
+/**
  * HELIX_JOBS_STATE and HELIX_JOBS_ACCEPTING: the server's state (unset ⇒
  * serving) and its intake (unset ⇒ open while serving, closed while
  * retiring). A retiring server never admits new work, so an explicit open
@@ -159,7 +190,10 @@ function jobsServerPosture(env) {
 function resolveJobsPlane({ offset, suffix, baseDomain, ports, env }) {
   // The diagnostics knob is validated even when it emits nothing (a disabled
   // jobs plane, a zero offset): the same loud-typo posture as jobsEnabled.
+  // The submission-limits override is validated the same way, and both hold
+  // before the disabled arm can silently ignore a set knob.
   const diagnostics = jobsDiagnosticsEnabled(env);
+  const submissionLimits = jobsSubmissionLimits(env);
   if (offset === 0 || !jobsEnabled(env)) return { enabled: false, env: {} };
   const posture = jobsServerPosture(env);
 
@@ -250,6 +284,11 @@ function resolveJobsPlane({ offset, suffix, baseDomain, ports, env }) {
       // Present only when the stack opted in: the jobs service's own knob,
       // refused outright by a production boot (config.ts).
       ...(diagnostics ? { JOBS_DIAGNOSTICS: "true" } : {}),
+      // Present only when the operator set the knob: the edge's and the
+      // dev-gateway's shared submission-limits override. Both processes read
+      // the shared stack env, so one emitted key covers both; the raw text
+      // rides verbatim and each boot parse owns its per-control refusals.
+      ...(submissionLimits !== undefined ? { EDGE_JOBS_LIMITS: submissionLimits } : {}),
       ...(runtimeDsn ? { JOBS_DATABASE_URL: runtimeDsn } : {}),
       JOBS_EDGE_TO_JOBS_SECRET: roots.edgeToJobs,
       JOBS_PORTAL_TO_JOBS_SECRET: roots.portalToJobs,

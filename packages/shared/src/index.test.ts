@@ -67,6 +67,7 @@ describe("the shared barrel", () => {
       "JobsServerEntrySchema",
       "JobsCapacityLimitsSchema",
       "JobsCapacityOverridesSchema",
+      "JobsSubmissionOverridesSchema",
       "JOBS_CAPACITY_DEFAULTS",
       "resolveJobsCapacityLimits",
       "isJobsFullyDisabled",

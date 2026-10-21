@@ -218,7 +218,10 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     resolveCaller,
     checkOrigin,
     forwarder: deps.jobsForwarder,
-    submissionThrottle: new JobsSubmissionThrottle(new InMemoryCounterStore()),
+    submissionThrottle: new JobsSubmissionThrottle(
+      new InMemoryCounterStore(),
+      config.jobs.submissionLimits,
+    ),
     denialThrottle: new DenialThrottle(new InMemoryCounterStore(), {
       keyPrefix: "jobs-denial:",
     }),

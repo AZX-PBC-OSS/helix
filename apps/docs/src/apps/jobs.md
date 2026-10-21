@@ -297,11 +297,13 @@ never treat a session error as a failed job.
 
 Your app cannot change these limits.
 
-- **Submission rate.** 10 submission attempts per minute for each app and
-  environment, shared by all of the app's users, plus a limit across the
-  whole deployment. Every attempt counts, including keyed retries, refused
-  input, and attempts that fail, and nothing is refunded. Status, result,
-  and cancel requests do not count.
+- **Submission rate.** By default, 10 submission attempts per minute for
+  each app and environment, shared by all of the app's users, plus a limit
+  across the whole deployment for production submissions. The operator can
+  change these numbers. Every attempt counts, including keyed retries,
+  refused input, and attempts that fail, and nothing is refunded. Status,
+  result, and cancel requests do not count. Submissions through the
+  [dev gateway](#developing-with-the-dev-gateway) are counted separately.
 - **Capacity.** The jobs service limits how many unfinished jobs and how many
   stored jobs each app and environment can have. Finished jobs occupy stored
   capacity until their records are removed. The operator sets these limits.
@@ -550,6 +552,10 @@ same retry key in each environment creates two separate jobs. Both
 environments use the same grant from the app's manifest, so a missing grant
 shows up in development too. A dev job's outbound call injects only
 dev-tier connection secrets, never production ones.
+
+The dev gateway counts dev submissions itself, with the same per-minute
+limits. Dev submissions do not count toward the deployment-wide limit, so
+heavy development traffic cannot use up production's allowance.
 
 To adapt the client above, prefix each path with the dev gateway base and
 add the `Authorization` header. The session handling does not apply: an

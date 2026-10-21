@@ -255,11 +255,15 @@ before anything is forwarded, refusals do not move the window's end, the
 ledger keeps at most the 20-row denial budget of refusal rows, and the refused
 key is accepted as new work after the window resets.
 
-The edge's submission throttle has no operator override: the edge always uses
-the shared defaults (10 per app/environment and 100 deployment-wide per 60 s),
-and `EDGE_JOBS_CONFIG` refuses a `limits` field. The dev gateway counts its
-own submissions in memory, so its windows are not shared with the edge's
-deployment-wide window.
+The edge's submission throttle defaults to 10 attempts per app/environment
+and 100 deployment-wide per 60 s. The edge's own `EDGE_JOBS_LIMITS` overrides
+those three controls (`submissionAttemptsPerAppEnv`,
+`submissionAttemptsDeployment`, `submissionWindowSeconds`); see
+`apps/edge/README.md`. `EDGE_JOBS_CONFIG` still refuses a `limits` field,
+because that document is a secret carrying signing roots. The dev gateway
+reads the same `EDGE_JOBS_LIMITS` but counts its submissions in its own
+memory: the `helix_dev` role has no grant on the shared counter table, so dev
+submissions never count toward the edge's deployment-wide window.
 
 The limits are the shared platform defaults (`JOBS_CAPACITY_DEFAULTS`) with
 this deployment's optional `JOBS_LIMITS` override applied — the JSON form of

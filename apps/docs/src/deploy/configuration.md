@@ -211,6 +211,21 @@ parameter:
 | `EDGE_FETCH_MAX_BODY_BYTES` | edge, dev-gateway | `fetchMaxBodyMb` × 1 MiB | 10 MiB |
 | `EGRESS_MAX_BODY_BYTES` | egress | `fetchMaxBodyMb` × 1 MiB | 10 MiB |
 
+Background-jobs capacity runs on the platform defaults. The template sets
+neither of these, so tuning one after sizing means adding it to that
+container app in `main.bicep`:
+
+| Variable | App(s) | Tunes | If absent |
+| --- | --- | --- | --- |
+| `EDGE_JOBS_LIMITS` | edge, dev-gateway | Submission attempts per app and environment, across the deployment, and the window length, as JSON: `{"submissionAttemptsPerAppEnv":10,"submissionAttemptsDeployment":100,"submissionWindowSeconds":60}` | Those defaults |
+| `JOBS_LIMITS` | jobs | Unfinished, retained and running jobs, as JSON | The defaults in the jobs service's README |
+
+Each value must be a positive whole number. An unknown key or a bad value
+stops the service at boot with the variable named. The edge counts its
+windows across all edge replicas. The dev gateway counts development
+submissions in each replica's own memory, so each replica allows the full
+limits and development traffic never uses up the production window.
+
 The portal image also carries one setting for the app owner's Visitors view:
 
 | Variable | Set from | If absent |

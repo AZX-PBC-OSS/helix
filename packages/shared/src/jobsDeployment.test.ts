@@ -10,6 +10,7 @@ import {
   JOBS_CAPACITY_DEFAULTS,
   JOBS_CAPACITY_LIMIT_MAX,
   JobsCapacityLimitsSchema,
+  JobsSubmissionOverridesSchema,
   JobsDeploymentConfigSchema,
   JobsCatalogueServersSchema,
   type JobsCapacityOverrides,
@@ -197,6 +198,54 @@ describe("capacity defaults", () => {
       unfinishedPerAppEnv: 40,
       runningPerWorker: 4,
     });
+  });
+});
+
+describe("JobsSubmissionOverridesSchema", () => {
+  it("accepts each of the three controls the edge's submission throttle enforces", () => {
+    expect(JobsSubmissionOverridesSchema.safeParse({}).success).toBe(true);
+    expect(
+      JobsSubmissionOverridesSchema.safeParse({ submissionAttemptsPerAppEnv: 5 }).success,
+    ).toBe(true);
+    expect(
+      JobsSubmissionOverridesSchema.safeParse({ submissionAttemptsDeployment: 7 }).success,
+    ).toBe(true);
+    expect(JobsSubmissionOverridesSchema.safeParse({ submissionWindowSeconds: 30 }).success).toBe(
+      true,
+    );
+  });
+
+  it("refuses a jobs-owned control, an unknown key, and a hostile __proto__ key", () => {
+    // The jobs service's own controls are tuned by JOBS_LIMITS on that service;
+    // an override document naming one here is a mistake that must be visible.
+    expect(JobsSubmissionOverridesSchema.safeParse({ unfinishedPerAppEnv: 40 }).success).toBe(
+      false,
+    );
+    expect(JobsSubmissionOverridesSchema.safeParse({ jobsPerDay: 500 }).success).toBe(false);
+    expect(JobsSubmissionOverridesSchema.safeParse(JSON.parse('{"__proto__":5}')).success).toBe(
+      false,
+    );
+  });
+
+  it("refuses zero, negative, non-integer, a string, and a value above the ceiling", () => {
+    for (const bad of [0, -1, 1.5, "10"]) {
+      expect(
+        JobsSubmissionOverridesSchema.safeParse({ submissionAttemptsPerAppEnv: bad }).success,
+        String(bad),
+      ).toBe(false);
+    }
+    expect(
+      JobsSubmissionOverridesSchema.safeParse({
+        submissionAttemptsDeployment: JOBS_CAPACITY_LIMIT_MAX + 1,
+      }).success,
+    ).toBe(false);
+    // The ceiling itself stays acceptable — the bound is where "unbounded"
+    // becomes decidable, not a value below it.
+    expect(
+      JobsSubmissionOverridesSchema.safeParse({
+        submissionAttemptsDeployment: JOBS_CAPACITY_LIMIT_MAX,
+      }).success,
+    ).toBe(true);
   });
 });
 

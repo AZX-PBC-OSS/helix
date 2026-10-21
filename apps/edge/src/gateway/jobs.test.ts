@@ -767,7 +767,10 @@ describe("the submission buckets and the recorded requests", () => {
     // One throttle shared by BOTH builds, keyed on the same app and env: if
     // the disabled 503 consumed anything, the enabled build's window would be
     // short by one.
-    const sharedThrottle = new JobsSubmissionThrottle(new InMemoryCounterStore());
+    const sharedThrottle = new JobsSubmissionThrottle(
+      new InMemoryCounterStore(),
+      JOBS_CAPACITY_DEFAULTS,
+    );
     const disabled = buildDisabledJobsEdge({ jobsSubmissionThrottle: sharedThrottle });
     const token = await seedSession(disabled.sessions, "alice");
     const gone = await submit(disabled, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
@@ -1107,7 +1110,7 @@ describe("the submission buckets and the recorded requests", () => {
     const usage = new FakeUsageStore();
     const harness = buildJobsEdge({
       usage,
-      jobsSubmissionThrottle: new JobsSubmissionThrottle(failingStore),
+      jobsSubmissionThrottle: new JobsSubmissionThrottle(failingStore, JOBS_CAPACITY_DEFAULTS),
     });
     const token = await seedSession(harness.sessions, "alice");
     const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
@@ -1174,6 +1177,25 @@ describe("the submission buckets and the recorded requests", () => {
       expect(isJobsError(r.json, "rate_limited")).toBe(true);
     }
     expect(harness.forwarder.submitSpecs).toHaveLength(APP_WINDOW);
+  });
+
+  it("the config-resolved submission limits reach the composition's own throttle", async () => {
+    // No injected throttle: the fallback construction inside buildApp is what
+    // must consume `config.jobs.submissionLimits` (EDGE_JOBS_LIMITS's
+    // resolution), so a wiring that silently fell back to the platform
+    // defaults would answer 202 here.
+    const harness = buildJobsEdge({
+      submissionLimits: { ...JOBS_CAPACITY_DEFAULTS, submissionAttemptsPerAppEnv: 2 },
+    });
+    const token = await seedSession(harness.sessions, "alice");
+    for (let i = 0; i < 2; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+      expect(res.status).toBe(202);
+    }
+    const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(res.status).toBe(429);
+    expect(isJobsError(res.json, "rate_limited")).toBe(true);
+    expect(harness.forwarder.submitSpecs).toHaveLength(2);
   });
 });
 
@@ -1347,6 +1369,25 @@ describe("the dev gateway's submission route", () => {
     const res = await devSubmit(app, DEV_BEARER);
     expect(res.status).toBe(503);
     expect(isJobsError(res.json, "jobs_disabled")).toBe(true);
+    await app.close();
+  });
+
+  it("the config-resolved submission limits reach the dev composition's own throttle", async () => {
+    // The dev gateway constructs its throttle inside buildDevGateway with no
+    // injection seam — the config is the only way limits reach it, so the
+    // route is the proof that the wiring holds on this composition too.
+    const forwarder = new FakeJobsForwarder("jobs");
+    const app = await buildDevJobsEdge(forwarder, {
+      submissionLimits: { ...JOBS_CAPACITY_DEFAULTS, submissionAttemptsPerAppEnv: 2 },
+    });
+    for (let i = 0; i < 2; i += 1) {
+      const res = await devSubmit(app, DEV_BEARER);
+      expect(res.status).toBe(202);
+    }
+    const res = await devSubmit(app, DEV_BEARER);
+    expect(res.status).toBe(429);
+    expect(isJobsError(res.json, "rate_limited")).toBe(true);
+    expect(forwarder.submitSpecs).toHaveLength(2);
     await app.close();
   });
 });

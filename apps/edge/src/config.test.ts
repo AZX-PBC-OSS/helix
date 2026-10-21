@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
+import { JOBS_CAPACITY_DEFAULTS, JOBS_CAPACITY_LIMIT_MAX } from "@azx-pbc/shared";
 import { loadConfig, loadDevGatewayConfig, parseConnectionString, publicOrigin } from "./config.js";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 
@@ -1135,5 +1136,115 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
     expect(() => loadConfig({ ...ENV, EDGE_JOBS_CONFIG: doc, EDGE_JOBS_TIMEOUT_MS: "0" })).toThrow(
       /EDGE_JOBS_TIMEOUT_MS must be a positive number/,
     );
+  });
+});
+
+describe("the jobs submission limits (EDGE_JOBS_LIMITS)", () => {
+  const ENV = {
+    DATABASE_URL: "postgresql://helix:helix@db:5432/helix",
+    EDGE_DATABASE_URL: "postgresql://helix_edge:helix_edge@db:5432/helix",
+    AZURE_STORAGE_CONNECTION_STRING: AZURITE_CS,
+    EDGE_TLS_CERT_FILE: "/certs/local-helix.pem",
+    EDGE_TLS_KEY_FILE: "/certs/local-helix-key.pem",
+  };
+
+  it("unset and blank resolve the platform defaults, unchanged", () => {
+    for (const absent of [{}, { EDGE_JOBS_LIMITS: "" }, { EDGE_JOBS_LIMITS: "   " }]) {
+      expect(loadConfig({ ...ENV, ...absent }).jobs.submissionLimits).toEqual(
+        JOBS_CAPACITY_DEFAULTS,
+      );
+    }
+  });
+
+  it("applies the override on top of the defaults, with jobs disabled (no EDGE_JOBS_CONFIG)", () => {
+    const config = loadConfig({ ...ENV, EDGE_JOBS_LIMITS: '{"submissionAttemptsDeployment":7}' });
+    expect(config.jobs.servers).toEqual({});
+    expect(config.jobs.submissionLimits).toEqual({
+      ...JOBS_CAPACITY_DEFAULTS,
+      submissionAttemptsDeployment: 7,
+    });
+  });
+
+  it("applies the override with a valid EDGE_JOBS_CONFIG too — the two documents are independent", () => {
+    const config = loadConfig({
+      ...ENV,
+      EDGE_JOBS_LIMITS: '{"submissionAttemptsDeployment":7}',
+      EDGE_JOBS_CONFIG: JSON.stringify({
+        servers: {
+          jobs: {
+            endpoint: "https://jobs.internal.helix",
+            edgeToJobsRoot: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+            jobsToEdgeRoot: "AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=",
+          },
+        },
+      }),
+    });
+    expect(config.jobs.submissionLimits).toEqual({
+      ...JOBS_CAPACITY_DEFAULTS,
+      submissionAttemptsDeployment: 7,
+    });
+  });
+
+  it("the dev-gateway resolves the identical limits from the same variable", () => {
+    const config = loadDevGatewayConfig({
+      EDGE_DEV_DATABASE_URL: "postgresql://helix_dev:helix_dev@db:5432/helix",
+      EDGE_TLS_CERT_FILE: "/certs/local-helix.pem",
+      EDGE_TLS_KEY_FILE: "/certs/local-helix-key.pem",
+      EDGE_JOBS_LIMITS: '{"submissionAttemptsDeployment":7}',
+    });
+    expect(config.jobs.submissionLimits).toEqual({
+      ...JOBS_CAPACITY_DEFAULTS,
+      submissionAttemptsDeployment: 7,
+    });
+  });
+
+  it("refuses a value that does not parse as a submission override — naming the key", () => {
+    for (const bad of [
+      "{not json",
+      "[]",
+      '"5"',
+      "null",
+      '{"submissionAttemptsPerAppEnv":0}',
+      "-1",
+      "1.5",
+      "1e400",
+      JSON.stringify({ submissionAttemptsDeployment: JOBS_CAPACITY_LIMIT_MAX + 1 }),
+      JSON.stringify({ unfinishedPerAppEnv: 5 }),
+      '{"__proto__":5}',
+      '{"noSuchControl":3}',
+    ]) {
+      expect(() => loadConfig({ ...ENV, EDGE_JOBS_LIMITS: bad }), bad).toThrow(/EDGE_JOBS_LIMITS/);
+    }
+  });
+
+  it("never echoes a secret-looking value in the refusal", () => {
+    // A limits value an operator copied from somewhere else is not platform
+    // configuration, but it is still not ours to quote: the JSON.parse error
+    // quotes fragments of the raw text and zod's rendering quotes the values,
+    // so the message must be checked against a planted sentinel, not trusted.
+    const cases = ['{"submissionWindowSeconds":"sentinel-9f3e"}', "{sentinel-9f3e"];
+    for (const bad of cases) {
+      try {
+        loadConfig({ ...ENV, EDGE_JOBS_LIMITS: bad });
+        expect.unreachable("the load must refuse");
+      } catch (error) {
+        expect(String((error as Error).message)).not.toContain("sentinel-9f3e");
+      }
+    }
+  });
+
+  it("the EDGE_JOBS_CONFIG document still refuses a limits field — it is a Key Vault signing-root secret", () => {
+    // That document's schema stays strict: the submission limits' one
+    // configuration surface is EDGE_JOBS_LIMITS, never a field smuggled into
+    // the signing-roots secret.
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_CONFIG: JSON.stringify({
+          servers: {},
+          limits: { submissionAttemptsDeployment: 7 },
+        }),
+      }),
+    ).toThrow(/limits/);
   });
 });

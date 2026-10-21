@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import { type JobRequestError } from "@azx-pbc/shared";
+import {
+  JOBS_CAPACITY_DEFAULTS,
+  type JobRequestError,
+  type JobsCapacityLimits,
+} from "@azx-pbc/shared";
 import {
   type JobsCancelForward,
   type JobsForwarder,
@@ -154,6 +158,12 @@ export interface JobsHarnessOpts {
    * level). Tests default to false — the non-production posture.
    */
   refuseDiagnosticTypes?: boolean;
+  /**
+   * The config-resolved submission-throttle limits; omitted, the platform
+   * defaults. Overridden by suites that prove a tuned limit reaches the
+   * composition's own throttle construction.
+   */
+  submissionLimits?: JobsCapacityLimits;
 }
 
 export interface JobsHarness {
@@ -177,6 +187,7 @@ export function buildJobsEdgeApp(
         servers: {},
         timeoutMs: 30_000,
         refuseDiagnosticTypes: opts.refuseDiagnosticTypes ?? false,
+        submissionLimits: opts.submissionLimits ?? JOBS_CAPACITY_DEFAULTS,
       },
     }),
     registry: new FakeRegistry(
@@ -285,7 +296,11 @@ export function fakeDevTokens(): DevTokenStore {
 
 export async function buildDevJobsEdge(
   jobsForwarder: JobsForwarder | null,
-  opts: { refuseDiagnosticTypes?: boolean; jobs?: { types: string[] } | null } = {},
+  opts: {
+    refuseDiagnosticTypes?: boolean;
+    jobs?: { types: string[] } | null;
+    submissionLimits?: JobsCapacityLimits;
+  } = {},
 ): Promise<FastifyInstance> {
   return buildDevGateway({
     config: testDevGatewayConfig({
@@ -293,6 +308,7 @@ export async function buildDevJobsEdge(
         servers: {},
         timeoutMs: 30_000,
         refuseDiagnosticTypes: opts.refuseDiagnosticTypes ?? false,
+        submissionLimits: opts.submissionLimits ?? JOBS_CAPACITY_DEFAULTS,
       },
     }),
     registry: new FakeRegistry([

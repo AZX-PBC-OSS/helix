@@ -276,7 +276,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // PG-backed one (fleet-wide limits); the fallback in-memory store keeps
   // single-process dev / tests working, like every other fallback here.
   const jobsSubmissionThrottle =
-    deps.jobsSubmissionThrottle ?? new JobsSubmissionThrottle(fallbackCounters);
+    deps.jobsSubmissionThrottle ??
+    new JobsSubmissionThrottle(fallbackCounters, config.jobs.submissionLimits);
   const recordVisit = deps.visits
     ? makeVisitRecorder({
         store: deps.visits,
