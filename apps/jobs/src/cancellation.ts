@@ -267,7 +267,7 @@ export class JobsCancellationStore implements JobsCancellation {
     } else if (runnerVerdict.verdict === "not_cancellable") {
       this.log.info(
         { event: "jobs.cancellation.runner_terminal" },
-        "the runner row was already terminal when the cancellation drove it — the competing outcome won its race",
+        "the runner row was already terminal when the cancellation drove it — an earlier request already cancelled it, or a competing outcome won its race",
       );
     }
     return { outcome: "requested" };

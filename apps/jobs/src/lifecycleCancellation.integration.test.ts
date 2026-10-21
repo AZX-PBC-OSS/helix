@@ -6,9 +6,11 @@ import {
   AppSchema,
   DevTokenMintResponseSchema,
   HealthStatusSchema,
+  INSTRUCTION_HEADER,
   JOBS_DIAGNOSTIC_QUALIFIED_TYPE,
   JOBS_LIFECYCLE_DELIVERY_CHECK,
   JOBS_LIFECYCLE_RECOVERY_CHECK,
+  JOBS_SERVER_NAME,
   JobAcceptedSchema,
   JobCancellationAcceptedSchema,
   JobRequestErrorSchema,
@@ -19,6 +21,7 @@ import {
   type JobAccepted,
   type JobSnapshot,
 } from "@azx-pbc/shared";
+import { deriveJobsInstructionKey, mintJobsInstruction } from "@azx-pbc/shared/jobsSigning";
 
 import { DIAGNOSTIC_PROGRESS_LABEL, type DiagnosticJobInput } from "./diagnostics.js";
 import { JOBS_APP_LIFECYCLE_QUALIFIED, JOBS_JOB_RECORD_QUALIFIED } from "./policy.js";
@@ -1490,7 +1493,7 @@ describe("app lifecycle through the portal", () => {
   );
 
   test(
-    "lifecycle changes made while jobs is down are delivered on recovery, and the old generation never revives",
+    "lifecycle changes made while jobs is down survive a portal crash and are delivered on recovery; neither the old generation nor a late out-of-order archive changes anything",
     { timeout: 600_000 },
     async () => {
       const { app, slug } = apps.l3;
@@ -1536,6 +1539,20 @@ describe("app lifecycle through the portal", () => {
             return (metrics.outstanding ?? 0) >= 2 && (metrics.failedDeliveries ?? 0) > f0
               ? true
               : undefined;
+          },
+        );
+
+        // The sender crashes with both intents pending. The outbox is durable,
+        // so the restarted portal still holds them and keeps delivering.
+        await stack.crash("portal");
+        await stack.start("portal");
+        await waitFor(
+          stack,
+          "the restarted portal to report the same pending backlog (outstanding >= 2)",
+          { timeoutMs: 45_000 },
+          async () => {
+            const { metrics } = await deliveryCheckReading();
+            return (metrics.outstanding ?? 0) >= 2 ? true : undefined;
           },
         );
 
@@ -1592,6 +1609,54 @@ describe("app lifecycle through the portal", () => {
           postGeneration,
           "the applied generation opened past both transitions",
         ).toBeGreaterThanOrEqual(g0 + 2);
+
+        // A late, out-of-order delivery: an archive older than the applied
+        // unarchive, freshly signed with the portal's key as a delayed retry
+        // would be. The receiver acknowledges its current watermark and
+        // closes nothing: work running under the open generation finishes.
+        const applied = await appliedLifecycle(app.id);
+        const running = await submitDiagnostic(session, { steps: 3, stepDelayMs: 1000 });
+        await pollUntilRunning(session.api, running.jobId, 1);
+        const staleBody = Buffer.from(
+          JSON.stringify({ generation: String(Number(applied.generation) - 1), archived: true }),
+        );
+        const roots = must(stack.jobsRoots, "the stack's jobs signing roots");
+        const staleToken = await mintJobsInstruction(
+          {
+            operation: "lifecycle",
+            server: JOBS_SERVER_NAME,
+            appId: app.id,
+            body: staleBody,
+            iatS: Math.floor(Date.now() / 1000),
+          },
+          deriveJobsInstructionKey(roots.portalToJobs, "portalToJobs"),
+        );
+        const stale = await stack.request(
+          `http://localhost:${stack.ports.jobs}/internal/jobs/v1/lifecycle/${app.id}`,
+          {
+            method: "POST",
+            headers: { [INSTRUCTION_HEADER]: staleToken, "Content-Type": "application/json" },
+            body: staleBody,
+          },
+        );
+        expect(stale.status, `the out-of-order delivery: ${stale.text.slice(0, 200)}`).toBe(200);
+        expect(
+          (JSON.parse(stale.text) as { appliedGeneration?: unknown }).appliedGeneration,
+          "the out-of-order delivery acknowledges the current watermark",
+        ).toBe(applied.generation);
+        expect(await appliedLifecycle(app.id), "the applied lifecycle is unchanged").toEqual(
+          applied,
+        );
+        const finished = await pollSnapshot(
+          session.api,
+          running.jobId,
+          (s) => TERMINAL_STATUSES.has(s.status),
+          60_000,
+        );
+        expect(finished.status, "the open generation's running job is not cancelled").toBe(
+          "succeeded",
+        );
+        expect(finished.cancellationRequested).toBe(false);
 
         // Past pg-boss's heartbeat-based lost-claim detection: any
         // restart-driven retry or late completion would have to show by now.

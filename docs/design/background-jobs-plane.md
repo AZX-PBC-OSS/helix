@@ -1,6 +1,7 @@
 # Background jobs plane
 
-**Status:** Implementation design; not shipped. Implements
+**Status:** Implemented in `apps/jobs` (see [the feature doc](../features/background-jobs.md));
+enabling it on a production install is a separate operator rollout. Implements
 [ADR-0045](../adr/0045-app-triggered-durable-jobs-plane.md).
 **Updated:** 2026-10-13.
 
@@ -687,5 +688,6 @@ second production runner: identical local ids/keys remain isolated by server;
 qualified grants cannot cross servers; wrong-server signatures and callbacks
 fail; outages never trigger fallback; lifecycle delivery is tracked independently;
 retirement preserves old reads/retries/cleanup while blocking new work. Initial
-production acceptance still runs against the one real pg-boss service. This
-document does not claim the unimplemented production failure matrix has passed.
+production acceptance still runs against the one real pg-boss service. The
+[2026-10-21 acceptance review](../reviews/2026-10-21-background-jobs-acceptance.md)
+records which of these cases ran against real services, and which did not.

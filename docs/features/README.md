@@ -21,6 +21,7 @@ See [the tour](../../TOUR.md) for the security boundaries and repository map.
 | [llm-gateway.md](./llm-gateway.md) | `POST /_api/llm/chat` + the OpenAI-compatible surface — metered, allowlisted, key-hiding LLM proxy with structured output | `apps/edge` |
 | [app-data-gateway.md](./app-data-gateway.md) | `/_api/data/*` user / collection / shared storage + owner drain | `apps/edge`, `apps/portal` |
 | [fetch-proxy.md](./fetch-proxy.md) | `/_api/fetch/<url>` — governed outbound HTTP via the `helix-egress` plane | `apps/edge`, `apps/egress` |
+| [background-jobs.md](./background-jobs.md) | `/_api/jobs/*` — durable, platform-authored jobs (`jobs:fetch`) with polling, retry keys, cancellation and retention | `apps/jobs`, `apps/edge`, `apps/portal` |
 | [secrets-and-connections.md](./secrets-and-connections.md) | Connection secrets: sealed credentials injected server-side | `apps/portal`, `apps/egress`, `packages/secret-store` |
 | [connection-providers.md](./connection-providers.md) | OAuth connection providers: the admin catalog, import/export, My Connections | `apps/portal`, `apps/egress` |
 | [dev-mode.md](./dev-mode.md) | Develop an app against an isolated `env=dev` tier via the dev-gateway | `apps/edge`, `apps/portal` |

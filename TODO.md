@@ -137,23 +137,14 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
 
 ## Background jobs (ADR-0045)
 
-- [ ] Implement the named jobs API and one TypeScript/pg-boss server (`jobs`),
-      initially `jobs:fetch`, using the [current design](docs/design/background-jobs-plane.md).
-      Use qualified grants and `{server, jobId}` references, trusted static routing,
-      per-server credentials/private storage and lifecycle delivery. Keep polling,
-      shared edge throttles, atomic local capacity/retry identity and retention.
-      Execution limits are local with documented rolling overlap. Include telemetry,
-      deployment isolation and the production failure matrix; synthetic work stays
-      in development/test. This remains planned, not shipped code.
+- [ ] **Roll the jobs plane out to a production install and run a pilot app on it.** The service, its Azure definitions and alerts are implemented and verified against real local services ([acceptance review](docs/reviews/2026-10-21-background-jobs-acceptance.md)); nothing has run on Azure. The first rollout should confirm the jobs image check and the new CI steps on GitHub Actions, the health relay's alerts firing, and the upgrade path on an existing install. — ADR-0045
 - [ ] **The three sibling app images' `pnpm` CMD swallows SIGTERM — the graceful-shutdown drain never runs in the container.** Found by the jobs image's artifact verification (2026-10-20): `pnpm --filter <pkg> start` as pid 1 (pnpm 11.5.3) stays alive and the `node --import tsx src/server.ts` grandchild keeps serving after SIGTERM, so the runtime SIGKILLs at its 30-second window instead of the drain's 10. The boot suites' shutdown evidence spawned node directly and never saw the wrapper. Fix is the jobs image's shape (`apps/jobs/Dockerfile`): `WORKDIR` at the package, `CMD ["node", "--import", "tsx", "src/server.ts"]` — plus re-running the built-image shutdown check per app. — decision-log.md 2026-10-20
 - [ ] **kv-platform's vault-wide Secrets User grants let the edge, portal, egress and dev-gateway identities read the jobs signing roots and DSNs.** The Azure template delivers each service only its own jobs credentials (`infra/azure/README.md` "Background jobs", pinned by `apps/jobs/src/azureServiceWiring.test.ts`), but the vault copies that `main.bicepparam` reads back sit in kv-platform, where those four identities hold a vault-scoped role — the same exposure `postgres-admin-password` already has. Closing it needs per-secret role assignments or a separate vault for jobs material, and a decision on whether the platform's own secrets get the same treatment.
 - [ ] **Dev-tier job submissions are not counted toward the edge's deployment-wide submission window.** The dev gateway runs as `helix_dev`, which has no grant on `rate_counters`, so it throttles dev submissions in each replica's memory (the dev-gateway container app scales to three) with the same `EDGE_JOBS_LIMITS` values (`docs/design/background-jobs-plane.md` §4). A table grant was rejected: it would let a compromised dev gateway reset production abuse controls. The narrower option, deferred, is a `SECURITY DEFINER` function owned by a privileged role that only increments the one deployment-wide key, granted EXECUTE to `helix_dev`. Doing it needs a migration, a role-split test proving `helix_dev` still cannot read, reset or delete any counter, and a decision on whether dev traffic should be able to exhaust production's window at all.
-- [ ] Lock the tested pg-boss 12.37.0 baseline through the pnpm catalog; review any
-      upgrade against adapter tests. Use the [PoC comparison](docs/reviews/jobs-runner-poc-2026-10-08.md)
-      as evidence, not a production-ready implementation. Test multi-server routing,
-      grants, signatures, retirement and independent lifecycle with contract fixtures.
-      Add a Python/TaskQ service only when a concrete workload justifies it; Python
-      tooling, mirrors and a second runtime are not part of this delivery.
+- [ ] Review any pg-boss upgrade past the catalog's pinned 12.37.0 against the jobs
+      service's runner, recovery and worker-overlap suites. Add a Python/TaskQ service
+      only when a concrete workload justifies it; it must pass the same contract the
+      two named-server fixtures exercise (`apps/jobs/src/namedServers.integration.test.ts`).
 - [ ] Design the generic LLM pipeline after the plane is proven. Resource/cost
       ceilings and provider continuation policy remain workload decisions; they
       do not block the initial fetch delivery.

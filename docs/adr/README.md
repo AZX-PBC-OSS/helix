@@ -59,7 +59,7 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0042](0042-shared-prefix-grants-and-list-verb.md) | Prefix grants on `shared` app-data, with a list verb | Accepted |
 | [0043](0043-app-data-identifiers-printable-ascii.md) | App-data identifiers are printable ASCII | Accepted |
 | [0044](0044-declarative-wildcard-tls-bindings.md) | Declarative wildcard TLS custom-domain bindings | Accepted |
-| [0045](0045-app-triggered-durable-jobs-plane.md) | App-triggered durable jobs: a platform-owned plane behind an HTTP contract | Accepted (planned; named services, pg-boss first) |
+| [0045](0045-app-triggered-durable-jobs-plane.md) | App-triggered durable jobs: a platform-owned plane behind an HTTP contract | Accepted (implemented; named services, pg-boss first) |
 | [0046](0046-azure-ai-foundry-keyless-llm-backend.md) | Azure AI Foundry as a keyless LLM backend (egress mints Entra tokens) | Accepted |
 | [0047](0047-operator-declared-servable-model-set.md) | Operator-declared servable model set (allowlist/blocklist), catalogue-side only | Accepted |
 | [0048](0048-canonical-principal-oid.md) | Canonical principal identifier: the Entra `oid` claim, captured at source in both planes | Accepted |
