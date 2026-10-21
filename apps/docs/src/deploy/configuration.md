@@ -133,7 +133,7 @@ first-party defaults, or pointed at an existing Foundry account per the
 | Parameter | Default | What it is |
 | --- | --- | --- |
 | `deployTelemetry` | `true` | OTLP collectors + Application Insights. `false` leaves telemetry inert — the platform's documented default state |
-| `deployAlerts` | `true` | Alert rules on the platform's own telemetry (registry staleness) |
+| `deployAlerts` | `true` | Alert rules on the platform's own telemetry (registry staleness). With `deployJobs`, also the jobs alerts: a scheduled relay job reads the jobs service's and the portal's health bodies inside the environment, and rules fire on storage or worker failure, retained-storage saturation, overdue cleanup, lifecycle lag, and missing evidence. See `infra/azure/README.md` for each alert's first diagnostic step |
 | `deployAvailabilityTests` | `true` | Outside HTTP probes on the public hosts — the only monitoring that works when the platform can't see itself. Billed per execution |
 | `deployInfraAlerts` | `true` | Azure platform-metric rules: Postgres availability/storage, restart storms, edge 5xx |
 | `alertEmails` | `[]` | Who alerts notify. **Empty means the rules still deploy and still fire — at nobody.** Always set this, or turn alerts off |

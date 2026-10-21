@@ -332,7 +332,7 @@ param jobsIntakeOpen bool = true
 @description('Deploy the OpenTelemetry collector + Application Insights (ADR-0037). Off leaves every service exporting nowhere — `startTelemetry` returns its inert handle — which is the platform\'s documented default state and exactly how it ran before this existed.')
 param deployTelemetry bool = true
 
-@description('Deploy the alert rules that consume the platform\'s own observability — the registry projection stale + never-loaded rules (ADR-0025 residual, ADR-0037). Default true: they are the near-term payoff of the telemetry work and cost cents. The stale rule reads a metric so it needs deployTelemetry; the never-loaded rule is log-based and deploys either way. NOTE with alertEmails empty the rules still deploy and still fire — into nothing. Set alertEmails, or set this false; a rule nobody is told about is worse than no rule, because it looks like coverage.')
+@description('Deploy the alert rules that consume the platform\'s own observability — the registry projection stale + never-loaded rules (ADR-0025 residual, ADR-0037), and with deployJobs the jobs health relay and its body-aware rules (modules/alerts-jobs.bicep, log-based). Default true: they are the near-term payoff of the telemetry work and cost cents. The stale rule reads a metric so it needs deployTelemetry; the never-loaded rule is log-based and deploys either way. NOTE with alertEmails empty the rules still deploy and still fire — into nothing. Set alertEmails, or set this false; a rule nobody is told about is worse than no rule, because it looks like coverage.')
 param deployAlerts bool = true
 
 @description('Addresses notified when an alert fires. SEVERAL ARE SUPPORTED — each becomes its own email receiver on one shared action group, e.g. \'["a@x.io","b@x.io"]\' (or `--parameters alertEmails="[\'a@x.io\']"` from the CLI). Empty means the rules notify nobody.')
@@ -947,17 +947,18 @@ module egressCollector 'modules/otel-collector.bicep' = if (deployTelemetry && d
 // ---------------------------------------------------------------------------
 // Alerting
 // ---------------------------------------------------------------------------
-// Five modules, deliberately split by WHAT THEY READ rather than by what they
+// Six modules, deliberately split by WHAT THEY READ rather than by what they
 // are about, because that is what decides whether a rule can see a given
 // failure at all:
 //
 //   alerts.bicep             the platform's own telemetry (needs deployTelemetry)
+//   alerts-jobs.bicep        jobs health bodies via an in-environment relay (deployJobs; needs neither)
 //   alerts-availability.bicep  an outside probe (needs deployTelemetry: App Insights)
 //   alerts-infra.bicep       Azure platform metrics (needs neither)
 //   alerts-cost.bicep        billing, platform-infra axis (needs neither, not about health)
 //   alerts-cost-foundry.bicep  billing, LLM axis (deployFoundry only; own group, own budget)
 //
-// The first three notify through ONE action group. `alertEmails` empty means no
+// The first four notify through ONE action group. `alertEmails` empty means no
 // group is created at all: the rules still deploy and still fire, into nothing —
 // the state that looks like coverage, which the `alertsNotify` output exists to
 // report.
@@ -986,6 +987,39 @@ module alerts 'modules/alerts.bicep' = if (deployAlerts && deployApps) {
     actionGroupId: actionGroupId
     includeMetricRule: deployTelemetry
     registryStalenessThresholdMs: registryStalenessThresholdMs
+  }
+}
+
+// The jobs plane's health bodies, read from inside the apps environment by a
+// scheduled relay (modules/alerts-jobs.bicep): the jobs app and, by default,
+// the portal have internal ingress, so the outside probe below cannot read
+// them. One target per configured jobs server, reusing the endpoint the edge
+// and the portal already forward to, plus the portal for lifecycle delivery.
+var jobsHealthTargets = concat(
+  map(items(jobsServers), e => {
+    kind: 'jobs'
+    target: e.key
+    url: '${e.value.endpoint}/health'
+  }),
+  [
+    {
+      kind: 'portal'
+      target: 'portal'
+      url: 'https://${portalApp.?outputs.fqdn ?? ''}/health'
+    }
+  ]
+)
+
+module jobsAlerts 'modules/alerts-jobs.bicep' = if (deployAlerts && deployApps && deployJobs) {
+  name: 'platform-jobs-alerts'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    workspaceId: appsEnv.outputs.logAnalyticsWorkspaceId
+    acaEnvId: appsEnv.outputs.environmentId
+    image: '${imageRegistry}/helix-jobs:${imageTag}'
+    targets: jobsHealthTargets
+    actionGroupId: actionGroupId
   }
 }
 

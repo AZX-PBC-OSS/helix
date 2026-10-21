@@ -1094,20 +1094,21 @@ gets its own.
 
 ## Alerting (`deployAlerts`, `alertEmails`)
 
-Five modules, split by **what they read** rather than by what they are about,
+Six modules, split by **what they read** rather than by what they are about,
 because that is what decides which failures a rule can see at all:
 
 | Module                      | Reads                         | Needs `deployTelemetry` | Gate                               |
 | --------------------------- | ----------------------------- | ----------------------- | ---------------------------------- |
 | `alerts.bicep`              | the platform's own telemetry  | yes (metric rule)       | `deployAlerts`                     |
+| `alerts-jobs.bicep`         | jobs health bodies, relayed   | no                      | `deployAlerts`+`deployJobs`        |
 | `alerts-availability.bicep` | an outside HTTP probe         | yes (App Insights)      | `deployAvailabilityTests`          |
 | `alerts-infra.bicep`        | Azure platform metrics        | no                      | `deployInfraAlerts`                |
 | `alerts-cost.bicep`         | billing (the platform groups) | no                      | `deployCostBudget`                 |
 | `alerts-cost-foundry.bicep` | billing (the Foundry group)   | no                      | `deployCostBudget`+`deployFoundry` |
 
-The first three notify through **one** action group (`modules/action-group.bicep`,
+The first four notify through **one** action group (`modules/action-group.bicep`,
 `<prefix>-ag-platform`), so a recipient is added in one parameter rather than
-five files. The budgets are the exceptions and say why in their own headers.
+six files. The budgets are the exceptions and say why in their own headers.
 
 ### The platform's own telemetry (`modules/alerts.bicep`)
 
@@ -1141,6 +1142,68 @@ _degraded_ line instead, and expect noise from transient DB blips.
 **With `alertEmails` empty the rules still deploy and still fire — at nobody.**
 That state looks identical to working alerting, so the deployment emits an
 `alertsNotify` output saying which one you got. Read it.
+
+### Background jobs — health bodies from inside (`modules/alerts-jobs.bicep`)
+
+The jobs service answers `/health` with 200 in every state, and its failures
+are in the body as the `jobs_*` checks. The jobs app has internal ingress, and
+so does the portal unless `portalExternal` is set, so the availability tests
+below cannot reach either one. With `deployAlerts` and `deployJobs` on, the
+template adds a **health relay**: a scheduled Container Apps Job,
+`<prefix>-jobs-health-relay`, that runs every 5 minutes in the apps environment
+from the helix-jobs image (`apps/jobs/scripts/health-relay.ts`). It reads
+`/health` on each configured jobs server and on the portal, validates the body
+against the shared health contract, and writes bounded JSON lines to stdout:
+
+- `jobs.health.check`: one line per expected check, with `kind`, `target` (the
+  server id, or `portal`), `check`, `status`, `detail` (capped at 400
+  characters) and `metrics`.
+- `jobs.health.observed`: one line per target, with `outcome` (`observed`,
+  `no_answer` or `off_protocol`), the body's roll-up `status`, and `missing`
+  (expected checks the body did not report).
+
+The relay has no identity and no secrets, and it never logs a URL or an error
+message. The rules read those lines from the workspace, take the latest reading
+per target and check in a 15-minute window, and split alerts by target, so each
+jobs server alerts separately. None reads an HTTP status or a submission
+refusal: an ordinary throttle (429) or unfinished-capacity refusal never fires a
+rule.
+
+| Rule                     | Fires when                                                           | Checks                                                                        | Sev | First diagnostic step                                                                                                                                                                                      |
+| ------------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-alert-jobs-execution`  | storage unreachable or wrong schema, no worker, intake not applied   | `jobs_database`, `jobs_worker`, `jobs_intake`                                 | 1   | Read the check's `detail`. Schema or store words mean run `<prefix>-jobs-migrate` or check Postgres (`-alert-db-unavailable`); a worker error means read the jobs app's `jobs.runner.*` events             |
+| `-alert-jobs-capacity`   | retained storage at its server-wide bound, or its measurement stale  | `jobs_capacity`                                                               | 2   | Compare `retainedServer` with the bound. If `jobs_cleanup` is also failing, fix cleanup first; saturation clears as cleanup removes expired records                                                        |
+| `-alert-jobs-cleanup`    | expired content past its 48-hour removal deadline, or loop stopped   | `jobs_cleanup`                                                                | 2   | Read the jobs app's `jobs.cleanup.overdue`, `jobs.cleanup.pass_failed` and `jobs.cleanup.backlog` events                                                                                                   |
+| `-alert-jobs-lifecycle`  | lifecycle intent pending over 60 s, or the sender or sweeper stopped | `jobs_lifecycle_delivery` (portal), `jobs_lifecycle_recovery`, `jobs_sweeper` | 2   | For `portal`, the detail names each lagging server; read the portal's `jobs.delivery.*` events. For a jobs server, read its `jobs.recovery.*` events                                                       |
+| `-alert-jobs-unobserved` | no current reading for a target                                      | none (missing evidence)                                                       | 1   | `outcome` says which: `no_observation` (the relay is not running), `no_answer` (target down or unreachable), `off_protocol` (wrong service or invalid body), or a non-empty `missing` (check not reported) |
+
+While `-alert-jobs-unobserved` fires for a target, the other four rules have no
+current reading for it and cannot fire. Treat it as the most urgent of the five.
+
+To see what the relay saw, query the workspace:
+
+```kusto
+ContainerAppConsoleLogs_CL
+| extend p = parse_json(Log_s)
+| where tostring(p.event) in ("jobs.health.check", "jobs.health.observed")
+| project TimeGenerated, event = tostring(p.event), target = tostring(p.target),
+          check = tostring(p.check), status = tostring(p.status),
+          outcome = tostring(p.outcome), detail = tostring(p.detail), metrics = p.metrics
+| order by TimeGenerated desc
+```
+
+The same lines show a retiring server's drain progress: the `jobs_intake`
+check's `unfinishedServer` and `retainedServer` metrics. For a
+`no_observation` reading, check the relay's own runs first:
+
+```bash
+az containerapp job execution list -g <rg> -n <prefix>-jobs-health-relay -o table
+```
+
+The edge's `jobs_reachability` check is not relayed. It is in the edge's public
+body, and the edge availability test below fires when it reports `error`
+(every configured server unreachable, which with the one `jobs` server is any
+outage).
 
 ### Availability tests — the only view from outside (`modules/alerts-availability.bicep`)
 

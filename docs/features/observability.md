@@ -370,7 +370,7 @@ looked up:
 | `helix.edge.trust_proxy.unresolved` | observable gauge | — |
 | `helix.app.visits` | counter | `appId`, `outcome` (`recorded` / `failed` / `dropped` / `deduplicated`; the fire-and-forget `app_visits` write, ADR-0050. Alert on a sustained `failed` or `dropped` rate. The owner's numbers come from the table, never this counter) |
 | `helix.consent.operations` | counter | `operation`, `outcome` (ADR-0031 as amended; the portal's first instrument — see the `helix.outcome` vocabularies in `@azx-pbc/shared/telemetry`) |
-| `helix.jobs.storage.probes` | counter | `outcome` ∈ {`ok`, `unavailable`} — the jobs service's storage-readiness probes (`JOBS_STORAGE_PROBE_OUTCOMES`). An attempt counter, like `helix.providers.reconciles`: a run of `unavailable` with no `ok` is a store outage, and the *reason* (unreachable / schema / queue-policy / burn store / privileges) is carried by the `jobs_database` check's body and the `jobs.storage.unavailable` log event, which the body-aware alerts read |
+| `helix.jobs.storage.probes` | counter | `outcome` ∈ {`ok`, `unavailable`} — the jobs service's storage-readiness probes (`JOBS_STORAGE_PROBE_OUTCOMES`). An attempt counter, like `helix.providers.reconciles`: a run of `unavailable` with no `ok` is a store outage, and the *reason* (unreachable / schema / queue-policy / burn store / privileges) is carried by the `jobs_database` check's body (which the jobs health relay carries to the `-alert-jobs-execution` rule) and the `jobs.storage.unavailable` log event |
 | `helix.jobs.reachability.probes` | counter | `outcome` ∈ {`reachable`, `unreachable`, `invalid_response`} (`JOBS_REACHABILITY_PROBE_OUTCOMES`) — the edge's bounded jobs-reachability probes (`jobs/reachability.ts`), one point per configured server per pass, on the probe's own cadence and independent of user requests (a quiet deployment is still observed). A run of `unreachable` with no `reachable` is a jobs server this edge cannot forward to (no answer inside the bound); a run of `invalid_response` is an endpoint that ANSWERED but not as the jobs service — a redirect, a wrong status, a body past the hop's response allowance, or a contract body naming another helix service — the misroute the counter's words exist to separate from a dead endpoint. The *reason* (no answer / off-protocol) and the per-server story ride the `jobs_reachability` check's body and the `edge.jobs_reachability.*` transition events; what a reachable server reported about itself is the detail's evidence, never this counter's grade — the server's own body stays authoritative for its state |
 | `helix.jobs.instructions` | counter | `helix.jobs.operation` ∈ {`submit`, `snapshot`, `result`, `cancel`, `lifecycle`} (the route's own name, never read from the token), `outcome` ∈ {`accepted`, `replayed`, `rejected`, `unavailable`} (`JOBS_INSTRUCTION_OUTCOMES`) — every presentation of a signed internal instruction, refused or not. A run of `replayed` is a capture-and-replay attempt (the burn caught it; no effect ran); a run of `rejected` is a forged or misconfigured minter, and the *reason* rides the span's `helix.reason` (`JOBS_INSTRUCTION_REJECT_REASONS`, plus `missing`/`malformed` for a header that never was a token, and `resource` for a path that cannot name one) — never a metric dimension; a run of `unavailable` is the burn store failing closed. Identity, token and retry-key material never appear in any dimension |
 | `helix.jobs.burn.sweeps` | counter | `outcome` ∈ {`ok`, `failed`} — the burn store's bounded cleanup passes, emitted by BOTH planes that run a burn store: the jobs service (its `instruction_burns` table) and the edge (its `jobs_callback_jti` table, prod tier; the dev-gateway emits the same instrument for the dev tier). Passes that remove rows are routine silence; a run of `failed` with no `ok` is a store that stopped answering its cleanup, and burned nonces then grow with instruction volume until it answers |
@@ -505,6 +505,35 @@ one:
 | projection stale | `helix.registry.stale_for_ms` metric | An age needs a threshold, and this is the metric that made it one rule instead of KQL over log messages |
 | projection never loaded | `registry.never_loaded` log event | The gauge is *absent* in this state by design, and the counter that reports it is cumulative, so a threshold on it never stops firing |
 | trust proxy unresolved | `helix.edge.trust_proxy.unresolved` metric | A `degraded` /health alerts nobody by itself — this is the rule that makes the edge's `EDGE_TRUST_PROXY` self-reporting (ADR-0011) |
+
+The jobs plane's health bodies have their own module,
+`infra/azure/modules/alerts-jobs.bicep`, deployed with `deployAlerts` and
+`deployJobs`. The jobs app and, by default, the portal have internal ingress,
+so no outside probe can read their bodies. A scheduled Container Apps Job in the
+apps environment, the **health relay** (`apps/jobs/scripts/health-relay.ts`),
+reads each configured jobs server's `/health` and the portal's every 5 minutes,
+validates the body against `HealthStatusSchema` and the expected `service`, and
+writes two bounded stdout events: `jobs.health.check` (one per expected
+`jobs_*` check: `kind`, `target`, `check`, `status`, `detail` capped at 400
+characters, `metrics`) and `jobs.health.observed` (one per target: `outcome` ∈
+`observed`/`no_answer`/`off_protocol`, the roll-up `status`, and the `missing`
+expected checks). It never writes a URL or an error message. These are log
+lines in the workspace, not OTel signals, so the rules work with
+`deployTelemetry=false`.
+
+| Rule | Reads | Covers |
+| --- | --- | --- |
+| `jobs-execution` | `jobs_database`, `jobs_worker`, `jobs_intake` | Storage unreachable or at the wrong schema, no registered worker, intake not applied or refused. Throttle and capacity refusals never reach these checks |
+| `jobs-capacity` | `jobs_capacity` | Retained storage at its server-wide bound, or the measurement stale |
+| `jobs-cleanup` | `jobs_cleanup` | Expired content past its 48-hour removal deadline, or the cleanup loop stopped |
+| `jobs-lifecycle` | `jobs_lifecycle_delivery` (portal), `jobs_lifecycle_recovery`, `jobs_sweeper` | Delivery or archive cancellation pending over 60 s, or the sender or sweeper stopped |
+| `jobs-unobserved` | `jobs.health.observed`, and its absence | No relay line for a target in the window, no answer, an off-protocol answer, or a missing check. Missing evidence never reads as healthy |
+
+Each rule takes the latest reading per target and check, and alerts split by
+target, so each jobs server alerts on its own. The diagnostic step for each rule
+is in `infra/azure/README.md`. The edge's `jobs_reachability` check is not
+relayed; it is in the edge's public body, which the edge availability test
+reads.
 
 Four more modules alert on signals this platform does **not** emit, which is the
 point of them — everything above goes quiet in exactly the failures that stop the

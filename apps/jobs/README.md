@@ -665,6 +665,27 @@ storage supervisor and health reporting consume; the expected schema version
 is read from the installed pg-boss package, so a catalog bump moves the
 expectation with the dependency.
 
+## Azure health relay (`scripts/health-relay.ts`)
+
+On Azure the jobs service and, by default, the portal have internal ingress, so
+no outside probe can read their `/health` bodies. `infra/azure/modules/alerts-jobs.bicep`
+runs this script from the jobs image as a scheduled Container Apps Job. It reads
+each target in `JOBS_HEALTH_RELAY_TARGETS` (`[{ kind, target, url }]`, `kind` is
+`jobs` or `portal`), validates the body against `HealthStatusSchema` and the
+expected `service`, and writes one `jobs.health.check` line per expected check
+and one `jobs.health.observed` line per target to stdout. The log-alert rules in
+the same module read those lines. Redirects are not followed, each read is
+bounded at 10 s and 64 KiB, and no line carries a URL or error text. An
+unreachable target is a reported `no_answer` outcome and the script still exits
+0; only a missing or invalid target list exits 1.
+
+Run it locally against a running stack:
+
+```bash
+JOBS_HEALTH_RELAY_TARGETS='[{"kind":"jobs","target":"jobs","url":"http://localhost:3003/health"}]' \
+  node --import tsx scripts/health-relay.ts
+```
+
 ## Service boot (`src/server.ts`) and the storage lifecycle (`src/storage.ts`)
 
 The boot contract is health-first (design §8, ADR-0009): the listener and
