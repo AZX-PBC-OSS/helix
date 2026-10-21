@@ -15,18 +15,24 @@ Zero runtime dependencies: this package is a document plus a string transform.
 
 Hosts differ per deployment (Helix is single-tenant, customer-deployed — [ADR-0028](../../docs/adr/0028-deployment-model-customer-deployed.md)),
 and the dev gateway is opt-in, so a skill checked in with real hostnames would be wrong
-almost everywhere. `SKILL.md` therefore carries `{{PLACEHOLDER}}` tokens plus one
-conditional block, and the consumer fills them from `GET /api/v1/config`:
+almost everywhere. `SKILL.md` therefore carries `{{PLACEHOLDER}}` tokens plus
+conditional blocks, and the portal fills them from its capability catalogue when it
+serves `GET /api/v1/skill`:
 
-| Token               | Filled with                                                          |
-| ------------------- | -------------------------------------------------------------------- |
-| `{{PORTAL_ORIGIN}}` | The portal's own origin                                              |
-| `{{APPS_HOST}}`     | Host apps are served under — an app lives at `https://<slug>.<that>` |
-| `{{DEV_API_BASE}}`  | `devApiBase` from the deployment config                              |
-| `{{LLM_MODELS}}`    | The priced/curated model ids (`MODEL_PRICING` in `@azx-pbc/shared`)  |
+| Token                | Filled with                                                           |
+| -------------------- | --------------------------------------------------------------------- |
+| `{{PORTAL_ORIGIN}}`  | The portal's own origin                                               |
+| `{{APPS_HOST}}`      | Host apps are served under — an app lives at `https://<slug>.<that>`  |
+| `{{DEV_API_BASE}}`   | `devApiBase` from the deployment config                               |
+| `{{LLM_MODELS}}`     | The priced/curated model ids (`MODEL_PRICING` in `@azx-pbc/shared`)   |
+| `{{JOB_TYPES}}`      | The catalogue's offered job types, formatted with their display names |
+| `{{JOBS_GUIDE_URL}}` | The published app-author jobs guide (`JOBS_GUIDE_URL`)                |
 
 Everything between `<!-- IF:DEV_API -->` and `<!-- /IF:DEV_API -->` is dropped when the
 deployment runs no dev gateway, rather than printing a base URL that will never answer.
+The same mechanism drives the jobs section: `IF:JOBS_OFFERED` is kept when the catalogue
+offers at least one job type, `IF:JOBS_WITHDRAWN` when the jobs block exists but offers no
+type (every server is retiring); a deployment with jobs fully disabled drops both.
 
 ## Consumers
 

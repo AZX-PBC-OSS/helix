@@ -12,6 +12,7 @@ import {
 } from "@azx-pbc/shared";
 import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 import { SERVING_JOBS_CATALOGUE, withEnv } from "../test/env.js";
+import { JOBS_GUIDE_URL } from "@azx-pbc/deploy-skill";
 
 /**
  * GET /api/v1/capabilities + GET /api/v1/skill (ADR-0036) — the deployment
@@ -481,6 +482,92 @@ describe("GET /api/v1/skill", () => {
       expect(line).toBeDefined();
       expect(line).toContain("claude-opus-4-8");
       expect(line).not.toContain("gpt-4o");
+    });
+  });
+
+  describe("background jobs section", () => {
+    // The jobs section follows the catalogue's `jobs.types`, read per call from
+    // PORTAL_JOBS_CATALOGUE — the same env cases as the catalogue tests above.
+    it("is absent on a fully disabled installation", async () => {
+      await withEnv({ PORTAL_JOBS_CATALOGUE: undefined }, async () => {
+        const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
+        expect(res.statusCode).toBe(200);
+        expect(res.body).not.toContain("/_api/jobs");
+        expect(res.body).not.toContain("Background jobs");
+        expect(res.body).not.toContain("jobs:fetch");
+        expect(res.body).toContain("helix deploy");
+      });
+    });
+
+    it("renders the offered types, the guide link, and no private routing field", async () => {
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
+        expect(res.statusCode).toBe(200);
+        const body = res.body;
+        expect(body).toContain("`jobs:fetch` (Outbound fetch job)");
+        expect(body).toContain("POST /_api/jobs/:server/types/:type");
+        expect(body).toContain(`(${JOBS_GUIDE_URL})`);
+        // None of the projection's routing/credential fields may reach the skill.
+        for (const private_ of [
+          "endpoint",
+          "databaseUrl",
+          "callbackUrl",
+          "roots",
+          "edgeToJobs",
+          "portalToJobs",
+          "jobsToEdge",
+        ]) {
+          expect(body).not.toContain(private_);
+        }
+      });
+    });
+
+    it("renders the withdrawn section when every job server is retiring", async () => {
+      await withEnv(
+        {
+          PORTAL_JOBS_CATALOGUE: '{"servers":{"jobs":{"state":"retiring","types":["jobs:fetch"]}}}',
+        },
+        async () => {
+          const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
+          expect(res.statusCode).toBe(200);
+          const body = res.body;
+          expect(body).toContain("offers no job types for new grants");
+          expect(body).toContain("503 jobs_disabled");
+          expect(body).toContain(`(${JOBS_GUIDE_URL})`);
+          expect(body).not.toContain("/types/:type");
+          expect(body).not.toContain("`jobs:fetch` (Outbound fetch job)");
+        },
+      );
+    });
+
+    it("renders the diagnostic type on a non-production stack that listed it", async () => {
+      await withEnv(
+        {
+          PORTAL_JOBS_CATALOGUE:
+            '{"servers":{"jobs":{"state":"serving","types":["jobs:fetch","jobs:diagnostic"]}}}',
+        },
+        async () => {
+          const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
+          expect(res.statusCode).toBe(200);
+          expect(res.body).toContain("`jobs:diagnostic` (Diagnostic job (non-production))");
+        },
+      );
+    });
+
+    // Production parses the catalogue with the strict schema, which refuses the
+    // diagnostic type outright — the failure is a 500, not a filtered list.
+    it("does not render on a production stack listing the diagnostic type (500)", async () => {
+      await withEnv(
+        {
+          NODE_ENV: "production",
+          PORTAL_JOBS_CATALOGUE:
+            '{"servers":{"jobs":{"state":"serving","types":["jobs:fetch","jobs:diagnostic"]}}}',
+        },
+        async () => {
+          const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
+          expect(res.statusCode).toBe(500);
+        },
+      );
     });
   });
 });

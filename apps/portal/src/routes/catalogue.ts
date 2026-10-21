@@ -202,6 +202,7 @@ function skillVarsFromCatalogue(catalogue: CapabilityCatalogue, req: FastifyRequ
     baselineWritesPerDay: catalogue.approval.baselines.writesPerDay,
     baselineBytesPerDay: catalogue.approval.baselines.bytesPerDay,
     baselineFetchRequestsPerDay: catalogue.approval.baselines.fetchRequestsPerDay,
+    jobTypes: catalogue.jobs?.types ?? null,
   };
 }
 

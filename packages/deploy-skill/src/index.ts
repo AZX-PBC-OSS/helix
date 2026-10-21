@@ -2,7 +2,7 @@
  * Render the deployment-independent SKILL.md template (ADR-0036).
  * renderSkill substitutes deployment values for the portal and helix skill.
  * renderSkillGeneric substitutes descriptions for the public docs site.
- * The optional dev-gateway section uses a conditional block.
+ * Optional sections (dev gateway, background jobs) use conditional blocks.
  *
  * Both modes must replace every placeholder and remove conditional markers;
  * tests check for leftover {{ and <!--. This package only transforms strings
@@ -11,6 +11,15 @@
 
 /** The filename the skill should be saved as; also the name the SPA downloads it under. */
 export const SKILL_FILENAME = "SKILL.md";
+
+/** The public app-author guide the jobs section links to (the docs site's `apps/jobs` page). */
+export const JOBS_GUIDE_URL = "https://azx-pbc-oss.github.io/helix/apps/jobs";
+
+/** One job type a deployment offers for new grants, as the capability catalogue carries it. */
+export interface SkillJobType {
+  id: string;
+  displayName: string;
+}
 
 /**
  * This deployment's topology, as the skill needs to state it. Every field is a
@@ -43,20 +52,41 @@ export interface SkillVars {
   baselineBytesPerDay: number;
   /** Fetch-proxy daily request budget at/under which a grant is baseline. */
   baselineFetchRequestsPerDay: number;
+  /**
+   * The job types this deployment offers for new grants (the catalogue's `jobs.types`), or
+   * `null` when jobs is fully disabled here. An empty list means every job server is retiring.
+   */
+  jobTypes: readonly SkillJobType[] | null;
 }
 
 /**
- * Blocks the template marks as dev-gateway-only. Kept when `devApiBase` is set,
- * removed wholesale when it isn't — a deployment without the gateway should not
- * hand an agent a base URL that will never answer.
+ * Blocks the template marks as conditional: `IF:DEV_API` sections describe the
+ * opt-in dev gateway, `IF:JOBS_OFFERED`/`IF:JOBS_WITHDRAWN` the background-jobs
+ * capability. A deployment without a feature should not hand an agent prose
+ * about a base URL that will never answer or a grant that cannot be made.
  *
  * Anchored per line (`^…$`) so a marker that something reflowed onto a line with
  * other content — a Markdown formatter turning a preceding `---` and the comment
  * into a `## <!-- IF:DEV_API -->` heading, say — fails to match and leaves the
  * marker visible, instead of matching from mid-line and quietly stranding the
  * text in front of it. `SKILL.md` is in `.prettierignore` for the same reason.
+ *
+ * Blocks of different names may nest (the dev-gateway note inside
+ * IF:JOBS_OFFERED); same-name nesting is not supported.
  */
-const DEV_API_BLOCK = /^[^\S\n]*<!-- IF:DEV_API -->\n([\s\S]*?)^[^\S\n]*<!-- \/IF:DEV_API -->\n?/gm;
+function conditionalBlock(name: string): RegExp {
+  return new RegExp(
+    String.raw`^[^\S\n]*<!-- IF:${name} -->\n([\s\S]*?)^[^\S\n]*<!-- /IF:${name} -->\n?`,
+    "gm",
+  );
+}
+
+/** Keep a conditional block's inner text (markers stripped), or drop the whole block. */
+function applyBlock(body: string, name: string, keep: boolean): string {
+  return keep
+    ? body.replace(conditionalBlock(name), (_all, inner: string) => inner)
+    : body.replace(conditionalBlock(name), "");
+}
 
 const PLACEHOLDER_RE = /\{\{([A-Z_]+)\}\}/g;
 
@@ -74,9 +104,12 @@ function substitute(body: string, substitutions: Record<string, string>): string
  * Adding a `{{PLACEHOLDER}}` to `SKILL.md` means adding a field here, a prose
  * entry in {@link renderSkillGeneric}, and at every call site — the test asserts
  * the rendered output carries no leftover `{{`, so a half-wired placeholder
- * fails the suite rather than shipping to an agent.
+ * fails the suite rather than shipping to an agent. The same guard covers the
+ * conditional blocks (dev gateway, background jobs): every marker must be
+ * consumed in both modes.
  */
 export function renderSkill(template: string, vars: SkillVars): string {
+  const jobTypes = vars.jobTypes ?? [];
   const substitutions: Record<string, string> = {
     PORTAL_ORIGIN: vars.portalOrigin,
     APPS_HOST: vars.appsHost,
@@ -88,11 +121,18 @@ export function renderSkill(template: string, vars: SkillVars): string {
     BASELINE_WRITES_PER_DAY: String(vars.baselineWritesPerDay),
     BASELINE_BYTES_PER_DAY: String(vars.baselineBytesPerDay),
     BASELINE_FETCH_REQUESTS_PER_DAY: String(vars.baselineFetchRequestsPerDay),
+    JOB_TYPES: jobTypes.map((t) => `\`${t.id}\` (${t.displayName})`).join(", "),
+    JOBS_GUIDE_URL,
   };
 
-  const body = vars.devApiBase
-    ? template.replace(DEV_API_BLOCK, (_all, inner: string) => inner)
-    : template.replace(DEV_API_BLOCK, "");
+  // Offered and withdrawn are mutually exclusive: a deployment either offers at
+  // least one type, or holds the block that explains retirement. `null` (jobs
+  // fully disabled) drops both. Outer blocks first — IF:DEV_API nests inside
+  // IF:JOBS_OFFERED.
+  const jobsOffered = vars.jobTypes !== null && jobTypes.length > 0;
+  let body = applyBlock(template, "JOBS_OFFERED", jobsOffered);
+  body = applyBlock(body, "JOBS_WITHDRAWN", vars.jobTypes !== null && !jobsOffered);
+  body = applyBlock(body, "DEV_API", Boolean(vars.devApiBase));
 
   return substitute(body, substitutions);
 }
@@ -125,12 +165,18 @@ export function renderSkillGeneric(template: string): string {
       "your deployment's app-data byte baseline — see `GET /api/v1/capabilities`",
     BASELINE_FETCH_REQUESTS_PER_DAY:
       "your deployment's fetch-proxy request baseline — see `GET /api/v1/capabilities`",
+    JOB_TYPES:
+      "the job types your deployment offers, if any — see `jobs.types` in `GET /api/v1/capabilities`; a deployment without jobs omits this section",
+    JOBS_GUIDE_URL: "/apps/jobs",
   };
 
-  // Always keep the dev-gateway block in the generic rendering (markers
-  // stripped); the prose substitution for DEV_API_BASE carries the
-  // deployment-dependent note.
-  const body = template.replace(DEV_API_BLOCK, (_all, inner: string) => inner);
+  // Keep the dev-gateway and jobs-offered blocks in the generic rendering
+  // (markers stripped): the prose substitutions carry the deployment-dependent
+  // note, and the offered section already explains retirement — so the
+  // withdrawn alternative is dropped.
+  let body = applyBlock(template, "JOBS_OFFERED", true);
+  body = applyBlock(body, "JOBS_WITHDRAWN", false);
+  body = applyBlock(body, "DEV_API", true);
 
   return substitute(body, substitutions);
 }

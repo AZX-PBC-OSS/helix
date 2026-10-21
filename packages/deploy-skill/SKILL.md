@@ -526,6 +526,161 @@ reviewers and never blocks, gates, or pops anything.
 Surface these to the user as themselves. A `403` means a missing grant, and
 retrying will not fix it.
 
+<!-- IF:JOBS_OFFERED -->
+
+### 3.7 Background jobs — `/_api/jobs/*`
+
+A **job** is platform-provided work that keeps running after the page closes.
+Your app submits it, keeps the reference, and polls for the outcome. Jobs run
+platform code only: you cannot ship server code as a job. Job types offered on
+this deployment: {{JOB_TYPES}}.
+
+**Grant it.** Add the exact qualified type to the manifest's `capabilities`, as
+`"jobs": { "types": ["jobs:fetch"] }`, or select it on the Capabilities tab's
+**Background jobs** card. A type is always `<server>:<type>`, with no wildcard
+and no default server. Adding a type applies immediately. `jobs:fetch` also
+uses the app's fetch settings: the target origin must be in `fetch.origins`
+(which queues for approval), each run counts against `fetch.requestsPerDay`, and
+a `provider`-bound origin fails because no user is present when the job runs.
+A job belongs to the signed-in user who started it. Anonymous visitors on a
+`public` app and `password` visitors get `403 forbidden`.
+
+**Write the client this way.** A network error, a timeout, a `429` or a `503`
+on submit does not tell you whether the job was created, and a `401` means the
+session needs renewing, not that the job is gone.
+
+1. Once per intended job, generate a key (`crypto.randomUUID()`), serialize the
+   input once, and save `{server, type, key, body}` (in `localStorage`, say)
+   **before** the first send.
+2. Send the key as `Idempotency-Key`. On no reply, `429` or `503`, back off
+   (1 s doubling to 30 s, with jitter) and resend the **same key and the same
+   saved string**. The same key and bytes return the original job; different
+   bytes answer `409 idempotency_conflict`. Never re-serialize, and never mint a
+   new key for a retry: use a fresh key only when the user deliberately starts
+   new work. Every attempt counts against a per-app submission rate shared by
+   all its users, so never retry in a tight loop.
+3. Save `{server, jobId}` from the `202`. The pair is the reference. Always read
+   and cancel on the original `server`.
+4. On `401`, **never resubmit**. Keep the saved job, let the user
+   re-authenticate (a reload renews the session), then resume: poll the saved
+   `jobId`, or resend the saved key and bytes if no `202` ever arrived.
+5. Poll the status about every 2 s. Stop at a terminal status (`succeeded`,
+   `failed`, `crashed`, `cancelled`, `expired`), on `403` or `404`, or when the
+   view closes. A failed status read means your view is stale, not that the job
+   failed: keep the last snapshot, mark it stale, and back off. Stopping polling
+   never cancels the job.
+
+```js
+const backoff = (n) => Math.min(30_000, 1_000 * 2 ** n) * (0.5 + Math.random() / 2);
+
+function startJob(server, type, input) {
+  const job = { server, type, key: crypto.randomUUID(), body: JSON.stringify(input), jobId: null };
+  localStorage.setItem("helix-job", JSON.stringify(job)); // saved before the first send
+  return job;
+}
+
+async function submit(job) {
+  for (let n = 0; n < 6; n++) {
+    let res = null;
+    try {
+      res = await fetch(`/_api/jobs/${job.server}/types/${job.type}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "Idempotency-Key": job.key },
+        body: job.body, // the saved string, never re-serialized
+      });
+    } catch {
+      // No reply: the job may exist. Resend the same key and bytes.
+    }
+    if (res?.status === 202) {
+      job.jobId = (await res.json()).jobId;
+      localStorage.setItem("helix-job", JSON.stringify(job));
+      return job;
+    }
+    if (res?.status === 401) {
+      location.reload(); // renew the session; on load, resume the saved job
+      return null;
+    }
+    if (res && res.status !== 429 && res.status !== 503) {
+      throw new Error(`submission refused: ${res.status}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, backoff(n)));
+  }
+  return null; // still uncertain: keep the saved job and retry later with the same key
+}
+```
+
+| Operation | Request                                | Success                                                     |
+| --------- | -------------------------------------- | ----------------------------------------------------------- |
+| Submit    | `POST /_api/jobs/:server/types/:type`  | `202` `{server, jobId, status}`                             |
+| Status    | `GET /_api/jobs/:server/:jobId`        | `200` snapshot: `status`, `progress`, `error`, expiry times |
+| Result    | `GET /_api/jobs/:server/:jobId/result` | `200` the job's JSON result (`null` is a valid result)      |
+| Cancel    | `DELETE /_api/jobs/:server/:jobId`     | `202` `{server, jobId, cancellationRequested: true}`        |
+
+For `jobs:fetch`, submit to `/_api/jobs/jobs/types/fetch` with the body
+`{"url": "https://…"}` and no other field. The job makes one `GET` under the
+app's fetch settings as they are when it runs, follows no redirects, times out
+after 30 seconds, and must finish within five minutes of acceptance. The result
+is the target's JSON body, at most 64 KiB. It runs once, so a failure is final.
+A failed job's `error.code` says why (`outbound_forbidden`, `upstream_error`,
+`timeout`, `result_too_large` and others). Branch on `code`, never on `message`.
+A result is readable for 7 days and the record for 30 days, so save anything you
+need for longer.
+
+Refusals from the jobs routes are a flat `{code, message}`:
+
+| Status | Code                                                               | What to do                                                    |
+| ------ | ------------------------------------------------------------------ | ------------------------------------------------------------- |
+| 400    | `payload_invalid`, `idempotency_key_invalid`, `job_server_unknown` | Fix the request. Do not retry it unchanged.                   |
+| 403    | `forbidden`                                                        | Missing grant, or a caller that cannot use jobs. Stop.        |
+| 404    | `job_not_found`                                                    | Stop. Never submit a replacement automatically.               |
+| 409    | `idempotency_conflict`                                             | Resend the original bytes, or start new work with a new key.  |
+| 409    | `job_not_ready`                                                    | Keep polling the status.                                      |
+| 409    | `job_terminal`                                                     | Show the `status` and `error` the body carries.               |
+| 410    | `result_expired`                                                   | Show that the result expired.                                 |
+| 413    | `payload_too_large`                                                | Make the input smaller.                                       |
+| 429    | `rate_limited`, `jobs_capacity_exceeded`                           | Back off, then retry with the same key and bytes.             |
+| 503    | `jobs_unavailable`                                                 | Retry with the same key. The job may already exist.           |
+| 503    | `jobs_disabled`                                                    | No new jobs on this server now. Retry later with the same key. |
+
+A `401` is the session gate, not a jobs refusal: its body is
+`{"error": {"code": "refresh_required"}}` or `unauthorized`. Check the status and
+`content-type` before you parse a body, and never treat a session error as a
+failed job.
+
+**Cancelling** records a request and does not stop the job on the spot. Keep
+polling: the job can still finish first, and then the cancel answers
+`409 job_terminal`. Closing the tab, the session expiring and removing the grant
+do not cancel a job. Archiving the app does.
+
+**Retirement.** An operator can stop a job server taking new work. Its types
+leave the list above, new submissions answer `503 jobs_disabled`, and existing
+jobs stay readable and cancellable on their original server. A saved grant
+stays, marked "not offered on this deployment".
+
+<!-- IF:DEV_API -->
+**On the dev gateway** (§5), the same four operations live under
+`{{DEV_API_BASE}}/<slug>/_api/jobs/…` with the dev bearer token. Dev jobs are a
+separate `dev` partition that production cannot see. A `401` there means the
+token expired or was revoked: mint a new one.
+<!-- /IF:DEV_API -->
+
+The [Background jobs guide]({{JOBS_GUIDE_URL}}) is the full contract: every
+snapshot field and failure code, the limits, retention, and a complete client.
+
+<!-- /IF:JOBS_OFFERED -->
+<!-- IF:JOBS_WITHDRAWN -->
+
+### 3.7 Background jobs
+
+This deployment offers no job types for new grants right now. If the app
+already holds a jobs grant, the grant stays saved (the portal marks it "not
+offered on this deployment"), new submissions answer `503 jobs_disabled`, and
+status, result and cancel requests for existing jobs keep working on the job's
+original server. Keep polling saved references, never resubmit them anywhere
+else, and see the [Background jobs guide]({{JOBS_GUIDE_URL}}).
+
+<!-- /IF:JOBS_WITHDRAWN -->
+
 ---
 
 ## 4. Build and deploy
@@ -652,6 +807,11 @@ dev credential.
       offers Connect and the app re-issues the call — nothing retries
       automatically.
 - [ ] User-specific state is in `/_api/data/user/*`, not in `shared`.
+<!-- IF:JOBS_OFFERED -->
+- [ ] Each job's key and exact body are saved before the first send, retries
+      reuse them, a `401` resumes the saved job after re-authentication instead
+      of resubmitting, and polling stops at a terminal status.
+<!-- /IF:JOBS_OFFERED -->
 - [ ] Every `shared` write goes through the read → `If-Match` → retry-on-`412`
       loop (or `If-None-Match: *` to create) — a plain shared PUT is refused.
 - [ ] No self-maintained "index" key over a growing shared namespace — the list

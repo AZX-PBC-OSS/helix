@@ -56,6 +56,7 @@ function renderSkillFor(opts: {
     baselineWritesPerDay: BASELINE_WRITES_PER_DAY,
     baselineBytesPerDay: BASELINE_BYTES_PER_DAY,
     baselineFetchRequestsPerDay: BASELINE_FETCH_REQUESTS_PER_DAY,
+    jobTypes: null,
   });
 }
 
