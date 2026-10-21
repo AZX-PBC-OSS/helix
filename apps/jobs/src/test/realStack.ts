@@ -18,11 +18,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { crc32 } from "node:zlib";
 import { Client as PgClient } from "pg";
-import { AppSchema, type App, HealthStatusSchema, type HealthStatus } from "@azx-pbc/shared";
+import {
+  AppSchema,
+  isValidJobsServerId,
+  type App,
+  HealthStatusSchema,
+  type HealthStatus,
+} from "@azx-pbc/shared";
 import { buildJobsInternalResource } from "@azx-pbc/shared/jobsSigning";
 
 import { runAuthCodeFlow } from "../../../dev-idp/src/testing.js";
 import { WEB_CLIENT_ID } from "../../../dev-idp/src/fixtures.js";
+import { createJobsContractFixture, type JobsContractFixture } from "./jobsContractFixture.js";
 
 /**
  * The real-stack journey harness: boots the whole Helix platform from its
@@ -66,6 +73,15 @@ export interface RealStack {
   readonly jobsOwnerDsn: string;
   /** The faultable edge→jobs relay, when the stack was started with `jobsLink: true`; otherwise null. */
   readonly jobsLink: JobsLink | null;
+  /** The contract fixture servers, by id, when started with `jobsFixtures`; otherwise empty. */
+  readonly jobsFixtures: Readonly<Record<string, JobsContractFixture>>;
+  /**
+   * Rewrite the three jobs documents for the services' NEXT start: each listed
+   * fixture with its state; a fixture left out is removed from every document
+   * (the operator's removal after the retirement barrier). Running services are
+   * untouched — restart the ones that must read it.
+   */
+  configureJobsFixtures(states: Readonly<Record<string, "serving" | "retiring">>): void;
   appOrigin(slug: string): string;
   /** Raw HTTPS/HTTP request with exact headers (no implicit Sec-Fetch-*); `signal` aborts the request. */
   request(
@@ -274,6 +290,7 @@ interface StackInternals {
   jobsOwnerDsn: string;
   databaseNames: string[];
   jobsLink: JobsLink | null;
+  jobsFixtures: ReadonlyMap<string, JobsContractFixture>;
   tlsCa: Buffer;
   tlsDir: string;
   request(url: string, init?: RawRequestInit): Promise<HttpReply>;
@@ -740,6 +757,7 @@ async function closeStack(stack: StackInternals): Promise<void> {
     await stopService(stack, name);
   }
   if (stack.jobsLink !== null) await stack.jobsLink.close();
+  for (const fixture of stack.jobsFixtures.values()) await fixture.stop();
   rmSync(stack.tlsDir, { recursive: true, force: true });
   await dropStackDatabases(stack.platformOwnerDsn, stack.databaseNames);
 }
@@ -1363,6 +1381,44 @@ async function startJobsLinkRelay(serviceEnv: NodeJS.ProcessEnv): Promise<JobsLi
   return link;
 }
 
+/**
+ * The three jobs documents the services read at boot, rewritten for the
+ * fixture servers: the edge's forwarding subset (endpoint + the two edge
+ * roots), the portal's lifecycle subset (endpoint + the portal root), and the
+ * credential-free catalogue projection (state + no installed types — the
+ * fixtures' synthetic type is never advertised). A fixture left out of
+ * `states` is removed from every document.
+ */
+function writeFixtureJobsConfig(
+  serviceEnv: NodeJS.ProcessEnv,
+  fixtures: ReadonlyMap<string, JobsContractFixture>,
+  states: Readonly<Record<string, "serving" | "retiring">>,
+): void {
+  const edgeServers: Record<
+    string,
+    { endpoint: string; edgeToJobsRoot: string; jobsToEdgeRoot: string }
+  > = {};
+  const portalServers: Record<string, { endpoint: string; portalToJobsRoot: string }> = {};
+  const catalogueServers: Record<string, { state: "serving" | "retiring"; types: [] }> = {};
+  for (const [id, fixture] of fixtures) {
+    const state = states[id];
+    if (state === undefined) continue;
+    edgeServers[id] = {
+      endpoint: fixture.endpoint,
+      edgeToJobsRoot: fixture.roots.edgeToJobs,
+      jobsToEdgeRoot: fixture.roots.jobsToEdge,
+    };
+    portalServers[id] = {
+      endpoint: fixture.endpoint,
+      portalToJobsRoot: fixture.roots.portalToJobs,
+    };
+    catalogueServers[id] = { state, types: [] };
+  }
+  serviceEnv.EDGE_JOBS_CONFIG = JSON.stringify({ servers: edgeServers });
+  serviceEnv.PORTAL_JOBS_CONFIG = JSON.stringify({ servers: portalServers });
+  serviceEnv.PORTAL_JOBS_CATALOGUE = JSON.stringify({ servers: catalogueServers });
+}
+
 // ── zip (stored, hand-rolled) ────────────────────────────────────────────────
 
 /** Fixed valid DOS timestamp (1980-01-01) — the zip fields need *a* date, and reproducibility beats realism here. */
@@ -1447,9 +1503,38 @@ export function zipFiles(files: Record<string, string | Buffer>): Buffer {
 // ── the harness itself ───────────────────────────────────────────────────────
 
 export async function startRealStack(
-  options: { offset?: number; label?: string; jobsLink?: boolean; diagnostics?: boolean } = {},
+  options: {
+    offset?: number;
+    label?: string;
+    jobsLink?: boolean;
+    diagnostics?: boolean;
+    /** Server ids of in-process contract fixtures that stand in for the real jobs process. */
+    jobsFixtures?: readonly string[];
+  } = {},
 ): Promise<RealStack> {
   const label = (options.label ?? "journey").replace(/[^a-z0-9-]/gi, "") || "journey";
+
+  const fixtureIds = options.jobsFixtures;
+  if (fixtureIds !== undefined) {
+    if (options.jobsLink === true) {
+      throw new Error(
+        "realStack: jobsLink and jobsFixtures cannot combine — the link faults the real jobs process, which does not start under fixtures",
+      );
+    }
+    if (fixtureIds.length === 0) {
+      throw new Error("realStack: jobsFixtures requires at least one server id");
+    }
+    if (new Set(fixtureIds).size !== fixtureIds.length) {
+      throw new Error("realStack: jobsFixtures names a server id twice — one fixture per server");
+    }
+    for (const id of fixtureIds) {
+      if (!isValidJobsServerId(id)) {
+        throw new Error(
+          `realStack: jobsFixtures names "${id}", which is not a valid job server id`,
+        );
+      }
+    }
+  }
 
   const missing = REQUIRED_AMBIENT_KEYS.filter((key) => process.env[key] === undefined);
   if (missing.length > 0) {
@@ -1549,6 +1634,7 @@ export async function startRealStack(
   // only chance to point them at the relay. Started last before the stack
   // record, so every later failure reaches closeStack, which closes it.
   const jobsLink = options.jobsLink === true ? await startJobsLinkRelay(serviceEnv) : null;
+  const jobsFixtures = new Map<string, JobsContractFixture>();
 
   const stack: StackInternals = {
     serviceEnv,
@@ -1565,6 +1651,7 @@ export async function startRealStack(
       new URL(jobsDsn).pathname.replace(/^\//, ""),
     ],
     jobsLink,
+    jobsFixtures,
     tlsCa,
     tlsDir: tls.dir,
     request: (url, init) => rawRequest(tlsCa, url, init),
@@ -1572,15 +1659,34 @@ export async function startRealStack(
   };
 
   try {
+    // The fixtures listen before any service spawns: the edge and the portal
+    // read their jobs documents once at boot, so the rewrite below is the only
+    // chance to point them at the fixtures.
+    for (const id of fixtureIds ?? []) {
+      const fixture = createJobsContractFixture(id);
+      await fixture.start();
+      jobsFixtures.set(id, fixture);
+    }
+    if (jobsFixtures.size > 0) {
+      const serving: Record<string, "serving"> = {};
+      for (const id of jobsFixtures.keys()) serving[id] = "serving";
+      writeFixtureJobsConfig(serviceEnv, jobsFixtures, serving);
+    }
+
     runEnsureDbScript(platformOwnerDsn, jobsDsn);
     // The IdP first: it must answer before the edge's and portal's OIDC
     // clients look for it.
     spawnService(stack, "idp");
     await waitListener(stack, "idp", BOOT_LISTENER_TIMEOUT_MS);
-    for (const name of ["portal", "egress", "jobs"] as const) {
+    // Under contract fixtures the real jobs process does not exist: it is not
+    // spawned, not awaited, and not readiness-checked — the fixtures' own
+    // /health answers the edge's reachability probe instead.
+    const appServices: readonly StackServiceName[] =
+      jobsFixtures.size === 0 ? ["portal", "egress", "jobs"] : ["portal", "egress"];
+    for (const name of appServices) {
       spawnService(stack, name);
     }
-    for (const name of ["portal", "egress", "jobs"] as const) {
+    for (const name of appServices) {
       await waitListener(stack, name, BOOT_LISTENER_TIMEOUT_MS);
     }
     for (const name of ["edge", "devGateway"] as const) {
@@ -1591,11 +1697,11 @@ export async function startRealStack(
     }
     // Every listener answers — now the bodies: /health answers 200 in every
     // state, so readiness is what the body says.
-    await Promise.all(
-      (["portal", "egress", "jobs", "edge", "devGateway"] as const).map((name) =>
-        waitServiceReady(stack, name, READY_TIMEOUT_MS),
-      ),
-    );
+    const readyServices: readonly StackServiceName[] =
+      jobsFixtures.size === 0
+        ? ["portal", "egress", "jobs", "edge", "devGateway"]
+        : ["portal", "egress", "edge", "devGateway"];
+    await Promise.all(readyServices.map((name) => waitServiceReady(stack, name, READY_TIMEOUT_MS)));
   } catch (error) {
     await closeStack(stack).catch(() => {});
     throw error;
@@ -1611,6 +1717,22 @@ export async function startRealStack(
     platformOwnerDsn,
     jobsOwnerDsn,
     jobsLink,
+    jobsFixtures: Object.fromEntries(jobsFixtures),
+    configureJobsFixtures: (states) => {
+      if (jobsFixtures.size === 0) {
+        throw new Error(
+          "realStack: configureJobsFixtures requires jobsFixtures — this stack has none",
+        );
+      }
+      for (const id of Object.keys(states)) {
+        if (!jobsFixtures.has(id)) {
+          throw new Error(
+            `realStack: configureJobsFixtures names "${id}", which is not a fixture of this stack`,
+          );
+        }
+      }
+      writeFixtureJobsConfig(serviceEnv, jobsFixtures, states);
+    },
     appOrigin: (slug) => `https://${slug}.${baseDomain}:${ports.edge}`,
     request: stack.request,
     portalAs: (email) => portalAs(stack, email),

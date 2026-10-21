@@ -901,3 +901,17 @@ without writing it (`drop` — a lost reply after commit) or keeps it until
 database's owner DSN, for tests that must read a durable fact no route exposes;
 tests should prefer routes. `stack.request` and `session.api` accept a
 `signal` (`AbortSignal`) so a test can abandon an in-flight request.
+
+Multi-server routing and isolation are proven by contract testing, not a second
+production runner. `startRealStack({ jobsFixtures: ["alpha", "beta"] })` boots
+with the named in-process contract fixtures (`src/test/jobsContractFixture.ts`)
+configured in place of the real `jobs` process (which is not started): each
+fixture has its own independently generated roots and in-memory store and
+installs only the synthetic `<server>:echo` type, which no catalogue advertises
+(grants for it are test-seeded). `stack.jobsFixtures` exposes them by id —
+every recorded `exchanges` entry, the applied `lifecycle` watermarks, the
+`accepting` posture, `queueJobIds`, `complete`, `purge`, and `stop()`/`start()`
+to model an outage — and `stack.configureJobsFixtures({ alpha: "retiring" })`
+rewrites the three jobs documents for the services' NEXT start (a retiring
+state, or a fixture left out being removed after the retirement barrier);
+running services are untouched, so restart the ones that must read the change.
