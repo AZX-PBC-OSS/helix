@@ -13,10 +13,9 @@
 //   - the public DNS zone for the apps domain
 //
 // Two-phase deploy (see README): apply once with deployApps=false to build the
-// infra, ensure the images are published to GHCR (CI builds edge / portal /
-// egress / certbot; the jobs image is pushed manually until the image workflow
-// carries it — see README step 3), then apply with deployApps=true to roll
-// out the apps.
+// infra, ensure the images are published to GHCR (CI builds and publishes
+// edge / portal / egress / certbot / jobs), then apply with deployApps=true to
+// roll out the apps.
 
 targetScope = 'resourceGroup'
 
@@ -304,9 +303,8 @@ param foundryResourceGroupName string = ''
 param egressManagedIdentityConnections string = ''
 
 // Image references (phase 2). Repo names are fixed; registry + tag are parameterized.
-// CI publishes edge / portal / egress / certbot to GHCR (docker/metadata-action
-// lowercases the owner); the helix-jobs image is pushed manually until the image
-// workflow carries it (see README step 3). Override imageRegistry for a fork.
+// CI builds and publishes edge / portal / egress / certbot / jobs to GHCR
+// (docker/metadata-action lowercases the owner). Override imageRegistry for a fork.
 @description('Registry + owner holding the GHCR-built images, e.g. ghcr.io/azx-pbc-oss.')
 param imageRegistry string = 'ghcr.io/azx-pbc-oss'
 

@@ -38,7 +38,7 @@ Keep the full apply a rare, high-privilege operation run by hand — see
 
 ## What CI publishes
 
-Every push to the default branch and every `v*` tag builds four images and
+Every push to the default branch and every `v*` tag builds five images and
 pushes them to `ghcr.io/<owner>`:
 
 | Image | Runs as |
@@ -47,11 +47,7 @@ pushes them to `ghcr.io/<owner>`:
 | `helix-portal` | `<namePrefix>-portal`, and the `<namePrefix>-migrate` job |
 | `helix-egress` | `<namePrefix>-egress` |
 | `helix-certbot` | `<namePrefix>-certbot` job |
-
-The jobs image (`helix-jobs`) — which the `<namePrefix>-jobs` app and the
-`<namePrefix>-jobs-migrate` job run — is **not published by CI yet**. Build
-and push it manually once per release (the commands are in the infra README's
-step 3), or both pulls fail.
+| `helix-jobs` | `<namePrefix>-jobs`, the `<namePrefix>-jobs-migrate` job, and the `<namePrefix>-jobs-health-relay` job |
 
 Each build is tagged four ways: `sha-<short>`, the branch name, `latest` (on
 the default branch), and the semver for a `v*` tag.
@@ -76,10 +72,9 @@ for img in edge portal egress certbot jobs; do
 done
 ```
 
-(`helix-jobs` reporting MISSING here is the manual-publish note above, not a
-CI failure — push it and re-check. An install parked with `deployJobs=false`
-creates neither the jobs app, the jobs migrate job nor the need for that
-image; the jobs line is noise there.)
+(An install parked with `deployJobs=false` creates neither the jobs app, the
+jobs migrate job nor the need for the `helix-jobs` image; the jobs line is
+noise there.)
 
 ## If you build a release pipeline
 
@@ -151,9 +146,8 @@ Two things that look like reasons to skip it, and are not:
 job runs the same routine** for the jobs store's own schema — same shape
 (`job update` to the new tag, `job start`, read the execution), its own
 credential and identity, and the same "run before the apps" rule. The two
-migrate jobs own different databases, so their order doesn't matter. Its
-image is the one CI does not publish yet — the manual push and the pre-flight
-check above are what keep this step pullable. See
+migrate jobs own different databases, so their order doesn't matter. The
+pre-flight check above is what confirms the `helix-jobs` tag exists. See
 [Database & migrations](/deploy/database#the-jobs-database).
 
 ### 2. Roll the apps

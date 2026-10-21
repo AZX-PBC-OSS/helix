@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { builtinModules } from "node:module";
@@ -7,8 +7,9 @@ import { describe, expect, it } from "vitest";
 /**
  * The production image packaging contracts, pinned statically. There is no
  * container runtime in the environment the suite runs in, so the artifact
- * cannot be built here (CI's image lane builds and checks the built
- * artifact); what CAN fail silently before any build is the wiring between
+ * cannot be built here (CI's image lane builds the built jobs image and runs
+ * `apps/jobs/scripts/image-smoke.sh` against it before it pushes); what CAN
+ * fail silently before any build is the wiring between
  * the files the image is made of, and that is what these pins hold:
  *
  * - The `start` script is the image CMD's target — it must exist, and it
@@ -251,7 +252,7 @@ describe("the local image-build entry point builds the jobs image", () => {
 });
 
 describe("CI parity for the local entry point", () => {
-  /** CI's images matrix, the enforcement the skip banner promises. Fails when the file cannot be read as a matrix. */
+  /** CI's images matrix, the enforcement the parity test reads. Fails when the file cannot be read as a matrix. */
   function ciImagesMatrix(): string[] {
     const matrix = readRepo(".github/workflows/ci.yml").match(/app:\s*\[([^\]]*)\]/)?.[1];
     expect(
@@ -266,20 +267,7 @@ describe("CI parity for the local entry point", () => {
     return apps;
   }
 
-  it("CI's images matrix does not yet build the jobs image — when it does, un-skip the parity test below and delete this guard", () => {
-    // The skipped parity test below is the property; this guard is its only
-    // trigger. Nothing else points at the un-skip moment — no comment can be
-    // trusted to (nothing reads one), so the reminder lives here, in a test
-    // that cannot stay green past the day it matters.
-    expect(ciImagesMatrix()).not.toContain("jobs");
-  });
-
-  // Skipped because the property is false on today's matrix (watched red by
-  // hand: the local entry point builds jobs, the matrix does not). The
-  // un-skip instruction is the guard's own failing test name above — a skip
-  // with no visible trigger is the shape that matures silently, so the guard
-  // is what makes this one arm itself.
-  it.skip("builds every default app in CI's images matrix", () => {
+  it("builds every default app in CI's images matrix", () => {
     const local = readRepo("build-images.sh").match(/APPS=\(([^)]*)\)/)?.[1];
     expect(
       local,
@@ -292,6 +280,73 @@ describe("CI parity for the local entry point", () => {
     ).toBeGreaterThan(0);
     const missing = localApps.filter((app) => !ciImagesMatrix().includes(app));
     expect(missing, "the local entry point builds images CI never checks").toEqual([]);
+  });
+
+  /**
+   * The images job's block, sliced from the workflow text. There is no YAML
+   * parser dependency, so the extraction is plain text: everything after the
+   * `images:` job key up to the next job key (a line indented exactly two
+   * spaces — every line inside a job block is deeper than that) or EOF.
+   */
+  function ciImagesJob(): string {
+    const yml = readRepo(".github/workflows/ci.yml");
+    const marker = "\n  images:\n";
+    const start = yml.indexOf(marker);
+    expect(
+      start,
+      "the images job block cannot be found in ci.yml — fix this extraction; CI parity is unverified until it reads",
+    ).toBeGreaterThan(-1);
+    const bodyLines = yml.slice(start + marker.length).split("\n");
+    const end = bodyLines.findIndex((line) => /^ {2}\S/.test(line));
+    return (end === -1 ? bodyLines : bodyLines.slice(0, end)).join("\n");
+  }
+
+  /** The images job's steps, split on the six-space list marker every step starts with. */
+  function ciImagesSteps(): string[] {
+    const job = ciImagesJob();
+    const stepsStart = job.indexOf("    steps:");
+    expect(
+      stepsStart,
+      "the images job block has no steps — fix this extraction; CI parity is unverified until it reads",
+    ).toBeGreaterThan(-1);
+    return job.slice(stepsStart).split("\n      - ").slice(1);
+  }
+
+  it("CI checks the built jobs image before it pushes", () => {
+    const steps = ciImagesSteps();
+
+    // The checked image is built into the local store first (load, not push —
+    // nothing reaches GHCR from the check), from this package's Dockerfile,
+    // tagged the reference the check runs, and guarded to the jobs leg so no
+    // other app's build pays for it.
+    const build = steps.find((step) => step.includes("name: Build the jobs image for checking"));
+    expect(build, "the images job never builds the jobs image for checking").toBeDefined();
+    expect(build as string).toMatch(/if: matrix\.app == 'jobs'/);
+    expect(build as string).toMatch(/uses: docker\/build-push-action@v6/);
+    expect(build as string).toMatch(/file: apps\/jobs\/Dockerfile/);
+    expect(build as string).toMatch(/load: true/);
+    expect(build as string).toMatch(/push: false/);
+    expect(build as string).toMatch(/tags: helix-jobs:smoke/);
+
+    const check = steps.find((step) => step.includes("name: Check the built jobs image"));
+    expect(check, "the images job never checks the built jobs image").toBeDefined();
+    expect(check as string).toMatch(/if: matrix\.app == 'jobs'/);
+    expect(check as string).toMatch(/run: apps\/jobs\/scripts\/image-smoke\.sh helix-jobs:smoke/);
+
+    // Ordering is the property: a failing check stops the job before the
+    // push step runs.
+    const push = steps.findIndex((step) => step.includes("name: Build and push"));
+    expect(push, "the images job has no Build and push step").toBeGreaterThan(-1);
+    expect(steps.indexOf(build as string), "the checked build must precede the push").toBeLessThan(
+      push,
+    );
+    expect(steps.indexOf(check as string), "the check must precede the push").toBeLessThan(push);
+
+    // The check is executable the way the step invokes it — directly, by path.
+    expect(
+      (statSync(path.join(PACKAGE_DIR, "scripts", "image-smoke.sh")).mode & 0o111) !== 0,
+      "the image smoke check script is missing or not executable",
+    ).toBe(true);
   });
 });
 

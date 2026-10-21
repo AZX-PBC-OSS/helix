@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import {
   closeSync,
   existsSync,
@@ -44,7 +45,10 @@ import { createJobsContractFixture, type JobsContractFixture } from "./jobsContr
  * process itself never depends on that resolution — every request it makes
  * forces the connection to 127.0.0.1 (`lookup`), presents the request host as
  * the TLS `servername`, and trusts only the harness's freshly minted
- * self-signed certificate.
+ * self-signed certificate. The children DO depend on it, so a preflight
+ * (`assertStackHostnamesResolveToLoopback`) verifies the resolution before the
+ * stack claims anything — a host without it would otherwise fail deep inside a
+ * suite with a confusing timeout.
  *
  * A failure to boot is a failure, never a skip: a missing ambient variable
  * throws naming the key, and any readiness timeout throws with the last
@@ -281,7 +285,7 @@ const STOP_GRACE_MS = 10_000;
 const MAX_LOGIN_HOPS = 20;
 const POLL_INTERVAL_MS = 500;
 
-const REQUIRED_AMBIENT_KEYS = [
+export const REQUIRED_AMBIENT_KEYS = [
   "DATABASE_URL",
   "PORTAL_DATABASE_URL",
   "EDGE_DATABASE_URL",
@@ -788,6 +792,27 @@ function composeServiceEnv(stack: StackInternals, name: StackServiceName): NodeJ
   return env;
 }
 
+// A test worker that exits without closing its stack (a failed beforeAll, a
+// hook timeout) leaves live services behind, each holding Postgres connections.
+// `exit` handlers must be synchronous — `kill` is — so this is the last chance
+// to reap them.
+const liveChildren = new Set<ChildProcess>();
+let orphanGuardRegistered = false;
+
+function registerOrphanGuard(): void {
+  if (orphanGuardRegistered) return;
+  orphanGuardRegistered = true;
+  process.once("exit", () => {
+    for (const child of liveChildren) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // An already-dead pid must not block the process's own exit.
+      }
+    }
+  });
+}
+
 function spawnService(stack: StackInternals, name: StackServiceName): ChildProcess {
   const state = stack.services.get(name);
   if (!state) throw new Error(`realStack: no such service: ${name}`);
@@ -802,6 +827,8 @@ function spawnService(stack: StackInternals, name: StackServiceName): ChildProce
     stdio: ["ignore", "pipe", "pipe"],
   });
   state.child = child;
+  liveChildren.add(child);
+  registerOrphanGuard();
   const fd = openSync(state.logPath, "a");
   state.fd = fd;
   const onData = (chunk: Buffer): void => {
@@ -818,6 +845,7 @@ function spawnService(stack: StackInternals, name: StackServiceName): ChildProce
     state.ring.append(`[harness] spawn error: ${err.message}\n`);
   });
   child.once("exit", () => {
+    liveChildren.delete(child);
     try {
       closeSync(fd);
     } catch {
@@ -2036,6 +2064,42 @@ export function zipFiles(files: Record<string, string | Buffer>): Buffer {
   return Buffer.concat([...chunks, centralDirectory, eocd]);
 }
 
+// ── the hostname preflight ───────────────────────────────────────────────────
+
+/** The addresses the stack's hostnames may resolve to: the IPv4 loopback block, or ::1. */
+function isLoopbackAddress(address: string): boolean {
+  return address === "::1" || address.startsWith("127.");
+}
+
+/**
+ * The child services reach each other through the stack's own hostnames —
+ * jobs→edge fetch callbacks, the dev gateway, the login callback — so a host
+ * where those do not resolve to loopback fails deep inside a suite, after the
+ * stack is half up, with a confusing timeout. Check before anything is
+ * claimed, created or spawned.
+ */
+export async function assertStackHostnamesResolveToLoopback(baseDomain: string): Promise<void> {
+  const hosts = [baseDomain, `auth.${baseDomain}`, `dev-api.${baseDomain}`];
+  for (const host of hosts) {
+    let observation: string;
+    try {
+      const addresses = await lookup(host, { all: true });
+      if (addresses.length > 0 && addresses.every(({ address }) => isLoopbackAddress(address))) {
+        continue;
+      }
+      observation = `resolved to ${addresses.map(({ address }) => address).join(", ") || "nothing"}`;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      observation = code === undefined ? "lookup failed" : `lookup failed with ${code}`;
+    }
+    throw new Error(
+      `realStack: ${host} does not resolve to loopback (${observation}) — ` +
+        `the child services reach each other through these hostnames — public DNS answers 127.0.0.1 for them; ` +
+        `on a host without that, map them to 127.0.0.1 in /etc/hosts (CI's test job does)`,
+    );
+  }
+}
+
 // ── the harness itself ───────────────────────────────────────────────────────
 
 export async function startRealStack(
@@ -2130,6 +2194,14 @@ export async function startRealStack(
     throw new Error("realStack: the resolved stack env carries no APP_PUBLIC_BASE");
   }
   const baseDomain = new URL(appPublicBase).hostname;
+  // Before any service, capture, temp dir or database exists: a missing
+  // prerequisite must fail fast and leak nothing, the offset lock included.
+  try {
+    await assertStackHostnamesResolveToLoopback(baseDomain);
+  } catch (error) {
+    if (options.offset === undefined) unlockOffset(offset);
+    throw error;
+  }
 
   // The capture starts before any service spawns: the env below is the only
   // chance to point the exporters at it.

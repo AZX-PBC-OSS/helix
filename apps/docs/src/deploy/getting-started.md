@@ -287,13 +287,9 @@ az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam \
   --parameters deployApps=true
 ```
 
-Images come from `ghcr.io/azx-pbc-oss`. CI publishes four of them on every
-push to the main branch and on `v*` tags: edge, portal, egress, and certbot.
-The **jobs image (`helix-jobs`) is not published by CI yet** — the jobs app
-and the jobs migrate job created by this apply pull it — so build and push it manually
-once per release (the commands are in the [infra
-README](https://github.com/AZX-PBC-OSS/helix/blob/main/infra/azure/README.md)'s
-step 3). The GHCR packages must be **public** for the default anonymous pull
+Images come from `ghcr.io/azx-pbc-oss`. CI publishes five of them on every
+push to the main branch and on `v*` tags: edge, portal, egress, certbot, and
+jobs. The GHCR packages must be **public** for the default anonymous pull
 to work — the repo being public does not make its packages public; flip each
 one under *Package settings → Change visibility*. To keep them private
 instead, pass a `registries` credential to the container apps (see the infra
@@ -327,9 +323,7 @@ enabled, which is the default — `<namePrefix>-jobs-migrate` (the jobs store's
 own schema and queue policy, running the helix-jobs image). Both read their
 credentials from Key Vault with their own managed identities — no credential
 passes through your shell. Pin each to the tag being deployed, start it, and
-then read the result. One prerequisite: **`helix-jobs` is the one image CI
-does not publish yet** — push it manually per step 5 first, or this job's
-pull fails:
+then read the result:
 
 ```bash
 az containerapp job update -g <rg> -n <namePrefix>-migrate \

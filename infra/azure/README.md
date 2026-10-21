@@ -565,9 +565,7 @@ kv-platform and the jobs migrate job.
    independent (different databases, different identities), so the order of
    the two migrate jobs does not matter; both run before the images that
    need them. Re-running is safe — the command converges queue-policy drift
-   and adds what is missing. The `helix-jobs` image is not published by CI's
-   image matrix yet (step 3) — push it manually once per release or this
-   job's pull fails.
+   and adds what is missing.
 4. **Roll the images.** The jobs service's startup compatibility check is the
    rollback guard: it reads the schema version, the queue policy and the
    runtime privileges and reports any mismatch through `/health` — it never
@@ -828,7 +826,7 @@ az deployment group create -g <rg> -f main.bicep -p main.bootstrap.bicepparam
 
 ### 3. Build + publish the images
 
-CI builds and publishes four images to **GHCR** on pushes to the default
+CI builds and publishes five images to **GHCR** on pushes to the default
 branch and on `v*` tags (`.github/workflows/ci.yml`):
 
 ```
@@ -836,13 +834,11 @@ ghcr.io/azx-pbc-oss/helix-edge:<tag>
 ghcr.io/azx-pbc-oss/helix-portal:<tag>
 ghcr.io/azx-pbc-oss/helix-egress:<tag>
 ghcr.io/azx-pbc-oss/helix-certbot:<tag>
+ghcr.io/azx-pbc-oss/helix-jobs:<tag>
 ```
 
-The **fifth image the deployment pulls — `helix-jobs` — is not in CI's matrix
-yet**, so nothing publishes it: the `<namePrefix>-jobs` app and the
-`<namePrefix>-jobs-migrate` job (created with `deployJobs` at its default) run
-it, and an unpublished tag fails both at image pull. Build and push it manually once per release (the snippet
-below) until the image workflow carries it.
+CI checks the built `helix-jobs` image with `apps/jobs/scripts/image-smoke.sh`
+before pushing it.
 
 Tags produced per push: the branch name, the commit SHA (`sha-<short>`), the
 semver on `v*` tags, and `latest` on the default branch. The container apps pull

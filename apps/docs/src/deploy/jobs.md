@@ -83,9 +83,8 @@ keeps an existing install safe:
    `jobs_lifecycle_delivery` check shows `synchronizedTargets` equal to
    `targets` and has no detail.
 
-The `helix-jobs` image is not published by CI yet. Push it manually for each
-release before step 2, because the apply creates the jobs app and its
-migrate job from it. See
+CI publishes the `helix-jobs` image with the other images, and checks the
+built image before pushing it. Make sure the tag you apply exists — see
 [Deploying updates](/deploy/updates#what-ci-publishes).
 
 Proof: `apps/jobs/src/enablementSync.integration.test.ts` (the real portal
@@ -521,8 +520,6 @@ measure connections and latency again after raising it.
   own jobs settings; the vault grant does not enforce that split. This is
   tracked in
   [TODO.md](https://github.com/AZX-PBC-OSS/helix/blob/main/TODO.md).
-- **The jobs image is published by hand.** CI builds the edge, portal, egress
-  and certbot images only.
 - **A closing rollout can briefly reopen intake** on an old-revision replica
   that restarts. See [Close intake](#close-intake-without-retiring).
 - **The jobs service shares the apps environment's network.** It inherits the
