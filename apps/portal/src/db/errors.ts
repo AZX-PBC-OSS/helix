@@ -5,7 +5,9 @@
  *
  * Prisma 7's pg driver adapter reports the offending columns at
  * `meta.driverAdapterError.cause.constraint.fields`; classic clients use
- * `meta.target`. We check both.
+ * `meta.target`. We check both. The adapter passes Postgres's identifier
+ * quoting through, so a camelCase column arrives as `"sourceTokenJti"` with
+ * the quotes; they are stripped before comparing.
  *
  * Raw queries (`$queryRaw`) never surface P2002 — a failed statement reports
  * P2010 with the adapter error embedded in `meta`, so the same structural
@@ -41,5 +43,13 @@ function uniqueViolationFields(err: object): string[] {
   const fields = (
     meta as { driverAdapterError?: { cause?: { constraint?: { fields?: unknown } } } }
   ).driverAdapterError?.cause?.constraint?.fields;
-  return Array.isArray(fields) ? fields.filter((f): f is string => typeof f === "string") : [];
+  return Array.isArray(fields)
+    ? fields.filter((f): f is string => typeof f === "string").map(unquoteIdentifier)
+    : [];
+}
+
+function unquoteIdentifier(field: string): string {
+  return field.length >= 2 && field.startsWith('"') && field.endsWith('"')
+    ? field.slice(1, -1).replace(/""/g, '"')
+    : field;
 }

@@ -51,8 +51,7 @@ export async function catalogueRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get("/api/v1/skill", { preHandler: authenticate }, async (req, reply) => {
-    const catalogue = await buildCatalogue(app);
-    const vars = skillVarsFromCatalogue(catalogue, req);
+    const vars = skillVars(req);
     reply.type("text/markdown; charset=utf-8");
     return renderSkill(SKILL_TEMPLATE, vars);
   });
@@ -182,27 +181,20 @@ async function buildCatalogue(app: FastifyInstance): Promise<CapabilityCatalogue
 }
 
 /**
- * Derive the {@link SkillVars} the renderer needs from the catalogue, plus the
- * portal origin read off the request — the one value the catalogue does not
- * carry, because the portal does not know its own public origin from an env var
- * (the SPA learned it from `window.location.origin`; the CLI from its configured
- * portal URL). Reading it from the request means a skill rendered for whoever
- * fetched it carries the origin they used to reach the portal. `x-forwarded-proto`
- * is preferred so a TLS-terminated deployment renders `https`.
+ * The {@link SkillVars} for this deployment. The skill holds only topology
+ * (ADR-0052); live values come from the catalogue at `helix capabilities`.
+ *
+ * The portal origin is read off the request because the portal does not know
+ * its own public origin from an env var. A skill rendered for whoever fetched it
+ * carries the origin they used to reach the portal. `x-forwarded-proto` is
+ * preferred so a TLS-terminated deployment renders `https`.
  */
-function skillVarsFromCatalogue(catalogue: CapabilityCatalogue, req: FastifyRequest): SkillVars {
+function skillVars(req: FastifyRequest): SkillVars {
+  const devApiBase = resolveDevApiBase();
   return {
     portalOrigin: portalOriginFromRequest(req),
     appsHost: resolveAppPublicBase().host,
-    devApiBase: catalogue.devApiBase ?? null,
-    llmModels: catalogue.llm.models,
-    maxFileMb: catalogue.deploy.maxFileMb,
-    maxBundleMb: catalogue.deploy.maxBundleMb,
-    baselineDollarsPerDay: catalogue.approval.baselines.dollarsPerDay,
-    baselineWritesPerDay: catalogue.approval.baselines.writesPerDay,
-    baselineBytesPerDay: catalogue.approval.baselines.bytesPerDay,
-    baselineFetchRequestsPerDay: catalogue.approval.baselines.fetchRequestsPerDay,
-    jobTypes: catalogue.jobs?.types ?? null,
+    devApiBase: devApiBase ? devApiBase.origin : null,
   };
 }
 

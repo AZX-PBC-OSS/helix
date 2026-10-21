@@ -41,7 +41,7 @@ export function createTestPrisma(): PrismaClient {
 export function buildTestApp(
   opts: Pick<
     BuildAppOptions,
-    "auth" | "spaDist" | "secretStore" | "directory" | "geo" | "jobsDelivery"
+    "auth" | "spaDist" | "secretStore" | "directory" | "geo" | "jobsDelivery" | "repoDeploy"
   > & {
     prisma?: PrismaClient;
   } = {},

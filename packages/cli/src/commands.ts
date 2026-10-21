@@ -2,11 +2,13 @@ import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { MAX_VISIBILITY_GROUPS, type App, type Version, type Visibility } from "@azx-pbc/shared";
 import { SKILL_FILENAME } from "@azx-pbc/deploy-skill";
-import { CliError, PortalClient } from "./client.js";
+import { CliError, errorReason, PortalClient } from "./client.js";
 import type { ResolvedConfig } from "./config.js";
 import { zipDirectory } from "./zip.js";
+import { renderCapabilities } from "./capabilities.js";
 import { runDeviceLogin } from "./auth/deviceFlow.js";
 import { deleteTokens, writeTokens } from "./auth/tokenStore.js";
+import { githubTokenSource, requestGithubIdToken } from "./auth/githubActions.js";
 
 function requireSlug(config: ResolvedConfig): string {
   if (!config.slug) {
@@ -103,14 +105,61 @@ export async function deployCommand(
   client: PortalClient,
   config: ResolvedConfig,
   opts: { promote?: boolean },
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
   const slug = requireSlug(config);
+  // In GitHub Actions with `id-token: write`, and no explicit token, deploy
+  // with the job's own OIDC token (ADR-0051). An explicit HELIX_TOKEN keeps the
+  // signed-in route.
+  const github = config.token ? null : githubTokenSource(env);
+  if (!config.token && !github && env.GITHUB_ACTIONS === "true") {
+    throw new CliError(
+      "running in GitHub Actions without an ID token; add `permissions: id-token: write` " +
+        "to the workflow (see `helix ci init`)",
+    );
+  }
+  if (github && !isSafePortalUrl(config.portalUrl)) {
+    throw new CliError(
+      `won't send a GitHub token over plain http (${config.portalUrl}); use the portal's https URL`,
+    );
+  }
+  if (github && opts.promote) {
+    throw new CliError(
+      "CI deploys land as a preview; promote it in the portal or with `helix promote <n>`",
+    );
+  }
+
   const zip = config.bundle ? await readFile(config.bundle) : await zipDirectory(config.dir);
   console.log(`Uploading bundle to "${slug}"…`);
 
-  const { version, warnings } = await client.uploadVersion(slug, zip);
+  let result;
+  if (github) {
+    const deployment = await client.getDeploymentConfig();
+    if (!deployment.repoDeploy?.enabled) {
+      throw new CliError("this portal does not accept repo-backed deploys (ask its operator)");
+    }
+    const idToken = await requestGithubIdToken(github, deployment.repoDeploy.audience);
+    try {
+      result = await client.uploadCiVersion(slug, zip, idToken);
+    } catch (err) {
+      // A foreign-repo refusal carries no reason by design; say where to look.
+      if (err instanceof CliError && err.code === "forbidden" && !errorReason(err)) {
+        throw new CliError(
+          `${err.message}; check that "${slug}" is connected to this repo (helix ci show)`,
+          err.code,
+        );
+      }
+      throw err;
+    }
+  } else {
+    result = await client.uploadVersion(slug, zip);
+  }
+  const { version, warnings } = result;
   console.log(`Uploaded as preview:`);
   printVersion(version);
+  if (version.source) {
+    console.log(`  from: ${version.source.repoFullName}@${version.source.commitSha.slice(0, 7)}`);
+  }
 
   if (warnings.length > 0) {
     console.log(`\n${warnings.length} CSP warning(s):`);
@@ -124,6 +173,15 @@ export async function deployCommand(
   } else {
     console.log(`\nNot live yet — promote with: helix promote ${version.number}`);
   }
+}
+
+/** https, or plain http only to this machine (a local portal in dev). */
+function isSafePortalUrl(url: string): boolean {
+  const { protocol, hostname } = new URL(url);
+  return (
+    protocol === "https:" ||
+    (protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(hostname))
+  );
 }
 
 export async function versionsCommand(client: PortalClient, config: ResolvedConfig): Promise<void> {
@@ -164,7 +222,7 @@ export async function rollbackCommand(
 /**
  * `helix login` — OIDC device flow against the issuer the portal advertises.
  * Stores tokens in the XDG cache; nothing here is auto-launched on 401
- * (agents and CI run headless — they use HELIX_TOKEN).
+ * (agents run headless with HELIX_TOKEN; GitHub Actions uses its OIDC token).
  */
 export async function loginCommand(client: PortalClient, config: ResolvedConfig): Promise<void> {
   const { issuer, cliClientId, audience } = await client.getAuthConfig();
@@ -221,4 +279,17 @@ export async function skillCommand(
   const outPath = resolve(opts.path ?? SKILL_FILENAME);
   await writeFile(outPath, skill, "utf8");
   console.log(`Wrote skill to ${outPath}`);
+}
+
+/**
+ * `helix capabilities` — print what this deployment offers (`GET
+ * /api/v1/capabilities`): servable models, approval baselines, connections,
+ * providers, visibility modes, deploy limits and the dev gateway. Instance-wide,
+ * like `helix skill`; `--json` prints the catalogue unformatted.
+ */
+export async function capabilitiesCommand(
+  client: PortalClient,
+  opts: { json?: boolean },
+): Promise<void> {
+  console.log(renderCapabilities(await client.getCapabilities(), opts));
 }

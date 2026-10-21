@@ -9,7 +9,7 @@ import {
   type Span,
   type Tracer,
 } from "@opentelemetry/api";
-import { INSTR_CONSENT_OPERATIONS } from "@azx-pbc/shared/telemetry";
+import { INSTR_CONSENT_OPERATIONS, INSTR_DEPLOY_REPO_REQUESTS } from "@azx-pbc/shared/telemetry";
 import { SERVICE_NAME } from "./serviceName.js";
 
 /**
@@ -26,6 +26,12 @@ import { SERVICE_NAME } from "./serviceName.js";
  * exists, and this is the deliberate decision to give the portal an
  * `instruments()` object rather than a detail. Everything else still gets a
  * span first and a counter only with a rule to write on it.
+ *
+ * The second instrument, `helix.deploy.repo_requests` (ADR-0051), meets the
+ * same bar: the CI deploy route is internet-facing authentication, and the rate
+ * of one denial reason is what an operator alerts on — a burst of
+ * `repo_mismatch` is someone probing, a run of `event_rejected` a misconfigured
+ * workflow.
  */
 
 /** Safe at module scope — `ProxyTracer` re-resolves per `startSpan`. */
@@ -35,6 +41,8 @@ export const tracer: Tracer = trace.getTracer(SERVICE_NAME);
 export interface PortalInstruments {
   /** `operation` ∈ consent operations, `outcome` ∈ the bounded vocabularies. */
   consentOperations: Counter;
+  /** `outcome` ∈ `REPO_DEPLOY_OUTCOMES`; `appId` only once the slug resolved. */
+  repoDeployRequests: Counter;
 }
 
 /**
@@ -59,6 +67,11 @@ export function instruments(): PortalInstruments {
         "Consent-flow operations by operation and outcome. " +
         "Operational only — never billing; identity is never a dimension.",
     }),
+    repoDeployRequests: meter.createCounter(INSTR_DEPLOY_REPO_REQUESTS, {
+      description:
+        "CI deploy route decisions by outcome (ADR-0051). The repo, the GitHub " +
+        "actor and the token are never dimensions.",
+    }),
   };
   return cached;
 }
@@ -75,13 +88,21 @@ export async function withSpan<T>(
   name: string,
   attributes: Attributes,
   fn: (span: Span) => Promise<T>,
+  /**
+   * Whether a thrown error fails the span. Defaults to every throw. A route
+   * that signals an expected refusal by throwing a 4xx `AppError` passes a
+   * predicate so a denial is not counted as a platform error.
+   */
+  isFailure: (err: unknown) => boolean = () => true,
 ): Promise<T> {
   return tracer.startActiveSpan(name, { kind: SpanKind.SERVER, attributes }, async (span) => {
     try {
       return await fn(span);
     } catch (err) {
-      span.recordException(err instanceof Error ? err : new Error(String(err)));
-      span.setStatus({ code: SpanStatusCode.ERROR });
+      if (isFailure(err)) {
+        span.recordException(err instanceof Error ? err : new Error(String(err)));
+        span.setStatus({ code: SpanStatusCode.ERROR });
+      }
       throw err;
     } finally {
       span.end();

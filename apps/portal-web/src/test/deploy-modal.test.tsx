@@ -66,7 +66,7 @@ describe("DeployModal", () => {
     // Both halves of the flow address the app by slug, with nothing to choose.
     expect(await screen.findByText(/Drop your build output folder/i)).toBeDefined();
     await openCli();
-    expect(screen.getByText(/helix deploy --slug cost-explorer/)).toBeDefined();
+    expect(screen.getByText(/helix-cli@latest deploy --slug cost-explorer/)).toBeDefined();
   });
 
   it("points the copied command at this portal, not the CLI default", async () => {
@@ -77,7 +77,7 @@ describe("DeployModal", () => {
     // Without --portal-url the CLI resolves http://localhost:3001, so a command
     // copied off a deployed portal fails to connect and does not say why.
     await openCli();
-    const cli = screen.getByText(/helix deploy --slug cost-explorer/);
+    const cli = screen.getByText(/helix-cli@latest deploy --slug cost-explorer/);
     expect(cli.textContent).toContain(`--portal-url ${window.location.origin}`);
   });
 
@@ -153,6 +153,6 @@ describe("DeployModal", () => {
     stubFetch();
     render(null);
 
-    expect(screen.queryByText(/helix deploy/)).toBeNull();
+    expect(screen.queryByText(/helix-cli@latest deploy/)).toBeNull();
   });
 });

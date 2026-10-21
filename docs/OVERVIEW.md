@@ -143,7 +143,7 @@ where an ADR and older prose disagree, the ADR wins. Foundational set:
 - **Governance & data:** 0016 capability manifest + approval classifier · 0015 app-data three scopes ·
   0021 metering ledger · 0007 portal authz (v0).
 - **Platform shape:** 0017 registry projection (· 0025 projection hardening) · 0018 deploy model (· 0026
-  hosted-build isolation prerequisites · 0030 repo-backed apps · 0038 malformed-bundle salvage in the
+  hosted-build isolation prerequisites · 0051 repo-backed apps via CI push + GitHub OIDC (supersedes 0030) · 0038 malformed-bundle salvage in the
   SPA) · 0022 self-hosted edge · 0023 one-org + app-id partitioning · 0012 edge/portal co-deploy · 0003
   dependency-minimal edge · 0028 customer-deployed model · 0032 CLI naming + distribution.
 - **Auth & access:** 0004 app-user auth · 0024 portal/CLI auth · 0009 relaxed CSP · 0010 anonymous

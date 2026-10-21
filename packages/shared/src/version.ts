@@ -46,6 +46,24 @@ export const DeployReportSchema = z.object({
 });
 export type DeployReport = z.infer<typeof DeployReportSchema>;
 
+/**
+ * Where a CI-deployed version came from (ADR-0051), taken from the verified
+ * GitHub Actions token. Absent on versions uploaded with `helix deploy` from a
+ * workstation or through the portal SPA. `repoFullName` is the name at deploy
+ * time, kept so links still work after the binding changes.
+ */
+export const VersionSourceSchema = z.object({
+  provider: z.literal("github"),
+  repoFullName: z.string(),
+  repositoryId: z.string(),
+  ref: z.string(),
+  commitSha: z.string(),
+  workflowRef: z.string(),
+  runId: z.string(),
+  runAttempt: z.int().positive(),
+});
+export type VersionSource = z.infer<typeof VersionSourceSchema>;
+
 export const VersionSchema = z.object({
   id: z.uuid(),
   appId: z.uuid(),
@@ -57,5 +75,7 @@ export const VersionSchema = z.object({
   createdAt: z.iso.datetime(),
   /** Client-asserted salvage provenance (ADR-0038); absent on CLI uploads. */
   deployReport: DeployReportSchema.optional(),
+  /** Verified CI provenance (ADR-0051); absent on non-CI uploads. */
+  source: VersionSourceSchema.optional(),
 });
 export type Version = z.infer<typeof VersionSchema>;

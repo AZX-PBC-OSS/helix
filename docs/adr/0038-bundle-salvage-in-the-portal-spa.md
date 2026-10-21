@@ -6,7 +6,7 @@ Accepted — reviewed and agreed; implementation not yet started. Relates to
 [ADR-0018](0018-deploy-model-immutable-versions.md) (the deploy model whose "upload a zip of
 static files" contract this deliberately does not change),
 [ADR-0026](0026-hosted-build-isolation-prerequisites.md) and
-[ADR-0030](0030-repo-backed-apps-pull-attested-artifacts.md) (why the platform does not
+[ADR-0051](0051-repo-backed-apps-ci-push-github-oidc.md) (why the platform does not
 build app code, and what eventually removes the need for a human to assemble an archive at
 all), [ADR-0035](0035-offline-capability-platform-service-worker.md) (the one path prefix
 the platform supports, which this decision refuses to generalise),
@@ -75,8 +75,8 @@ Three facts about where this can be fixed shaped the decision.
    (`apps/portal-web/src/api/queries.ts:76`) — so the app's offline scope, the one
    legitimate reason a bundle is nested, is available with no new endpoint.
 
-This is a stopgap and should be read as one. [ADR-0030](0030-repo-backed-apps-pull-attested-artifacts.md)
-— repo-backed apps pulling CI-built attested artifacts — is the real answer to "a human
+This is a stopgap and should be read as one. [ADR-0051](0051-repo-backed-apps-ci-push-github-oidc.md)
+— repo-backed apps deployed by the author's CI — is the real answer to "a human
 should not be assembling an archive". If it lands broadly, most of what follows becomes
 vestigial, and that is an acceptable outcome for work whose whole purpose is to stop
 punishing users for a step we would rather delete.
@@ -276,6 +276,6 @@ punishing users for a step we would rather delete.
   one is a row edit and a test, not a refactor.
 
 - **This work is scaffolding around a step we would rather remove.** If repo-backed apps
-  (ADR-0030) become the normal path, the hand-assembled archive — and most of this ADR —
+  (ADR-0051, which superseded ADR-0030) become the normal path, the hand-assembled archive — and most of this ADR —
   becomes a legacy path for one-off uploads. Choosing the cheap, contained, deletable fix
   over a deeper one is the point, not an oversight.

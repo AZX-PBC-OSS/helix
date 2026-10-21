@@ -12,7 +12,6 @@ import {
 } from "@azx-pbc/shared";
 import { authHeader, buildTestApp, uniqueSlug, type TestApp } from "../test/harness.js";
 import { SERVING_JOBS_CATALOGUE, withEnv } from "../test/env.js";
-import { JOBS_GUIDE_URL } from "@azx-pbc/deploy-skill";
 
 /**
  * GET /api/v1/capabilities + GET /api/v1/skill (ADR-0036) — the deployment
@@ -446,129 +445,55 @@ describe("GET /api/v1/skill", () => {
     expect(body).toContain("localhost");
   });
 
-  it("states the approval baselines", async () => {
+  // The skill carries topology only (ADR-0052); live values come from
+  // `helix capabilities`, so a downloaded copy can't go stale.
+  it("points at `helix capabilities` instead of stating models or budgets", async () => {
     const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-    expect(res.body).toContain(`$${BASELINE_DOLLARS_PER_DAY}/day of LLM`);
-    expect(res.body).toContain(`${BASELINE_WRITES_PER_DAY} writes/day`);
+    expect(res.body).toContain("npx -y @azx-pbc/helix-cli@latest capabilities");
+    expect(res.body).not.toContain(`$${BASELINE_DOLLARS_PER_DAY}/day`);
+    expect(res.body).not.toContain("claude-haiku-4-5");
   });
 
-  // Ties the catalogue's servable list to the skill: with only `anthropic`
-  // seeded, the skill's model line lists claude models and withholds gpt-*.
-  it("renders the servable models, not the curated superset", async () => {
-    await cleanupSeeded();
-    await seedSecret({ scope: "platform", name: "anthropic" });
-    try {
+  it("includes the dev gateway only when it is deployed", async () => {
+    await withEnv({ DEV_API_PUBLIC_BASE: "https://dev-api.example.com" }, async () => {
       const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-      const line = res.body
-        .split("\n")
-        .find((l) => l.includes("Models this platform prices and will serve"));
-      expect(line).toBeDefined();
-      expect(line).toContain("claude-haiku-4-5");
-      expect(line).not.toContain("gpt-4o");
-    } finally {
-      await cleanupSeeded();
+      expect(res.body).toContain("https://dev-api.example.com/<slug>");
+    });
+    await withEnv({ DEV_API_PUBLIC_BASE: undefined }, async () => {
+      const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
+      expect(res.body).not.toContain("dev-gateway.md");
+    });
+  });
+
+  // The skill is evergreen (ADR-0052): what a deployment offers for jobs comes
+  // from `helix capabilities`, so the served skill must not change with the
+  // jobs catalogue, and none of its routing or credential fields may reach it.
+  it("is the same skill whatever the jobs catalogue says, and links the jobs guide", async () => {
+    const bodies: string[] = [];
+    for (const catalogue of [
+      undefined,
+      SERVING_JOBS_CATALOGUE,
+      '{"servers":{"jobs":{"state":"retiring","types":["jobs:fetch"]}}}',
+    ]) {
+      await withEnv({ PORTAL_JOBS_CATALOGUE: catalogue }, async () => {
+        const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
+        expect(res.statusCode).toBe(200);
+        bodies.push(res.body);
+      });
     }
-  });
-
-  // Same tie for the operator-declared path (ADR-0047): the skill an agent
-  // reads must not name a model this deployment withholds.
-  it("renders the operator-declared allowlist, with no secrets seeded", async () => {
-    await cleanupSeeded();
-    await withEnv({ PORTAL_LLM_MODEL_ALLOWLIST: "claude-opus-4-8" }, async () => {
-      const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-      const line = res.body
-        .split("\n")
-        .find((l) => l.includes("Models this platform prices and will serve"));
-      expect(line).toBeDefined();
-      expect(line).toContain("claude-opus-4-8");
-      expect(line).not.toContain("gpt-4o");
-    });
-  });
-
-  describe("background jobs section", () => {
-    // The jobs section follows the catalogue's `jobs.types`, read per call from
-    // PORTAL_JOBS_CATALOGUE — the same env cases as the catalogue tests above.
-    it("is absent on a fully disabled installation", async () => {
-      await withEnv({ PORTAL_JOBS_CATALOGUE: undefined }, async () => {
-        const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-        expect(res.statusCode).toBe(200);
-        expect(res.body).not.toContain("/_api/jobs");
-        expect(res.body).not.toContain("Background jobs");
-        expect(res.body).not.toContain("jobs:fetch");
-        expect(res.body).toContain("helix deploy");
-      });
-    });
-
-    it("renders the offered types, the guide link, and no private routing field", async () => {
-      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
-        const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-        expect(res.statusCode).toBe(200);
-        const body = res.body;
-        expect(body).toContain("`jobs:fetch` (Outbound fetch job)");
-        expect(body).toContain("POST /_api/jobs/:server/types/:type");
-        expect(body).toContain(`(${JOBS_GUIDE_URL})`);
-        // None of the projection's routing/credential fields may reach the skill.
-        for (const private_ of [
-          "endpoint",
-          "databaseUrl",
-          "callbackUrl",
-          "roots",
-          "edgeToJobs",
-          "portalToJobs",
-          "jobsToEdge",
-        ]) {
-          expect(body).not.toContain(private_);
-        }
-      });
-    });
-
-    it("renders the withdrawn section when every job server is retiring", async () => {
-      await withEnv(
-        {
-          PORTAL_JOBS_CATALOGUE: '{"servers":{"jobs":{"state":"retiring","types":["jobs:fetch"]}}}',
-        },
-        async () => {
-          const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-          expect(res.statusCode).toBe(200);
-          const body = res.body;
-          expect(body).toContain("offers no job types for new grants");
-          expect(body).toContain("503 jobs_disabled");
-          expect(body).toContain(`(${JOBS_GUIDE_URL})`);
-          expect(body).not.toContain("/types/:type");
-          expect(body).not.toContain("`jobs:fetch` (Outbound fetch job)");
-        },
-      );
-    });
-
-    it("renders the diagnostic type on a non-production stack that listed it", async () => {
-      await withEnv(
-        {
-          PORTAL_JOBS_CATALOGUE:
-            '{"servers":{"jobs":{"state":"serving","types":["jobs:fetch","jobs:diagnostic"]}}}',
-        },
-        async () => {
-          const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-          expect(res.statusCode).toBe(200);
-          expect(res.body).toContain("`jobs:diagnostic` (Diagnostic job (non-production))");
-        },
-      );
-    });
-
-    // Production parses the catalogue with the strict schema, which refuses the
-    // diagnostic type outright — the failure is a 500, not a filtered list.
-    it("does not render on a production stack listing the diagnostic type (500)", async () => {
-      await withEnv(
-        {
-          NODE_ENV: "production",
-          PORTAL_JOBS_CATALOGUE:
-            '{"servers":{"jobs":{"state":"serving","types":["jobs:fetch","jobs:diagnostic"]}}}',
-        },
-        async () => {
-          const res = await t.app.inject({ url: "/api/v1/skill", headers: authHeader() });
-          expect(res.statusCode).toBe(500);
-        },
-      );
-    });
+    expect(new Set(bodies).size).toBe(1);
+    const body = bodies[0] ?? "";
+    expect(body).toContain("https://azx-pbc-oss.github.io/helix/apps/jobs.md");
+    expect(body).not.toContain("jobs:diagnostic");
+    for (const private_ of [
+      "databaseUrl",
+      "callbackUrl",
+      "edgeToJobs",
+      "portalToJobs",
+      "jobsToEdge",
+    ]) {
+      expect(body).not.toContain(private_);
+    }
   });
 });
 

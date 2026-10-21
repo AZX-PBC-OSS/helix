@@ -2,7 +2,14 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient, Prisma } from "./generated/client.js";
 
 export { PrismaClient, Prisma };
-export type { App, Version, AuditEvent, ApprovalRequest, GatewayCall } from "./generated/client.js";
+export type {
+  App,
+  Version,
+  AuditEvent,
+  ApprovalRequest,
+  GatewayCall,
+  RepoBinding,
+} from "./generated/client.js";
 
 /**
  * Resolve the DSN the portal *runtime* connects as. The portal runs as the

@@ -40,7 +40,6 @@ import {
   JOBS_REMOVAL_GRACE_SECONDS,
   JOBS_RESULT_TTL_SECONDS,
 } from "./policy.js";
-import { JOBS_FETCH_OUTBOUND_TIMEOUT_MS } from "./fetchJob.js";
 
 const guide = readFileSync(new URL("../../../apps/docs/src/apps/jobs.md", import.meta.url), "utf8");
 const skillTemplate = readFileSync(
@@ -291,90 +290,39 @@ describe("the background-jobs author guide", () => {
 });
 
 /**
- * The deploy skill teaches the same contract in condensed form, inside its
- * `IF:JOBS_OFFERED` block. It links to the guide for the full statement, so
- * every fact it does state is pinned here to the same constants the guide is.
+ * The deploy skill is evergreen (ADR-0052): it states one jobs rule and links
+ * the guide for everything else. The facts the rule does state are pinned to
+ * the same constants the guide is.
  */
-describe("the deploy skill's background-jobs section", () => {
-  const start = skillTemplate.indexOf("<!-- IF:JOBS_OFFERED -->\n");
-  const end = skillTemplate.indexOf("<!-- /IF:JOBS_OFFERED -->\n", start);
-  const jobsSection = start === -1 || end === -1 ? "" : skillTemplate.slice(start, end);
-  const prose = jobsSection.replace(/\s+/g, " ");
+describe("the deploy skill's background-jobs rule", () => {
+  const start = skillTemplate.indexOf("- **A job submit keeps its key.**");
+  const rule =
+    start === -1 ? "" : skillTemplate.slice(start, skillTemplate.indexOf("\n- **", start + 1));
+  const prose = rule.replace(/\s+/g, " ");
 
-  it("is present in the skill template", () => {
-    expect(jobsSection, "the skill's IF:JOBS_OFFERED block").toContain("### 3.7 Background jobs");
+  it("is present, and the skill links the jobs guide", () => {
+    expect(rule, "the skill's jobs rule").not.toBe("");
+    expect(skillTemplate).toContain("https://azx-pbc-oss.github.io/helix/apps/jobs.md");
   });
 
-  it("routes the four operations and names the fetch type and the retry-key header", () => {
-    for (const [method, route] of [
-      ["POST", ROUTE_JOBS_SUBMIT],
-      ["GET", ROUTE_JOBS_SNAPSHOT],
-      ["GET", ROUTE_JOBS_RESULT],
-      ["DELETE", ROUTE_JOBS_CANCEL],
-    ] as const) {
-      expect(jobsSection, `${method} ${route} in the skill's operations table`).toContain(
-        `\`${method} ${route}\``,
-      );
+  it("names the shipped retry-key header and the jobs route prefix", () => {
+    expect(rule.toLowerCase()).toContain(`\`${IDEMPOTENCY_KEY_HEADER}\``);
+    expect(ROUTE_JOBS_SUBMIT.startsWith("/_api/jobs/")).toBe(true);
+    expect(rule).toContain("`/_api/jobs/*`");
+  });
+
+  it("retries on exactly the uncertain answers the guide lists, and never on 401", () => {
+    expect(prose).toContain("On no reply, `429` or `503`, resend the same key and bytes");
+    expect(prose).toContain("On `401`, never resubmit");
+    for (const status of ["429", "503"]) {
+      expect(guide, `the guide's error table lists ${status}`).toContain(`| ${status} |`);
     }
-    expect(jobsSection).toContain(`\`${JOBS_FETCH_QUALIFIED_TYPE}\``);
-    expect(jobsSection.toLowerCase()).toContain(`"${IDEMPOTENCY_KEY_HEADER}"`);
-    expect(jobsSection).toContain("`Idempotency-Key`");
-  });
-
-  it("answers every route refusal from the same HTTP status the guide documents", () => {
-    const table = jobsSection.slice(jobsSection.indexOf("| Status | Code"));
-    const listed: string[] = [];
-    for (const row of tableRows(table.slice(0, table.indexOf("\n\n")))) {
-      const status = row[0] ?? "";
-      const codes = [...(row[1] ?? "").matchAll(/`([^`]+)`/g)].map((match) => match[1] ?? "");
-      expect(codes.length, `a refusal row with no code: ${row.join(" | ")}`).toBeGreaterThan(0);
-      for (const code of codes) {
-        expect(Number(status), `the skill's HTTP status for ${code}`).toBe(
-          REQUEST_ERROR_STATUSES[code],
-        );
-        listed.push(code);
-      }
-    }
-    expect(listed.sort(), "the skill's refusal table").toEqual(ROUTE_REFUSAL_CODES);
-  });
-
-  it("names only shipped execution failure codes", () => {
-    const named = /`error\.code` says why \(([^)]*)\)/.exec(prose)?.[1];
-    expect(named, "the skill's failure-code examples").toBeDefined();
-    for (const [, code] of (named ?? "").matchAll(/`([^`]+)`/g)) {
-      expect(JOB_ERROR_CODES as readonly string[], `failure code ${code}`).toContain(code);
-    }
-  });
-
-  it("stops polling at exactly the shipped terminal statuses", () => {
-    const listed = JOB_TERMINAL_STATUSES.map((status) => `\`${status}\``).join(", ");
-    expect(prose, "the skill's terminal-status list").toContain(`terminal status (${listed})`);
-  });
-
-  it("states the fetch job's limits and retention as the shipped constants define them", () => {
-    const states = (figure: string, what: string): void => {
-      expect(prose.includes(figure), `${what}: the skill no longer says "${figure}"`).toBe(true);
-    };
-    states(`at most ${JOBS_MAX_RESULT_BYTES / 1024} KiB`, "the result size");
-    states(`after ${JOBS_FETCH_OUTBOUND_TIMEOUT_MS / 1000} seconds`, "the outbound timeout");
-    const minuteWords: Record<number, string> = { 5: "five" };
-    states(
-      `within ${minuteWords[JOBS_FETCH_DEADLINE_SECONDS / 60] ?? "?"} minutes of acceptance`,
-      "the fetch job's deadline",
+    expect(guide, "the guide treats 401 as a session error, not a jobs error").toContain(
+      "`401` with",
     );
-    states(`readable for ${JOBS_RESULT_TTL_SECONDS / 86_400} days`, "the result retention");
-    states(`the record for ${JOBS_RECORD_TTL_SECONDS / 86_400} days`, "the record retention");
   });
 
-  it("shows a submit client that compiles, keeps the key and bytes, and never resubmits on 401", () => {
-    const client = /\n```js\n([\s\S]*?)\n```\n/.exec(jobsSection)?.[1];
-    expect(client, "the skill's example client block").toBeDefined();
-    expect(() => new Function(client ?? ""), "the example client compiles").not.toThrow();
-    expect(client).toContain(`"Idempotency-Key": job.key`);
-    expect(client).toContain("body: job.body");
-    // The 401 branch returns without sending again.
-    const on401 = /if \(res\?\.status === 401\) \{([\s\S]*?)\}/.exec(client ?? "")?.[1] ?? "";
-    expect(on401, "the 401 branch").toContain("return null");
-    expect(on401, "the 401 branch").not.toContain("fetch(");
+  it("states no job type, so a downloaded skill cannot go stale", () => {
+    expect(skillTemplate).not.toContain(JOBS_FETCH_QUALIFIED_TYPE);
   });
 });

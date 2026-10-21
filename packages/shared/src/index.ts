@@ -28,6 +28,7 @@ export * from "./exchange.js";
 export * from "./env.js";
 export * from "./principal.js";
 export * from "./devTokens.js";
+export * from "./repoBinding.js";
 export * from "./instruction.js";
 export * from "./internalJwt.js";
 export * from "./fetch.js";

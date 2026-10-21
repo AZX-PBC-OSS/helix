@@ -49,6 +49,7 @@ describe("PortalClient authentication", () => {
       { sub: "u1", via: "oidc", email: "e@x.io", isAdmin: false, canSearchDirectory: true },
     ],
     ["getSkill", (c) => c.getSkill(), "# Helix skill\n"],
+    ["getCapabilities", (c) => c.getCapabilities(), {}],
     ["listVersions", (c) => c.listVersions("demo"), []],
     ["createApp", (c) => c.createApp({ slug: "demo", displayName: "Demo" }), APP],
     ["promote", (c) => c.promote("demo", 1), APP],
@@ -101,12 +102,51 @@ describe("PortalClient authentication", () => {
   });
 });
 
+describe("PortalClient.getDeploymentConfig", () => {
+  const CONFIG = { appPublicBase: "https://apps.example.com" };
+
+  it("fetches once and reuses the answer", async () => {
+    const { calls } = stubFetch(CONFIG);
+    const client = new PortalClient("http://portal");
+    await client.getDeploymentConfig();
+    await client.getDeploymentConfig();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("retries after a failure instead of caching it", async () => {
+    const { spy } = stubFetch({ error: { code: "internal", message: "boom" } }, 500);
+    const client = new PortalClient("http://portal");
+    await expect(client.getDeploymentConfig()).rejects.toThrow();
+    spy.mockResolvedValue(new Response(JSON.stringify(CONFIG), { status: 200 }));
+    await expect(client.getDeploymentConfig()).resolves.toMatchObject(CONFIG);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("PortalClient error handling", () => {
   it("surfaces the portal's error code", async () => {
     stubFetch({ error: { code: "slug_taken", message: 'slug "demo" is already taken' } }, 409);
     await expect(
       new PortalClient("http://portal", "tok").createApp({ slug: "demo", displayName: "Demo" }),
     ).rejects.toMatchObject({ code: "slug_taken" });
+  });
+
+  // The portal's not-found handler names the route; "app not found" does not.
+  // Only the first means the portal lacks a route this CLI expects.
+  it("says the portal may be older when a route is missing", async () => {
+    stubFetch(
+      { error: { code: "not_found", message: "route GET /api/v1/capabilities not found" } },
+      404,
+    );
+    await expect(new PortalClient("http://portal", "tok").getCapabilities()).rejects.toThrow(
+      /probably older than this CLI/,
+    );
+  });
+
+  it("leaves an ordinary not-found alone", async () => {
+    stubFetch({ error: { code: "not_found", message: 'app "demo" not found' } }, 404);
+    const err = await new PortalClient("http://portal", "tok").listVersions("demo").catch((e) => e);
+    expect(err).toMatchObject({ code: "not_found", message: 'app "demo" not found' });
   });
 
   it("falls back to the status when the body is not an ApiError", async () => {

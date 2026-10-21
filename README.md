@@ -105,7 +105,7 @@ EDGE_DEV_ALLOW_UNAUTHENTICATED=true pnpm dev:edge
 
 In the portal SPA, create an app and upload a build folder or zip. The portal
 validates the bundle and offers repairs for supported packaging problems.
-To deploy from the CLI (`npm i -g @azx-pbc/helix-cli`, or run it out of the workspace as below), from
+To deploy from the CLI (`npx -y @azx-pbc/helix-cli@latest <command>`, or run it out of the workspace as below), from
 inside the app directory:
 
 ```bash

@@ -15,6 +15,7 @@ import { UsageTab } from "./tabs/UsageTab";
 import { DataTab } from "./tabs/DataTab";
 import { AccessTab } from "./tabs/AccessTab";
 import { DevModeTab } from "./tabs/DevModeTab";
+import { RepositoryTab } from "./tabs/RepositoryTab";
 
 export function AppDetailPage() {
   const { slug = "" } = useParams();
@@ -24,7 +25,7 @@ export function AppDetailPage() {
 
   const app = useQuery(appQuery(slug));
   const versions = useQuery(versionsQuery(slug));
-  const { hostFor, urlFor } = useDeployment();
+  const { hostFor, urlFor, repoDeployEnabled } = useDeployment();
 
   if (app.isPending) {
     return (
@@ -203,6 +204,11 @@ export function AppDetailPage() {
           <Tabs.Tab value="access" leftSection={<Icon name="lock" size={15} />}>
             Access
           </Tabs.Tab>
+          {repoDeployEnabled && (
+            <Tabs.Tab value="repository" leftSection={<Icon name="box" size={15} />}>
+              Repository
+            </Tabs.Tab>
+          )}
           <Tabs.Tab value="dev-mode" leftSection={<Icon name="terminal" size={15} />}>
             Dev mode
           </Tabs.Tab>
@@ -227,6 +233,11 @@ export function AppDetailPage() {
           {/* Keyed so the group-picker draft resets per app — see AccessTab. */}
           <AccessTab key={a.id} app={a} />
         </Tabs.Panel>
+        {repoDeployEnabled && (
+          <Tabs.Panel value="repository">
+            <RepositoryTab app={a} />
+          </Tabs.Panel>
+        )}
         <Tabs.Panel value="dev-mode">
           <DevModeTab app={a} />
         </Tabs.Panel>

@@ -153,6 +153,18 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
       and approval-note recovery separately from background jobs. These were removed from
       jobs scope on 2026-10-07; no replacement UX or implementation is approved.
 
+## Repo-backed apps (ADR-0051, Accepted)
+
+- [x] **Phase 1: the GitHub OIDC verifier, `repo_bindings`, and `POST /api/v1/apps/:slug/ci/versions`.** The verifier stays out of the shared `authenticate` chain and is used only by the CI route's own preHandler, which runs before the multipart body is read. IDs are pinned on first use, `jti` is unique per version, and the route gets the `helix.deploy.repo` span and `helix.deploy.repo_requests` counter. The adversarial suite ships with it: wrong issuer or audience, GitHub's default audience, another repo's valid token, a transferred repo, each rejected `event_name`, a `pull_request` ref, a replayed `jti`, a GitHub token on every `authenticate`-only route, and no body read on refusal. — ADR-0051 decisions 3–8
+- [x] **Phase 2: `helix deploy` token exchange plus the starter and reusable workflows.** Detect `ACTIONS_ID_TOKEN_REQUEST_URL`, request a token with the portal origin as `audience`, and leave an explicit `HELIX_TOKEN` on the normal route. — ADR-0051 decision 9
+- [ ] **Publish `AZX-PBC-OSS/helix-actions` and tag `v1`.** The repo exists and its first commit is a copy of `integrations/helix-actions/` (2026-10-19); it still needs pushing plus a `v1.0.0` release tag and a `v1` tag, after the first CLI release that ships `helix ci init` (the README's example pins that version). Until then `helix ci init --reusable` writes a workflow that cannot run. Syncing is manual (`integrations/helix-actions/SYNC.md`); automate it once it changes more than rarely. — ADR-0051 decision 9
+- [x] **Phase 3: connect-repo UX in `apps/portal-web`.** Binding form, the pinned repo identity, the optional workflow and environment pins, and per-version commit and run links. — ADR-0051 phasing
+
+## Agent skill and public docs (ADR-0052)
+
+- [ ] **Version the public docs.** The docs site tracks `main`, but customer deployments can run an older release (ADR-0028). The skill tells agents that `helix capabilities` and portal errors win. Per-release docs, or a "since" marker on newer features, would close the gap. — ADR-0052
+- [ ] **Bump `MIN_CLI_VERSION` deliberately.** It is `0.1.0`, meaning no known floor. The first portal change that removes or reshapes a route an older CLI calls must raise it in the same change. — ADR-0052 decision 5
+
 ## Deferred / v2
 
 - [ ] **Stale-form concurrency on the policy write paths (`If-Match` / client-supplied `policyVersion`).** `apps.policyVersion` is CAS'd **server-internally** — the app row is read inside the transaction and the write CASes on the version read there, so two genuinely concurrent writers cannot lose each other and the loser gets a 409. What that deliberately does not cover is an owner whose Capabilities tab has been open for an hour: their PUT is a full replace computed from a pre-image the server never sees, so it still blind-overwrites whatever landed meanwhile. Closing it means the client sending the version it read (body field or `If-Match`) and threading it through the SPA forms and the `helix` CLI, plus deciding optional-for-compat vs required. Chosen against for now because it changes the request shape on four routes to harden a case with no data-integrity failure — the last writer's intent is at least fully expressed. — docs/design/approvals.md §5, issue #24 follow-up (2026-08-14)

@@ -207,6 +207,77 @@ export function resolveAdvertisedJobTypes(
 }
 
 /**
+ * This portal's public origin, the exact `aud` the CI deploy route accepts
+ * (ADR-0051 decision 4): `PORTAL_PUBLIC_ORIGIN` when set, otherwise
+ * `https://portal.<APP_PUBLIC_BASE host>`, the hostname the Bicep binds for the
+ * portal. Never derived from the request's `Host` header: a value the caller
+ * controls cannot decide which audience the caller's token must carry.
+ */
+export function resolvePortalPublicOrigin(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.PORTAL_PUBLIC_ORIGIN?.trim();
+  if (raw) {
+    let url: URL;
+    try {
+      url = new URL(raw);
+    } catch {
+      throw new Error(`PORTAL_PUBLIC_ORIGIN is not a valid absolute URL: ${raw}`);
+    }
+    if (url.protocol !== "https:" || url.origin !== raw.replace(/\/$/, "")) {
+      throw new Error(`PORTAL_PUBLIC_ORIGIN must be an https origin with no path: ${raw}`);
+    }
+    return url.origin;
+  }
+  const base = resolveAppPublicBase(env);
+  return `https://portal.${base.host}`;
+}
+
+/** GitHub's Actions OIDC issuer; GitHub Enterprise Cloud tenants can customize it. */
+const DEFAULT_GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+const DEFAULT_GITHUB_SERVER_URL = "https://github.com";
+
+export interface RepoDeployConfig {
+  /** `PORTAL_REPO_DEPLOY_ENABLED`; default on. Off answers 404 on the CI and binding routes. */
+  enabled: boolean;
+  /** `PORTAL_GITHUB_OIDC_ISSUER`, https only, no trailing slash. */
+  issuer: string;
+  /** {@link resolvePortalPublicOrigin}. */
+  audience: string;
+  /** `PORTAL_GITHUB_SERVER_URL`: the web origin commit and run links point at. */
+  serverUrl: string;
+}
+
+function httpsOrigin(name: string, raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`${name} is not a valid absolute URL: ${raw}`);
+  }
+  if (url.protocol !== "https:") throw new Error(`${name} must be https: ${raw}`);
+  return raw.replace(/\/+$/, "");
+}
+
+/** Repo-backed deploy settings (ADR-0051). */
+export function resolveRepoDeployConfig(env: NodeJS.ProcessEnv = process.env): RepoDeployConfig {
+  const flag = env.PORTAL_REPO_DEPLOY_ENABLED?.trim();
+  if (flag && flag !== "true" && flag !== "false") {
+    throw new Error(`PORTAL_REPO_DEPLOY_ENABLED must be true or false (got ${flag})`);
+  }
+  return {
+    enabled: flag !== "false",
+    issuer: httpsOrigin(
+      "PORTAL_GITHUB_OIDC_ISSUER",
+      env.PORTAL_GITHUB_OIDC_ISSUER?.trim() || DEFAULT_GITHUB_OIDC_ISSUER,
+    ),
+    audience: resolvePortalPublicOrigin(env),
+    serverUrl: httpsOrigin(
+      "PORTAL_GITHUB_SERVER_URL",
+      env.PORTAL_GITHUB_SERVER_URL?.trim() || DEFAULT_GITHUB_SERVER_URL,
+    ),
+  };
+}
+
+/**
  * Validate the deployment config at boot so a bad value is a startup error, not
  * a per-request surprise. Called from `buildApp`; the resolvers themselves stay
  * lazy so tests can override env per case.
@@ -215,6 +286,7 @@ export function assertDeploymentConfig(env: NodeJS.ProcessEnv = process.env): vo
   resolveAppPublicBase(env);
   resolveDevApiBase(env);
   resolveEgressBaseUrl(env);
+  resolveRepoDeployConfig(env);
   resolveJobsCatalogueServers(env);
   resolvePortalJobsDeliveryConfig(env);
 }

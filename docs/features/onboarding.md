@@ -1,12 +1,13 @@
 # Onboarding — the in-app guide and the agent skill
 
-> **Related ADRs:** [ADR-0028](../adr/0028-deployment-model-customer-deployed.md) (single-tenant, customer-deployed — why hostnames can't be baked in) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps — the first thing anyone must be told) · [ADR-0032](../adr/0032-cli-naming-and-distribution.md) (CLI naming + distribution — where the `npm i -g` line comes from) · [ADR-0036](../adr/0036-deployment-capability-catalogue.md) (deployment capability catalogue — the instance endpoint that renders the skill and serves the values the docs site can't).
+> **Related ADRs:** [ADR-0028](../adr/0028-deployment-model-customer-deployed.md) (single-tenant, customer-deployed — why hostnames can't be baked in) · [ADR-0020](../adr/0020-static-only-apps-v1.md) (static-only apps — the first thing anyone must be told) · [ADR-0032](../adr/0032-cli-naming-and-distribution.md) (CLI naming + distribution) · [ADR-0036](../adr/0036-deployment-capability-catalogue.md) (deployment capability catalogue — the instance endpoint that renders the skill and serves the values the docs site can't) · [ADR-0052](../adr/0052-evergreen-agent-skill-and-npx-cli.md) (evergreen skill, npx CLI — what the skill may contain).
 
 The portal provides two guides for building an app:
 
 - **How to develop**, a modal available from the sidebar and My Apps page.
 - An agent **SKILL.md** from `packages/deploy-skill`, available to copy or download
-  from either location. The rendered skill includes this deployment's hostnames.
+  from either location. The rendered skill includes this deployment's hostnames and
+  points at the public docs and `helix capabilities` for everything else.
 
 These guides let app authors get started without reading the contributor docs.
 
@@ -33,55 +34,53 @@ Written as JSX, not markdown: the SPA has no markdown renderer and doesn't need 
 
 `packages/deploy-skill/SKILL.md` is a [Claude Agent Skills](https://code.claude.com/docs/en/skills)
 document (YAML frontmatter + markdown) that drops into `.claude/skills/helix/SKILL.md` unmodified
-and reads fine pasted into any other agent. It is the reference version of the same story: the
-static-frontend constraint, the CSP an app must live inside, the manifest shape, the `/_api/*`
-endpoints with real request/response shapes, the deploy contract and its limits, the error codes
-worth handling, and a pre-flight checklist.
+and reads fine pasted into any other agent.
 
-It ships as a **template**. Hostnames differ per deployment and the dev gateway is opt-in, so the
-file carries `{{PORTAL_ORIGIN}}`, `{{APPS_HOST}}`, `{{DEV_API_BASE}}`, `{{LLM_MODELS}}`, the deploy
-caps, and the four `{{BASELINE_*}}` approval thresholds, plus a `<!-- IF:DEV_API -->` block.
-`renderSkill()` (`packages/deploy-skill/src/index.ts`) fills them; the portal renders it server-side
-at `GET /api/v1/skill` from the capability catalogue, and the SPA fetches that (ADR-0036). A
-deployment with no dev gateway loses that section entirely rather than being handed a base URL that
-will never answer — the same degradation the **Dev mode** tab does.
+It is **short and evergreen** (ADR-0052). People download it once, so it holds only what stays
+true across releases:
 
-The models offered come from the catalogue's **servable** list, not the curated superset, so "what
-this platform will serve" cannot drift from what it prices *and* what it can actually route. The
-operator's declaration wins when one exists (`PORTAL_LLM_MODEL_ALLOWLIST`/`PORTAL_LLM_MODEL_BLOCKLIST`,
-ADR-0047 — on `deployFoundry` installs the Bicep derives the allowlist from `foundryModels`, so the
-skill lists exactly what the account deployed); otherwise the ADR-0036 heuristic applies (curated ∩
-the upstream family has a seeded `platform` secret — a deployment that never seeded the `openai` key
-stops advertising `gpt-*` rather than 502ing at call time). The SPA's model picker reads the same
-catalogue endpoint, so a withheld model is never a checkbox either.
+- the rules an agent breaks before it would think to look anything up: static frontend only,
+  `connect-src 'self'`, compare-and-swap shared writes, no service worker, reserved paths, the web
+  app manifest `crossorigin` trap, identity via `/_api/me`;
+- this deployment's addresses;
+- the npx deploy flow;
+- a short checklist;
+- pointers to the rest. `npx -y @azx-pbc/helix-cli@latest capabilities` gives live values
+  (servable models, baselines, deploy caps, connections, providers, visibility modes, the dev
+  gateway). The public docs at `azx-pbc-oss.github.io/helix/apps/*.md` give API detail.
 
-### Why it's fetched, not bundled
+The public docs (`apps/docs/src/apps/`) are the reference. Everything that used to be in the skill
+(request shapes, the error table, the connect flow, offline build pitfalls) now lives there.
 
-The SPA used to import the markdown with Vite's `?raw` and render it client-side from
-`GET /api/v1/config` plus `MODEL_PRICING`. That listed models the edge could not serve, so an agent
-built against it 502'd. The skill is now rendered server-side by `GET /api/v1/skill` (authed, behind
-the ADR-0024 bearer chain) from the catalogue, and the SPA fetches the result — closing the
-curated-vs-servable gap at its source. The catalogue itself is `GET /api/v1/capabilities` (also
-authed): a single instance-wide JSON document answering, manifest key by key, what this deployment
-can do and which requests auto-approve. An agent or the `helix skill` CLI command reads either; the
-public docs site (deferred) will consume `renderSkillGeneric()` — the same template with descriptive
-prose in place of every placeholder, pointing readers at their own `/api/v1/capabilities`.
+It ships as a **template** with three placeholders, `{{PORTAL_ORIGIN}}`, `{{APPS_HOST}}`, and
+`{{DEV_API_BASE}}`, plus a `<!-- IF:DEV_API -->` block. The portal renders it at `GET /api/v1/skill`
+(`renderSkill()`, `packages/deploy-skill/src/index.ts`), and the SPA and `helix skill` fetch that. A
+deployment with no dev gateway drops the block entirely rather than handing out a base URL that will
+never answer.
+
+### Why values aren't in the skill
+
+The skill used to state servable models, deploy caps, and the four approval baselines, each
+substituted from the catalogue at render time. That was accurate on the day of download and stale
+after the next operator change or release, with no way to tell everyone to re-download. These values
+now come from `helix capabilities`, which reads `GET /api/v1/capabilities` live. The catalogue
+remains the single source; the skill just stops copying it.
 
 ## Design notes (why)
 
-- **The modal is the summary; the skill is the reference.** Two copies of the developer story
-  would drift. Anything longer than a couple of lines belongs in `SKILL.md`, and the modal's job
-  is to be short enough that someone reads it.
+- **The docs are the reference; the modal and the skill are summaries.** Copies of the developer
+  story drift. Anything longer than a couple of lines belongs in `apps/docs/src/apps/`. The modal
+  should be short enough that people read it. The skill holds only rules and pointers, and its tests
+  reject model ids, budgets, size caps, a global install, a link to a docs page that doesn't exist,
+  and growth past 200 lines.
 - **A placeholder that reaches an agent is a bug, not a typo.** An agent acts on the file
-  literally. `packages/deploy-skill/src/index.test.ts` asserts the rendered output contains no
-  leftover `{{` in **both** render modes (the instance `renderSkill()` and the generic
-  `renderSkillGeneric()`), so adding a token without wiring both maps fails the suite.
-- **No external links in the modal or the skill.** Every reference there is in-app (the
-  Capabilities tab, the Dev mode tab) or a plain-text repo path. A customer deployment shouldn't
-  render dead links to somewhere else. The one deliberate exception is the sidebar chrome: the
-  **Source code** / **Report a bug** pair points at the platform's own upstream repo
-  (`github.com/AZX-PBC-OSS/helix`), hardcoded the way the CLI's npm package name is — product
-  identity, not deployment topology — so it is not a `/api/v1/config` field either.
+  literally. `packages/deploy-skill/src/index.test.ts` asserts the rendered output has no
+  leftover `{{`, so adding a token without wiring it fails the suite.
+- **External links are product identity only.** The modal links nowhere outside the deployment
+  except the sidebar's **Source code** / **Report a bug** pair, which points at the upstream repo.
+  The skill links the public docs site. Both are hardcoded, like the CLI's npm package name,
+  because they identify the product, not a deployment. Downloaded skills link docs pages by URL, so
+  `apps/` docs pages must not be renamed or removed.
 - **The CLI instructions carry this deployment's `portalUrl`.** The CLI cannot discover its
   portal — it falls back to `http://localhost:3001` (`packages/cli/src/config.ts`) — so a
   `helix.json` copied from here without it makes `helix login` dial a portal that was never
@@ -90,11 +89,11 @@ prose in place of every placeholder, pointing readers at their own `/api/v1/capa
   `create`/`deploy`/`promote`. It is printed **before** the command block for the same reason:
   `helix create` reads the slug out of that file. The Deploy modal's one-off reminder command
   uses the flag instead, since there may be no file there yet.
-- **The install instructions are honest.** They are now the real one-liner —
-  `npm i -g @azx-pbc/helix-cli`, published from CI with provenance (ADR-0032). Before that landed
-  the modal showed a clone/build/`npm link` sequence rather than a one-liner that fails on first
-  contact; note that `npm i -g git+…` still cannot resolve this package (workspace `catalog:`
-  specifiers, no prepack step), so it is not a fallback to reintroduce.
+- **The CLI runs from npx at `@latest`** (ADR-0052), so nobody has to install or update it. The
+  explicit `@latest` stops npx reusing a stale cached copy, and `-y` skips the prompt an agent can't
+  answer. A global `npm i -g @azx-pbc/helix-cli` is mentioned as an option for people who prefer
+  it. `npm i -g git+…` cannot resolve this package (workspace `catalog:` specifiers, no prepack
+  step), so don't reintroduce it as a fallback.
 - **The skill promises nothing unbuilt.** No `@azx-pbc/app-sdk`, no `helix dev`, no MCP transport
   — an agent told those exist will write code against them.
 
@@ -102,10 +101,9 @@ prose in place of every placeholder, pointing readers at their own `/api/v1/capa
 
 - **A codemod in the skill** — "rewrite my third-party `fetch` calls to `/_api/fetch/<url>`" is a
   find-and-replace the skill could carry, per [fetch-proxy design §3.1](../design/fetch-proxy.md).
-- **The public docs site** — deployment-agnostic, includes regions of `SKILL.md` via
-  `renderSkillGeneric()`, and points readers at their own `/api/v1/capabilities` for values
-  (ADR-0036 §7). The generic renderer and the "no leftover `{{`" guard for it are already in place;
-  the site build itself is the remaining work.
+- **Versioned docs.** The public docs track `main`, so a customer deployment running an older
+  release can be described by newer docs. The skill tells agents that `capabilities` and the
+  portal's errors win, but per-release docs would close the gap.
 - **Branching the handoff on browser-vs-agent** — the band pitches the skill to everyone. Someone
   who has said they build in a browser IDE would be better served leading with the dev gateway.
 - **Deploying an example in one click** — `examples/` is the obvious "start from something that

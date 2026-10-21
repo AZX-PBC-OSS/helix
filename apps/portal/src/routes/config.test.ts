@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { DeploymentConfigResponseSchema } from "@azx-pbc/shared";
+import { DeploymentConfigResponseSchema, MIN_CLI_VERSION } from "@azx-pbc/shared";
 import { buildTestApp, type TestApp } from "../test/harness.js";
 import { withEnv } from "../test/env.js";
 
@@ -34,6 +34,13 @@ describe("GET /api/v1/config", () => {
     });
   });
 
+  it("states the oldest CLI it supports", async () => {
+    const body = DeploymentConfigResponseSchema.parse(
+      (await t.app.inject({ url: "/api/v1/config" })).json(),
+    );
+    expect(body.cli).toEqual({ minVersion: MIN_CLI_VERSION });
+  });
+
   describe("deploy size caps", () => {
     it("reports the defaults in megabytes", async () => {
       await withEnv(
@@ -48,8 +55,7 @@ describe("GET /api/v1/config", () => {
       );
     });
 
-    // The SPA renders these into the agent skill, so an override has to reach the
-    // client — a stale cap sends an agent chasing a rejection it can't explain.
+    // The SPA states these caps, so an override has to reach the client.
     it("follows the env overrides", async () => {
       await withEnv({ DEPLOY_MAX_FILE_MB: "80", DEPLOY_MAX_BUNDLE_MB: "400" }, async () => {
         const body = DeploymentConfigResponseSchema.parse(

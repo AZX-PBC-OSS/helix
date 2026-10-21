@@ -66,19 +66,78 @@ helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]    # upload a version
 helix versions                                               # list versions
 helix promote  <number>                                      # make a version live
 helix rollback [number]                                      # revert the live pointer
+helix capabilities [--json]                                  # what this deployment offers
 helix skill    [--path <file>]                               # write this deployment's agent skill to disk
+helix ci init  [--repo <owner/name>] [--branch <b>] [--reusable] [--force]   # deploy from GitHub Actions
+helix ci show | helix ci remove                              # the app's repo binding
 ```
 
 `deploy` uploads the bundle as a **preview**; `--promote` flips it live in the
 same step (architecture §5.1). `visibility` is `internal | group:<id>[,<id>…] | password
 | public`.
 
-`helix skill` fetches this deployment's rendered agent skill (`GET /api/v1/skill`,
-ADR-0036) — the same document the portal's **How to develop** modal hands out, with
-this deployment's hosts, servable models, and approval baselines already substituted
-in. It needs no app slug or `helix.json`, only a portal URL and a token. Defaults to
-`./SKILL.md`; `--path .claude/skills/helix/SKILL.md` drops it where a Claude Code
-agent reads it off disk.
+`helix capabilities` prints the deployment capability catalogue
+(`GET /api/v1/capabilities`, ADR-0036) in readable form:
+
+- servable models;
+- approval baselines;
+- named connections and OAuth providers;
+- visibility modes;
+- deploy caps;
+- the dev gateway;
+- which requests queue for an admin.
+
+`--json` prints the raw catalogue. If the portal sends a shape this CLI can't
+format, it prints the JSON instead of failing.
+
+`helix skill` fetches this deployment's rendered agent skill (`GET /api/v1/skill`).
+It is the same document the portal's **How to develop** modal hands out: this
+deployment's hosts, plus pointers to `helix capabilities` and the public docs.
+
+Neither command needs an app slug or `helix.json`, only a portal URL and a token.
+`helix skill` writes `./SKILL.md` by default; `--path .claude/skills/helix/SKILL.md`
+puts it where a Claude Code agent reads it from disk.
+
+### Compatibility with the portal
+
+Every command except `logout` first reads the public `GET /api/v1/config`. If
+the portal states a `cli.minVersion` newer than this CLI, the CLI prints a
+warning to stderr suggesting `@latest`. The warning never fails the command.
+
+A 404 from a missing _route_ (the portal's not-found handler, as opposed to "app
+not found") means the portal is older than the CLI, and the error says so. The
+floor is `MIN_CLI_VERSION` in `@azx-pbc/shared`. Bump it by hand when the portal
+removes or changes something an older CLI relies on (ADR-0052).
+
+### Deploying from GitHub Actions
+
+`helix ci init`, run signed in from the app's directory in its repo checkout,
+connects the app to the repo and branch. The repo comes from `origin`; the
+branch is the remote's default branch. `--repo` and `--branch` override either.
+It then writes `.github/workflows/helix-deploy.yml` and merges `slug`,
+`portalUrl` and `dir` into `helix.json`, or into a legacy `azx.json` if that's
+the file in use. Commit both. Each push to the branch then lands a preview
+(ADR-0051). Re-running it keeps any environment or workflow limit set on the
+Repository tab, and refuses to replace a workflow pin unless you pass `--force`.
+
+The generated workflow has two jobs. `build` installs and builds with no
+`id-token` permission. `deploy` downloads the output and runs only the pinned
+CLI. Code from the repo or its dependencies never runs where it could mint a
+deploy token.
+
+The workflow needs no secret. Inside GitHub Actions, when `HELIX_TOKEN` is not
+set and the job has `permissions: id-token: write`, `helix deploy` asks GitHub
+for an OIDC token whose audience is the portal (read from `GET /api/v1/config`)
+and uploads to `POST /api/v1/apps/:slug/ci/versions`. CI deploys always land as
+a preview, so `--promote` is refused there. It refuses to send the token to a
+plain-`http` portal other than one on `localhost`.
+
+`--reusable` writes a caller of the public reusable workflow
+(`AZX-PBC-OSS/helix-actions`, source in `integrations/helix-actions/`) instead
+of a self-contained one. It also pins the binding to that workflow, so no other
+workflow on the branch can deploy. `helix ci show` prints the binding,
+including the repo ids pinned by the first deploy. `helix ci remove` disconnects
+the app.
 
 > **Breaking in 0.2.0:** the `private` visibility mode was renamed to `internal`.
 > It never checked _which_ user signed in, only that someone had. Passing the old
@@ -91,9 +150,11 @@ agent reads it off disk.
 Two paths, in precedence order:
 
 1. **Static token** — `HELIX_TOKEN` / `--token`. Sends the value as a bearer
-   token verbatim. This is the CI/scripts path, and also how the portal's
-   dev-token stub keeps working (`HELIX_TOKEN=$PORTAL_DEV_TOKEN`). It is never
-   accepted by a production portal.
+   token verbatim. This is the local scripts path, and also how the portal's
+   dev-token stub keeps working (`HELIX_TOKEN=$PORTAL_DEV_TOKEN`). The dev token
+   is never accepted by a production portal. A stored token is not a supported
+   way to deploy from CI; repo-backed deploys use the workflow's GitHub Actions
+   OIDC token instead (ADR-0051).
 2. **`helix login`** — the OIDC device flow. The CLI asks the portal
    (`GET /api/v1/auth/config`) which issuer to use (the local dev IdP on
    `:3002` in dev; Entra later), prints a verification URL + code, and polls
@@ -104,14 +165,28 @@ Two paths, in precedence order:
 
 ## Running it
 
-### Installed from npm
+### From npm
+
+App authors and agents run it with `npx`, so it is always the current release
+and there is nothing to keep updated (ADR-0052):
 
 ```bash
-npm i -g @azx-pbc/helix-cli
 cd my-app
-export HELIX_TOKEN="…"
+npx -y @azx-pbc/helix-cli@latest deploy --promote
+```
+
+Write `@latest` explicitly, because a bare package name lets `npx` reuse a copy
+it cached earlier. `-y` skips the install prompt.
+
+To install it once instead:
+
+```bash
+npm i -g @azx-pbc/helix-cli          # update with: npm i -g @azx-pbc/helix-cli@latest
 helix deploy --promote
 ```
+
+CI workflows pin an exact version; `helix ci init` writes the one it was run
+with.
 
 Needs **Node 22.12+** (or 24+). The engines range and the bundle's esbuild
 target move together (see `scripts/build.mjs`), so the declared floor is real:

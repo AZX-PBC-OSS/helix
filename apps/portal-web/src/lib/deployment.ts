@@ -27,6 +27,13 @@ export interface Deployment {
   /** Deploy size caps in MB — null only while the config query is in flight. */
   deployMaxFileMb: number | null;
   deployMaxBundleMb: number | null;
+  /**
+   * Repo-backed deploys (ADR-0051): whether the portal accepts them, and the
+   * GitHub web origin for commit and run links. False/null while loading or on
+   * a portal that predates the feature.
+   */
+  repoDeployEnabled: boolean;
+  githubServerUrl: string | null;
 }
 
 /**
@@ -67,6 +74,8 @@ export function useDeployment(): Deployment {
     platformMonthlyUsdCap: data?.platformMonthlyUsdCap ?? null,
     deployMaxFileMb: data?.deployMaxFileMb ?? null,
     deployMaxBundleMb: data?.deployMaxBundleMb ?? null,
+    repoDeployEnabled: data?.repoDeploy?.enabled ?? false,
+    githubServerUrl: data?.repoDeploy ? data.repoDeploy.serverUrl.replace(/\/+$/, "") : null,
   };
 }
 

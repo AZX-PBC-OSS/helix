@@ -529,7 +529,7 @@ The points that matter:
 
 ## Developing with the dev gateway
 
-The [dev gateway](/apps/quickstart#_5-developing-before-you-deploy), when
+The [dev gateway](/apps/dev-gateway), when
 your deployment runs one, supports the same four operations, with the app
 slug in the path and a dev token:
 
