@@ -242,6 +242,25 @@ UNSET, nothing degrades, and each refusal logs one bounded
 `jobs.admission.capacity_refused` event (the cap, the limit, the occupancy)
 that never becomes a persistent audit row.
 
+`src/capacity.integration.test.ts` proves these limits through the real
+stack (edge, jobs and the store as child processes): concurrent submissions
+stop exactly at a lowered per-app unfinished cap; a retained key recovers at
+full capacity, under lowered limits and while intake is closed; lowering a cap
+below the current occupancy evicts no record and changes no stored result;
+completed jobs keep occupying the retained cap until the cleanup loop
+physically removes them, and `jobs_capacity` reads `degraded` only for that
+server-wide retained saturation. The same suite floods the edge's submission
+throttle: every attempt is charged, the flood is refused `429 rate_limited`
+before anything is forwarded, refusals do not move the window's end, the
+ledger keeps at most the 20-row denial budget of refusal rows, and the refused
+key is accepted as new work after the window resets.
+
+The edge's submission throttle has no operator override: the edge always uses
+the shared defaults (10 per app/environment and 100 deployment-wide per 60 s),
+and `EDGE_JOBS_CONFIG` refuses a `limits` field. The dev gateway counts its
+own submissions in memory, so its windows are not shared with the edge's
+deployment-wide window.
+
 The limits are the shared platform defaults (`JOBS_CAPACITY_DEFAULTS`) with
 this deployment's optional `JOBS_LIMITS` override applied — the JSON form of
 the shared override schema, resolved through `resolveJobsCapacityLimits` at
@@ -418,6 +437,33 @@ reaches it; the send site scopes every job to its signed identity's group
   for one group (far inside the 20-per-app unfinished cap) run two at a time
   while the rest wait queued — the binding constraint is the execution
   allowance, not storage.
+- **The connected-system envelope.** `src/workerOverlap.integration.test.ts`
+  measures the same limits through real processes: the edge and dev gateway
+  admit work, `jobs` and `jobsReplica` execute it from one store, and running
+  occupancy is sampled from the store every 100 ms. Observed on this
+  repository's dev cluster (one run, Postgres 18, `max_connections` 300):
+  one process peaks at 8 running with each of four app/environment groups at
+  2; with the replica started, the two processes peak at 16 and 4 per group,
+  never more. The jobs runtime role held 15 connections at the one-process
+  peak and 24 with both processes running. Twenty accepted diagnostic jobs
+  added about 64 KiB across the wrapper table, the runner's `job_common`
+  partition and their indexes (about 3.3 KiB per job; page-granular, so a
+  rough figure). The pinned pg-boss version keeps no separate archive table;
+  a terminal runner row stays in `job_common` until the cleanup loop deletes
+  it with its record, and completion removes no row.
+- **Rolling overlap is per process.** Each process enforces its own
+  configured caps against the shared store. While a process with a lowered
+  `unfinishedPerServer` refuses new work, the other process still admits
+  under its own limits, so a limit change takes effect fleet-wide only when
+  every process runs the new configuration. With equal caps on both
+  processes, concurrent admissions through both gateways stop exactly at the
+  server-wide cap. A process stopped gracefully mid-run releases its
+  attempts: in the measured run the replica's 8 running diagnostic jobs ran a
+  second attempt on the remaining process and all 20 succeeded, about 57 s
+  after the stop. The diagnostic type permits three attempts; a
+  single-attempt type (`jobs:fetch`) gets no second attempt, and the
+  recovery sweeper below projects its lost attempt `crashed`. The suite does
+  not drive a fetch job through a mid-run stop.
 
 ## The recovery sweeper (`src/recovery.ts`)
 
@@ -956,7 +1002,12 @@ with `jobs`: `startRealStack` never starts it — a test calls
 `await stack.start("jobsReplica")`, and `stop`/`restart`/`crash`/`logTail` work
 on it as on any service. It is for proving that durable burns and admission
 hold across replicas, and it cannot start under `jobsFixtures`, where the real
-jobs process does not exist.
+jobs process does not exist. `stack.gatewayJobsConfigFor("jobsReplica")` returns
+the stack's `EDGE_JOBS_CONFIG` with the server's endpoint pointed at the
+replica; set it on one gateway with `setServiceEnv` and restart that gateway to
+send its submissions through the replica while the other gateway keeps using
+`jobs` (`src/capacity.integration.test.ts` admits through both processes this
+way).
 
 Multi-server routing and isolation are proven by contract testing, not a second
 production runner. `startRealStack({ jobsFixtures: ["alpha", "beta"] })` boots

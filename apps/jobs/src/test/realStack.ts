@@ -131,6 +131,15 @@ export interface RealStack {
   /** The jobs server's runtime DSN (the `helix_jobs` role), as the stack env gives it to the jobs service. */
   readonly jobsRuntimeDsn: string;
   /**
+   * The stack's `EDGE_JOBS_CONFIG` document with the real server's endpoint
+   * pointed at one jobs process, for a gateway override
+   * (`setServiceEnv("devGateway", { EDGE_JOBS_CONFIG: ... })`) that routes one
+   * gateway's traffic to `jobsReplica`. Same server id and roots; only the
+   * endpoint changes. Refused under `jobsFixtures` (no real server) and
+   * `jobsLink` (the relay owns the endpoint).
+   */
+  gatewayJobsConfigFor(target: "jobs" | "jobsReplica"): string;
+  /**
    * Environment overrides for one service's NEXT start, merged over the shared
    * stack env; a `null` value removes that key from the child's environment.
    * Replaces any earlier overrides; `null` restores the defaults. Running
@@ -1733,6 +1742,28 @@ async function startJobsLink(upstreamBase: string): Promise<JobsLink> {
 }
 
 /**
+ * The stack's `EDGE_JOBS_CONFIG` with its one server entry's endpoint
+ * replaced: the document a gateway would read if the server's endpoint were
+ * `endpoint`. The shared stack env is not modified.
+ */
+function pointGatewayJobsConfig(serviceEnv: NodeJS.ProcessEnv, endpoint: string): string {
+  const raw = serviceEnv.EDGE_JOBS_CONFIG;
+  if (raw === undefined) {
+    throw new Error("realStack: the resolved stack env carries no EDGE_JOBS_CONFIG");
+  }
+  const document = JSON.parse(raw) as { servers?: Record<string, Record<string, unknown>> };
+  const entries = Object.entries(document.servers ?? {});
+  if (entries.length !== 1) {
+    throw new Error(
+      `realStack: EDGE_JOBS_CONFIG names ${entries.length} servers; the real stack configures one`,
+    );
+  }
+  const servers: Record<string, Record<string, unknown>> = {};
+  for (const [id, entry] of entries) servers[id] = { ...entry, endpoint };
+  return JSON.stringify({ servers });
+}
+
+/**
  * Start the relay and repoint every `EDGE_JOBS_CONFIG` server entry at it,
  * keeping each entry's other fields (the per-direction signing roots). The
  * portal's `PORTAL_JOBS_CONFIG` is untouched: only the edge and the dev
@@ -2189,6 +2220,14 @@ export async function startRealStack(
           ...(init?.body === undefined ? {} : { body: init.body }),
         }),
     }),
+    gatewayJobsConfigFor: (target) => {
+      if (jobsFixtures.size > 0 || jobsLink !== null) {
+        throw new Error(
+          "realStack: gatewayJobsConfigFor needs the real jobs server without the fault relay",
+        );
+      }
+      return pointGatewayJobsConfig(serviceEnv, `http://localhost:${ports[target]}`);
+    },
     setServiceEnv: (name, overrides) => {
       const state = stack.services.get(name);
       if (!state) throw new Error(`realStack: no such service: ${name}`);
