@@ -324,7 +324,7 @@ export class JobsCleanup {
     // discipline as the recovery sweeper's: a report that threw must not
     // fail an already-counted pass into a second, mislabeled increment.
     let recorded = false;
-    const recordFailure = (): void => {
+    const recordFailure = (resultsRemoved: number): void => {
       if (recorded) return;
       recorded = true;
       countCleanup("failed");
@@ -333,7 +333,7 @@ export class JobsCleanup {
         CLEANUP_RETRY_INITIAL_MS * 2 ** Math.max(0, this.failedPasses - 1),
         CLEANUP_RETRY_MAX_MS,
       );
-      this.recordPass(false, startedAt, null, 0, 0);
+      this.recordPass(false, startedAt, null, resultsRemoved, 0);
     };
     /** The success reports' guard: the sink being down must not fail the counted pass or skip its scheduling tail. */
     const report = (report: () => void): void => {
@@ -346,7 +346,9 @@ export class JobsCleanup {
     };
     await withCleanupSpan(async (span) => {
       let evidence: JobsCleanupEvidence;
-      let resultsRemoved: number;
+      // The result arm commits on its own, so a pass whose record arm fails
+      // afterwards has still removed these results and must count them.
+      let resultsRemoved = 0;
       let recordsRetired: number;
       try {
         const now = new Date();
@@ -356,7 +358,7 @@ export class JobsCleanup {
         recorded = true;
         this.recordPass(true, startedAt, evidence, resultsRemoved, recordsRetired);
       } catch (error) {
-        recordFailure();
+        recordFailure(resultsRemoved);
         span.setAttribute(ATTR_OUTCOME, "failed" satisfies JobsCleanupOutcome);
         this.log.error(
           { event: "jobs.cleanup.pass_failed", err: error },

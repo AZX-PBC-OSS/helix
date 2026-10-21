@@ -356,7 +356,11 @@ the unarchive, and until then submission answers `503 jobs_unavailable`.
 | The job record | 30 days from the job's terminal status | Every read answers `404 job_not_found` |
 
 These times are when the job stops being readable, not when it is deleted.
-Physical deletion happens later.
+Physical deletion happens later, within 48 hours: an expired result is
+deleted within 48 hours after its seven days end, and the rest of the job
+within 48 hours after its record expires. If the jobs service was down at
+that point, deletion finishes within 48 hours after it is back. Deletion
+never makes an expired job readable again.
 
 A retry key stays attached to its job until the job's record is physically
 deleted. While it is attached:

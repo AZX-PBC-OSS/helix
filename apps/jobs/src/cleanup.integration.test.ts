@@ -525,6 +525,50 @@ describe("the retirement is atomic", () => {
   );
 
   test(
+    "a pass whose record arm fails still counts the results its committed result arm removed",
+    { timeout: 30_000 },
+    async () => {
+      const { loop, settle } = await drivenLoop({
+        deleteRunnerRows: {
+          delete: async () => {
+            throw new Error("injected runner-delete failure");
+          },
+        },
+      });
+      try {
+        const appId = anApp();
+        const resultJobId = await seedJob(appId);
+        await forceTerminal(
+          resultJobId,
+          "succeeded",
+          JOBS_RESULT_TTL_SECONDS + 7_200,
+          '{"removed":true}',
+        );
+        const recordJobId = await seedJob(appId);
+        await forceTerminal(recordJobId, "failed", 31 * 24 * 60 * 60);
+        const before = loop.snapshot();
+
+        const after = await settle();
+
+        // The pass failed on the runner delete, after the result arm's own
+        // statement committed: the bytes are gone, and the snapshot that
+        // health reports counts them.
+        expect(after.lastOkPassAt).toBe(before.lastOkPassAt);
+        expect((await recordOf(resultJobId))?.result).toBeNull();
+        expect(after.resultsRemoved).toBeGreaterThanOrEqual(before.resultsRemoved + 1);
+        expect(after.recordsRetired).toBe(before.recordsRetired);
+        expect(await recordOf(recordJobId)).not.toBeNull();
+
+        // Retire the held-back record so later legs' backlog counts start clean.
+        await runPass();
+        expect(await recordOf(recordJobId)).toBeNull();
+      } finally {
+        await loop.stop();
+      }
+    },
+  );
+
+  test(
     "two replicas' passes racing the same backlog each retire exactly their own statement's rows — the backlog drains exactly once, with no orphaned runner row",
     { timeout: 45_000 },
     async () => {

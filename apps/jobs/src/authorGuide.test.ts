@@ -37,6 +37,7 @@ import {
 import {
   JOBS_FETCH_DEADLINE_SECONDS,
   JOBS_RECORD_TTL_SECONDS,
+  JOBS_REMOVAL_GRACE_SECONDS,
   JOBS_RESULT_TTL_SECONDS,
 } from "./policy.js";
 import { JOBS_FETCH_OUTBOUND_TIMEOUT_MS } from "./fetchJob.js";
@@ -243,6 +244,10 @@ describe("the background-jobs author guide", () => {
     states(
       `${JOBS_RECORD_TTL_SECONDS / 86_400} days from the job's terminal status`,
       "the record retention",
+    );
+    states(
+      `Physical deletion happens later, within ${JOBS_REMOVAL_GRACE_SECONDS / 3_600} hours`,
+      "the physical deletion bound",
     );
 
     const minuteWords: Record<number, string> = { 5: "five" };

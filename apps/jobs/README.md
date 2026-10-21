@@ -583,6 +583,17 @@ service restoration. One supervised pass, on a one-minute cadence:
   `JOBS_CLEANUP_OUTCOMES`, the pass's removed counts as its batch-bounded
   attributes) and the `helix.jobs.cleanups` counter — a run of `failed` with
   no `ok` is a store that stopped answering its cleanup.
+- **Connected-system evidence.** `src/retention.integration.test.ts` runs
+  the loop inside the real stack. It backdates rows through the owner DSN to
+  stand in for days passing, and holds row locks to pause a pass at a chosen
+  point. It shows that reads expire at the horizon while the bytes are still
+  stored, for a JSON `null` result and every terminal outcome. Active work
+  is not removed by age. After an outage, the first pass removes the overdue
+  content and `jobs_cleanup` reads `degraded` until a later pass opens on a
+  cleared store. A key replayed while a pass is retiring its old record gets
+  `404` or one new job, and later passes leave that job, its runner row and
+  its key alone. On boot, the first pass can fail with "the runner has not
+  started" when it has records to retire. It retries a second later.
 
 ## The app-lifecycle authority (`src/lifecycle.ts`)
 

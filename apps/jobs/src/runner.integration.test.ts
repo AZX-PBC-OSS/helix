@@ -38,6 +38,19 @@ function urlFor(database: string, role?: string): string {
 
 const RUNTIME_DSN = urlFor(SCRATCH_DB, "helix_jobs");
 
+async function dropScratchDb(): Promise<void> {
+  const drop = new Pool({ connectionString: urlFor("postgres"), max: 1 });
+  try {
+    await drop.query(`DROP DATABASE IF EXISTS "${SCRATCH_DB}" WITH (FORCE)`);
+  } finally {
+    await drop.end();
+  }
+}
+
+// The later describes re-provision the scratch database after the first one
+// drops it, so the file drops it once more after every describe has run.
+afterAll(dropScratchDb, 30_000);
+
 /** Bounded wait for an event the runner's loop produces at its own cadence. */
 async function waitFor(what: string, deadlineMs: number, probe: () => boolean): Promise<void> {
   const by = Date.now() + deadlineMs;
@@ -80,9 +93,7 @@ describe("the supervised runner's convergence", () => {
   afterAll(async () => {
     await runner?.stop();
     await pool?.end();
-    const drop = new Pool({ connectionString: urlFor("postgres"), max: 1 });
-    await drop.query(`DROP DATABASE IF EXISTS "${SCRATCH_DB}" WITH (FORCE)`);
-    await drop.end();
+    await dropScratchDb();
   }, 30_000);
 
   test("a start that failed against the unmigrated store converges once the migration lands, and the enqueue then serves on the caller's transaction", async () => {
