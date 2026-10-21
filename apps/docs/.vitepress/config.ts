@@ -61,6 +61,7 @@ export default defineConfig({
             { text: "Quickstart", link: "/apps/quickstart" },
             { text: "App manifest", link: "/apps/manifest" },
             { text: "The /_api gateway", link: "/apps/gateway" },
+            { text: "Background jobs", link: "/apps/jobs" },
             { text: "The helix CLI", link: "/apps/cli" },
           ],
         },

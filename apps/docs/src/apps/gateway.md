@@ -1,6 +1,6 @@
 ---
 title: The /_api gateway
-description: "The same-origin /_api/* endpoints an app calls for everything dynamic: LLM proxying, app data in three scopes, and the fetch proxy — gated by the manifest, metered and budgeted."
+description: "The same-origin /_api/* endpoints an app calls for everything dynamic: LLM proxying, app data in three scopes, the fetch proxy, and background jobs — gated by the manifest, metered and budgeted."
 ---
 
 # The `/_api` gateway
@@ -50,6 +50,13 @@ Two ways to reach a third-party host, depending on the manifest:
 With `fetch.shim: true` the platform rewrites the page's `fetch` and `XMLHttpRequest`
 at serve time, so ordinary third-party client libraries work without code
 changes and calls flow through the proxy automatically.
+
+## Background jobs
+
+`/_api/jobs/*` starts platform-provided work that keeps running after the page
+closes, such as a fetch whose JSON result you collect later. Your app submits
+the job, polls its status, reads the result, and can cancel it. See
+[Background jobs](/apps/jobs).
 
 ## Offline
 

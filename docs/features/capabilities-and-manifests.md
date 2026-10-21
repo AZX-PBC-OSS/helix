@@ -73,7 +73,13 @@ The catalogue advertises the installed types of serving servers
 (`GET /api/v1/capabilities`, `jobs.types`), derived from the deployment's server map
 (`PORTAL_JOBS_CATALOGUE` on the portal — a credential-free projection: state + installed types,
 never a destination or secret); a fully disabled deployment omits the block, and an all-retiring
-one advertises an empty list. See the background-jobs design (`docs/design/background-jobs-plane.md`).
+one advertises an empty list. The edge projects the effective grant on both serving surfaces and
+refuses a submission whose qualified type the grant does not name with 403 `forbidden` before
+anything is forwarded; a malformed stored grant projects to no grant. The capability editor's
+Background jobs card keeps saved types the deployment no longer offers visible and removable, and
+offers Retry when discovery fails. The app-author behavior of the four job operations is the
+[Background jobs guide](../../apps/docs/src/apps/jobs.md); the design is
+`docs/design/background-jobs-plane.md`.
 
 `Visibility` is a discriminated union — `internal` | `group` (+ `groupId`) | `password` |
 `public` — stored flattened in the DB (`visibilityMode` + `visibilityGroupIds`, an any-of array) and reassembled
@@ -228,18 +234,6 @@ a "pending approval" banner on app detail. See [portal-web.md](./portal-web.md).
   high-risk-elevated, but there is **no gateway transport yet**: approving an MCP grant writes the
   manifest; enforcement lands with the MCP-as-REST gateway (`docs/design/custom-backends.md`).
 - **`bytesPerDay`** is declared and classified but not yet enforced at the edge (app-data design §7).
-- **`jobs`** — the grant is carried in the manifest and classified (type adds/removes are baseline),
-  the catalogue advertises the installed production types from the deployment's server map, and
-  catalogue-aware validation refuses *new* grants of types no serving server installs. The edge
-  registry projection carries the effective grant and the app's jobs lifecycle generation on both
-  serving surfaces (production and dev), refreshed by the existing LISTEN/NOTIFY loop; a malformed
-  stored grant projects to "no grant" (deny). The capability editor's Background jobs card selects
-  advertised types, keeps saved types the deployment no longer offers visible and removable, and
-  offers Retry when discovery fails. The edge **does** enforce the grant on submission: a job
-  request whose qualified type the app's projected grant does not name is refused 403 `forbidden`
-  before anything is forwarded, on both serving surfaces (production and dev gateway).
-  Still not built: the jobs plane itself is not assembled yet — no runner executes accepted work
-  and the local/deployment wiring is its own tickets (`docs/design/background-jobs-plane.md`).
 - **Per-delta partial approval** — v1 approves/denies the whole submission bundle; splitting a
   request is a deliberate future refinement (`docs/design/approvals.md` §9).
 - **Approval notifications** — the queue is pull-based for v1; no push when a request is filed or

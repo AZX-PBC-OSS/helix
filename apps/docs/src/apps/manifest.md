@@ -35,12 +35,16 @@ or set it when you create the app.
     requestsPerDay?: number
   },
   offline: { scope: string }  // platform-managed service worker
+  jobs: {
+    types: string[]           // background job types, e.g. "jobs:fetch"
+  }
 }
 ```
 
 Everything is a grant, and nothing is implied. An app with no `llm` block
 cannot call the model gateway; an app with no `fetch` block cannot proxy an
-outbound call. `user: true` gives the app a store where every signed-in user's
+outbound call, and an app with no `jobs` block cannot start a
+[background job](/apps/jobs). `user: true` gives the app a store where every signed-in user's
 data is visible only to that user.
 
 ## Visibility

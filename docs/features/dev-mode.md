@@ -53,6 +53,8 @@ GET/PUT/DELETE  …:8082/<slug>/_api/data/user/<key>
 POST   …:8082/<slug>/_api/data/collections/<name>
 GET/PUT …:8082/<slug>/_api/data/shared/<key>
 ANY    …:8082/<slug>/_api/fetch/<url>
+POST   …:8082/<slug>/_api/jobs/<server>/types/<type>
+GET/DELETE …:8082/<slug>/_api/jobs/<server>/<jobId>   (+ GET …/<jobId>/result)
 
 Authorization: Bearer azxdev_…
 Origin: http://localhost:5173      # (the browser sets this)

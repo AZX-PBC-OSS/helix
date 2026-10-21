@@ -1287,7 +1287,7 @@ describe("runtime recovery of the jobs plane, through the real stack", () => {
       // lost attempt (this drain: the graceful stop aborts the in-flight
       // handler and pg-boss's own stop settles the claim first, so the
       // attempt's failure is not projected) is recovered by the sweeper as
-      // `crashed` — execution lost, never reissued (the T-0045 note in
+      // `crashed` — execution lost, never reissued (the note in
       // trustBoundary.integration.test.ts) — or as `failed` where the
       // attempt's own settle landed; either way the error is carried.
       const final = await pollSnapshot(
