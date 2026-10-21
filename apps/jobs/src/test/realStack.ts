@@ -13,7 +13,7 @@ import {
 import * as http from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import * as https from "node:https";
-import { createServer as createNetServer } from "node:net";
+import { connect as connectTcp, createServer as createNetServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -128,14 +128,55 @@ export interface RealStack {
   appSession(slug: string, email: string): Promise<AppSession>;
   /** Dev-gateway client for a minted dev token presented from `origin`. */
   devClient(slug: string, token: string, origin: string): DevClient;
-  /** Stop / start / restart one service by name (same env, same entry point). */
-  stop(name: StackServiceName): Promise<void>;
-  start(name: StackServiceName): Promise<void>;
+  /** The jobs server's runtime DSN (the `helix_jobs` role), as the stack env gives it to the jobs service. */
+  readonly jobsRuntimeDsn: string;
+  /**
+   * Environment overrides for one service's NEXT start, merged over the shared
+   * stack env; a `null` value removes that key from the child's environment.
+   * Replaces any earlier overrides; `null` restores the defaults. Running
+   * services are untouched — restart the ones that must read it.
+   */
+  setServiceEnv(
+    name: StackServiceName,
+    overrides: Readonly<Record<string, string | null>> | null,
+  ): void;
+  /**
+   * Stop (SIGTERM, then SIGKILL after the harness's grace) / start / restart one
+   * service by name. `stop` reports how the process ended. `start` waits for
+   * the readiness body unless `until: "listener"` asks only for an answering
+   * `/health`, for a service that is meant to come up unhealthy.
+   */
+  stop(name: StackServiceName): Promise<StopOutcome>;
+  start(name: StackServiceName, options?: { until?: "ready" | "listener" }): Promise<void>;
   restart(name: StackServiceName): Promise<void>;
+  /**
+   * Spawn one service and wait for it to EXIT on its own (a boot meant to
+   * fail), failing if it is still running after `timeoutMs`. Returns the exit
+   * and the output the process wrote.
+   */
+  startExpectingExit(name: StackServiceName, timeoutMs: number): Promise<BootExit>;
   /** SIGKILLs a running service (no grace, no drain): models a process dying mid-request — in-flight requests get no reply. Restart it with start(). No-op if not running. */
   crash(name: StackServiceName): Promise<void>;
   logTail(name: StackServiceName, lines?: number): string;
   close(): Promise<void>;
+}
+
+/** How a stopped service ended: its own exit, or the harness's SIGKILL after the grace. */
+export interface StopOutcome {
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  /** SIGTERM to exit, in milliseconds. */
+  elapsedMs: number;
+  /** True when the grace ran out and the harness had to SIGKILL the process. */
+  killed: boolean;
+}
+
+/** A boot that ended on its own. */
+export interface BootExit {
+  exitCode: number | null;
+  signalCode: NodeJS.Signals | null;
+  /** Everything the process wrote to stdout and stderr during this run. */
+  output: string;
 }
 
 export interface PortalClient {
@@ -310,6 +351,8 @@ interface ServiceState {
   spec: ServiceSpec;
   /** Per-service env merged over the shared stack env in spawnService — never folded into serviceEnv, which every service shares. */
   env?: Readonly<Record<string, string>>;
+  /** Test overrides from `setServiceEnv`, applied after `env`; a null value removes the key. */
+  overrides?: Readonly<Record<string, string | null>>;
   child: ChildProcess | null;
   fd: number | null;
   ring: BoundedLog;
@@ -648,6 +691,16 @@ function mintTlsCert(baseDomain: string): { dir: string; certFile: string; keyFi
 
 // ── service lifecycle ────────────────────────────────────────────────────────
 
+/**
+ * How the harness launches a service: the repo-relative working directory and
+ * the argv. Exported so a test can compare it with a production image's
+ * WORKDIR and CMD.
+ */
+export function serviceLaunch(name: StackServiceName): { cwd: string; argv: string[] } {
+  const spec = SERVICE_SPECS[name];
+  return { cwd: spec.cwd, argv: ["node", "--import", "tsx", spec.entry] };
+}
+
 /** A child killed BY A SIGNAL keeps `exitCode` null forever (`signalCode` carries the signal) — every exited test must ask both. */
 function hasExited(child: ChildProcess): boolean {
   return child.exitCode !== null || child.signalCode !== null;
@@ -659,9 +712,15 @@ function spawnService(stack: StackInternals, name: StackServiceName): ChildProce
   if (state.child !== null && !hasExited(state.child)) {
     throw new Error(`realStack: ${name} is already running`);
   }
-  const child = spawn("node", ["--import", "tsx", state.spec.entry], {
-    cwd: path.join(ROOT_DIR, state.spec.cwd),
-    env: { ...stack.serviceEnv, ...state.env },
+  const env: NodeJS.ProcessEnv = { ...stack.serviceEnv, ...state.env };
+  for (const [key, value] of Object.entries(state.overrides ?? {})) {
+    if (value === null) delete env[key];
+    else env[key] = value;
+  }
+  const launch = serviceLaunch(name);
+  const child = spawn(launch.argv[0] ?? "node", launch.argv.slice(1), {
+    cwd: path.join(ROOT_DIR, launch.cwd),
+    env,
     stdio: ["ignore", "pipe", "pipe"],
   });
   state.child = child;
@@ -693,21 +752,36 @@ function spawnService(stack: StackInternals, name: StackServiceName): ChildProce
 }
 
 /** SIGTERM, then SIGKILL after a bound — teardown never waits forever. */
-async function stopService(stack: StackInternals, name: StackServiceName): Promise<void> {
+async function stopService(stack: StackInternals, name: StackServiceName): Promise<StopOutcome> {
   const state = stack.services.get(name);
   if (!state) throw new Error(`realStack: no such service: ${name}`);
   const child = state.child;
-  if (!child || hasExited(child)) return;
+  if (!child || hasExited(child)) {
+    return {
+      exitCode: child?.exitCode ?? null,
+      signalCode: child?.signalCode ?? null,
+      elapsedMs: 0,
+      killed: false,
+    };
+  }
+  const startedAt = Date.now();
   child.kill("SIGTERM");
   await Promise.race([
     new Promise<void>((resolve) => child.once("exit", resolve)),
     sleep(STOP_GRACE_MS),
   ]);
-  if (!hasExited(child)) child.kill("SIGKILL");
+  const killed = !hasExited(child);
+  if (killed) child.kill("SIGKILL");
   await new Promise<void>((resolve) => {
     if (hasExited(child)) resolve();
     else child.once("exit", () => resolve());
   });
+  return {
+    exitCode: child.exitCode,
+    signalCode: child.signalCode,
+    elapsedMs: Date.now() - startedAt,
+    killed,
+  };
 }
 
 /** SIGKILL with no grace and no drain: the modeled death is a process dying mid-request. */
@@ -819,7 +893,11 @@ async function waitServiceReady(
   }
 }
 
-async function startService(stack: StackInternals, name: StackServiceName): Promise<void> {
+async function startService(
+  stack: StackInternals,
+  name: StackServiceName,
+  until: "ready" | "listener" = "ready",
+): Promise<void> {
   // Under contract fixtures the real jobs process does not exist, so neither
   // does a replica of it: the fixtures stand in for `jobs` itself.
   if (name === "jobsReplica" && stack.jobsFixtures.size > 0) {
@@ -829,7 +907,37 @@ async function startService(stack: StackInternals, name: StackServiceName): Prom
   }
   spawnService(stack, name);
   await waitListener(stack, name, BOOT_LISTENER_TIMEOUT_MS);
-  await waitServiceReady(stack, name, READY_TIMEOUT_MS);
+  if (until === "ready") await waitServiceReady(stack, name, READY_TIMEOUT_MS);
+}
+
+/** Spawn a service whose boot is meant to fail, and wait — bounded — for it to exit. */
+async function startExpectingExit(
+  stack: StackInternals,
+  name: StackServiceName,
+  timeoutMs: number,
+): Promise<BootExit> {
+  const child = spawnService(stack, name);
+  let output = "";
+  const collect = (chunk: Buffer): void => {
+    output += chunk.toString();
+  };
+  child.stdout?.on("data", collect);
+  child.stderr?.on("data", collect);
+  const exited = await Promise.race([
+    new Promise<true>((resolve) => {
+      if (hasExited(child)) resolve(true);
+      else child.once("exit", () => resolve(true));
+    }),
+    sleep(timeoutMs).then(() => false as const),
+  ]);
+  if (!exited) {
+    await crashService(stack, name);
+    throw new Error(
+      `realStack: ${name} was meant to exit at boot but was still running after ${timeoutMs}ms\n` +
+        `--- ${name} log tail ---\n${logTail(stack, name, 60)}`,
+    );
+  }
+  return { exitCode: child.exitCode, signalCode: child.signalCode, output };
 }
 
 function logTail(stack: StackInternals, name: StackServiceName, lines = 40): string {
@@ -1315,6 +1423,82 @@ async function startTelemetryCapture(): Promise<TelemetryCapture> {
 }
 
 // ── the faultable edge→jobs link ─────────────────────────────────────────────
+
+/** A byte relay in front of a TCP service (the jobs store), with an outage switch. */
+export interface TcpFaultRelay {
+  /** The loopback port the relay listens on. */
+  readonly port: number;
+  /** Connections the relay currently carries. */
+  readonly open: number;
+  /** Start an outage: destroy every carried connection and reset each new one. */
+  cut(): void;
+  /** End the outage: new connections are forwarded again. */
+  restore(): void;
+  close(): Promise<void>;
+}
+
+/**
+ * A relay that forwards bytes unchanged to `target` until `cut()`: from then
+ * on every carried connection is destroyed and every new one is reset on
+ * accept, until `restore()`. Lets a test take a service's store away while
+ * the process keeps running, then give it back, with no production code path
+ * for the fault.
+ */
+export async function startTcpFaultRelay(target: {
+  host: string;
+  port: number;
+}): Promise<TcpFaultRelay> {
+  const carried = new Set<Socket>();
+  let down = false;
+  const server = createNetServer((downstream) => {
+    if (down) {
+      downstream.resetAndDestroy();
+      return;
+    }
+    const upstream = connectTcp(target.port, target.host);
+    carried.add(downstream);
+    carried.add(upstream);
+    const drop = (): void => {
+      carried.delete(downstream);
+      carried.delete(upstream);
+      downstream.destroy();
+      upstream.destroy();
+    };
+    downstream.on("error", drop).on("close", drop);
+    upstream.on("error", drop).on("close", drop);
+    downstream.pipe(upstream);
+    upstream.pipe(downstream);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (address === null || typeof address === "string") {
+    server.close();
+    throw new Error("realStack: the TCP fault relay never bound a loopback port");
+  }
+  return {
+    port: address.port,
+    get open() {
+      return carried.size / 2;
+    },
+    cut: () => {
+      down = true;
+      for (const socket of carried) socket.resetAndDestroy();
+      carried.clear();
+    },
+    restore: () => {
+      down = false;
+    },
+    close: () =>
+      new Promise<void>((resolve) => {
+        for (const socket of carried) socket.destroy();
+        carried.clear();
+        server.close(() => resolve());
+      }),
+  };
+}
 
 export interface JobsLinkReply {
   status: number;
@@ -1967,6 +2151,7 @@ export async function startRealStack(
     logDir,
     platformOwnerDsn,
     jobsOwnerDsn,
+    jobsRuntimeDsn: jobsDsn,
     jobsLink,
     jobsRoots,
     telemetry,
@@ -2004,8 +2189,15 @@ export async function startRealStack(
           ...(init?.body === undefined ? {} : { body: init.body }),
         }),
     }),
+    setServiceEnv: (name, overrides) => {
+      const state = stack.services.get(name);
+      if (!state) throw new Error(`realStack: no such service: ${name}`);
+      if (overrides === null) delete state.overrides;
+      else state.overrides = { ...overrides };
+    },
     stop: (name) => stopService(stack, name),
-    start: (name) => startService(stack, name),
+    start: (name, startOptions) => startService(stack, name, startOptions?.until),
+    startExpectingExit: (name, timeoutMs) => startExpectingExit(stack, name, timeoutMs),
     restart: async (name) => {
       await stopService(stack, name);
       await startService(stack, name);

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import {
   HealthStatusSchema,
@@ -13,21 +13,35 @@ import {
   resolveJobsCapacityLimits,
 } from "@azx-pbc/shared";
 
+import type { JobsAdmission } from "./acceptance.js";
 import { buildApp } from "./app.js";
+import type { JobsCancellation } from "./cancellation.js";
 import type { JobsCleanupSnapshot } from "./cleanup.js";
 import type { JobsStorageCompatibility } from "./compat.js";
 import { loadJobsConfig } from "./config.js";
+import type { JobsInstructionAuth } from "./instructionAuth.js";
 import type { JobsIntakeSnapshot } from "./intake.js";
+import type { JobsLifecycleApplier } from "./lifecycle.js";
+import type { JobsObservation } from "./observation.js";
 import type { JobsRecoverySnapshot } from "./recovery.js";
 import type { JobsRunnerSnapshot } from "./runner.js";
 import { JobsStorage } from "./storage.js";
 import {
+  cancelSpec,
+  instructionHeaders,
   makeReceiver,
   MemoryAdmission,
   MemoryCancellation,
   MemoryLifecycle,
   MemoryObservation,
+  mint,
   runningCleanup,
+  submitSpec,
+  TEST_BODY,
+  TEST_IAT,
+  TEST_IDENTITY,
+  TEST_JOB_ID,
+  TEST_KEYS,
 } from "./test/instructions.js";
 
 /**
@@ -426,5 +440,307 @@ describe("unmatched routes", () => {
     expect(reqIds[0]).not.toBe(forged); // ...under a self-minted id, never the caller's
     await app.close();
     await storage.stop();
+  });
+});
+
+/**
+ * The wiring of the early re-probe: every store-failure 503 arm — and the
+ * burn store's 503 verdict in the signed-operation handler — asks the storage
+ * supervisor to re-probe now, so /health stops reporting a store that
+ * requests already cannot use. The spy rides a real ready `JobsStorage`; one
+ * memory seam per case is replaced with one that throws, the way a dead store
+ * surfaces at each route's own seam.
+ */
+describe("a store-failure 503 asks the storage supervisor for the early re-probe", () => {
+  const UNAVAILABLE_BODY = {
+    code: "jobs_unavailable",
+    message: JobErrorMessages.jobs_unavailable,
+  };
+
+  async function appWithFailingStore(overrides: {
+    admission?: JobsAdmission;
+    cancellation?: JobsCancellation;
+    observation?: JobsObservation;
+    lifecycle?: JobsLifecycleApplier;
+    instructions?: JobsInstructionAuth;
+  }) {
+    const storage = await storageIn("ready");
+    const spy = vi.spyOn(storage, "reportRequestFailure");
+    const app = buildApp({ ...(await depsWith(storage)), ...overrides });
+    return { app, storage, spy };
+  }
+
+  test("the submit route's admission failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      admission: {
+        admit: async () => {
+          throw new Error("injected admission-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/internal/jobs/v1/jobs",
+        headers: {
+          "content-type": "application/json",
+          ...instructionHeaders(await mint(submitSpec()), "retry-key-1"),
+        },
+        payload: TEST_BODY,
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the cancel route's store failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      cancellation: {
+        requestCancel: async () => {
+          throw new Error("injected cancellation-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "DELETE",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec())),
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the snapshot route's read failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      observation: {
+        snapshot: async () => {
+          throw new Error("injected observation-store failure");
+        },
+        result: async () => {
+          throw new Error("injected observation-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot" }))),
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the result route's read failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      observation: {
+        snapshot: async () => {
+          throw new Error("injected observation-store failure");
+        },
+        result: async () => {
+          throw new Error("injected observation-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}/result`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "result" }))),
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the lifecycle route's apply failure answers 503 and reports the request failure", async () => {
+    const { app, storage, spy } = await appWithFailingStore({
+      lifecycle: {
+        apply: async () => {
+          throw new Error("injected lifecycle-store failure");
+        },
+      },
+    });
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: {
+          "content-type": "application/json",
+          ...instructionHeaders(
+            await mint({
+              operation: "lifecycle",
+              server: "jobs",
+              appId: TEST_IDENTITY.appId,
+              body: new TextEncoder().encode('{"generation":"8","archived":true}'),
+              iatS: TEST_IAT,
+            }),
+          ),
+        },
+        payload: '{"generation":"8","archived":true}',
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("the burn store's 503 verdict reports the request failure", async () => {
+    const receiver = makeReceiver();
+    receiver.burns.failBurns = true;
+    const { app, storage, spy } = await appWithFailingStore({ instructions: receiver.auth });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot" }))),
+      });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      expect(res.json()).toEqual(UNAVAILABLE_BODY);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+
+  test("a forged instruction and the ready paths never ask for the re-probe", async () => {
+    const storage = await storageIn("ready");
+    const spy = vi.spyOn(storage, "reportRequestFailure");
+    const app = buildApp(await depsWith(storage));
+    try {
+      // A forged instruction is refused at the receiver, before any store
+      // seam runs and without a 503 verdict.
+      const forged = await app.inject({
+        method: "GET",
+        url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+        headers: instructionHeaders(
+          await mint(cancelSpec({ operation: "snapshot" }), TEST_KEYS.other),
+        ),
+      });
+      expect(forged.statusCode).toBe(401);
+      expect(spy).not.toHaveBeenCalled();
+
+      // A ready admission accepted the submission — no failure to report.
+      const accepted = await app.inject({
+        method: "POST",
+        url: "/internal/jobs/v1/jobs",
+        headers: {
+          "content-type": "application/json",
+          ...instructionHeaders(await mint(submitSpec()), "retry-key-1"),
+        },
+        payload: TEST_BODY,
+      });
+      expect(accepted.statusCode).toBe(202);
+      expect(spy).not.toHaveBeenCalled();
+
+      // A ready lifecycle apply — ditto.
+      const applied = await app.inject({
+        method: "POST",
+        url: `/internal/jobs/v1/lifecycle/${TEST_IDENTITY.appId}`,
+        headers: {
+          "content-type": "application/json",
+          ...instructionHeaders(
+            await mint({
+              operation: "lifecycle",
+              server: "jobs",
+              appId: TEST_IDENTITY.appId,
+              body: new TextEncoder().encode('{"generation":"8","archived":true}'),
+              iatS: TEST_IAT,
+            }),
+          ),
+        },
+        payload: '{"generation":"8","archived":true}',
+      });
+      expect(applied.statusCode).toBe(200);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+      await storage.stop();
+    }
+  });
+});
+
+/**
+ * Job operations answer 503 while the store is not verified (design §8): a
+ * store with a missing table would otherwise serve whichever operations its
+ * remaining tables allow while `/health` reports it unusable. The gate runs
+ * before verification, so no nonce is spent on a request that cannot run.
+ */
+describe("the job routes' readiness gate", () => {
+  test("submit, snapshot, result and cancel answer 503 jobs_unavailable until the store verifies, spending no nonce", async () => {
+    for (const state of ["pending", "unavailable"] as const) {
+      const storage = await storageIn(state);
+      const receiver = makeReceiver();
+      const app = buildApp({ ...(await depsWith(storage)), instructions: receiver.auth });
+      try {
+        const replies = [
+          await app.inject({
+            method: "POST",
+            url: "/internal/jobs/v1/jobs",
+            headers: {
+              "content-type": "application/json",
+              ...instructionHeaders(await mint(submitSpec()), "retry-key-1"),
+            },
+            payload: TEST_BODY,
+          }),
+          await app.inject({
+            method: "GET",
+            url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+            headers: instructionHeaders(await mint(cancelSpec({ operation: "snapshot" }))),
+          }),
+          await app.inject({
+            method: "GET",
+            url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}/result`,
+            headers: instructionHeaders(await mint(cancelSpec({ operation: "result" }))),
+          }),
+          await app.inject({
+            method: "DELETE",
+            url: `/internal/jobs/v1/jobs/${TEST_JOB_ID}`,
+            headers: instructionHeaders(await mint(cancelSpec())),
+          }),
+        ];
+        for (const res of replies) {
+          expect(res.statusCode, `storage ${state}`).toBe(503);
+          expect(res.headers["cache-control"]).toBe("no-store");
+          expect(res.json()).toEqual({
+            code: "jobs_unavailable",
+            message: JobErrorMessages.jobs_unavailable,
+          });
+        }
+        expect(receiver.burns.seen.size, `storage ${state}`).toBe(0);
+      } finally {
+        await app.close();
+        await storage.stop();
+      }
+    }
   });
 });

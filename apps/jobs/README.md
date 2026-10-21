@@ -723,6 +723,13 @@ verified and later dies degrades the same way.
   lifecycle store, the burn store's sweep timer, the storage supervisor's
   probe timer — and flushes telemetry; the graceful-shutdown install bounds
   the drain. The failed-partial-initialization exit releases the same set.
+- **A failed request re-probes at once.** While the store reads ready, the
+  steady probe runs only every 30 s. When a job request fails against the
+  store (the instruction burn, an admission, a cancellation, an observation
+  read or a lifecycle apply answering 503), the route asks the supervisor to
+  probe now, so `/health` turns `error` within one probe of the first failed
+  request instead of up to 30 s later. Early probes are limited to one per
+  second, and only an authenticated request reaches a store.
 - **Probes are counted.** Every probe emits `helix.jobs.storage.probes`
   with `outcome` ∈ {`ok`, `unavailable`} — the retries an outage absorbs are
   visible; the _reason_ rides the `jobs_database` check body and the
@@ -908,7 +915,30 @@ three signing roots (`null` under `jobsFixtures`, which expose their own) so
 tests can mint contract-valid instructions as an insider would — positive
 controls and replica races — never to bypass a route they could use instead.
 `stack.tlsCa` is the harness certificate, for a test that opens a raw TLS
-socket to the edge. `stack.request` and `session.api` accept a
+socket to the edge.
+
+Runtime-recovery tests (`src/runtimeRecovery.integration.test.ts`) use a few
+more controls. `stack.setServiceEnv(name, overrides)` sets environment
+overrides for a service's next start (a `null` value removes the key; `null`
+overrides restore the defaults). `stack.stop(name)` reports how the process
+ended (`exitCode`, `signalCode`, `elapsedMs`, and `killed` when the grace ran
+out). `stack.start(name, { until: "listener" })` waits only for `/health` to
+answer, for a service meant to come up unhealthy, and
+`stack.startExpectingExit(name, timeoutMs)` runs a boot that is meant to fail
+and returns its exit and output. `startTcpFaultRelay({ host, port })` puts a
+relay in front of the store (point `JOBS_DATABASE_URL` at it, built from
+`stack.jobsRuntimeDsn`), and `cut()`/`restore()` take the store away from a
+running service and give it back. `serviceLaunch(name)` is the harness's
+working directory and argv for a service, which the suite compares with the
+image's `WORKDIR` and `CMD`.
+
+`src/test/exitAudit.ts` is a preload for leak checks
+(`NODE_OPTIONS=--import=<absolute path>`). A service ends its shutdown and its
+failed-startup path with `process.exit`, which would hide anything still open.
+Under the preload that call only sets the exit code, the event loop must drain
+on its own, and one `[helix-exit-audit]` line on stderr reports `drained`, or
+`held` with `process.getActiveResourcesInfo()` when something still holds the
+process three seconds later. `stack.request` and `session.api` accept a
 `signal` (`AbortSignal`) so a test can abandon an in-flight request.
 
 `startRealStack({ telemetry: true })` swaps the telemetry-off default for an

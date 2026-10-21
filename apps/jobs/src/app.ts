@@ -70,7 +70,7 @@ import { SERVICE_NAME } from "./serviceName.js";
 import type { JobsStorage } from "./storage.js";
 import { withRootSpan } from "./telemetry.js";
 import type { JobsInstructionAuth } from "./instructionAuth.js";
-import type { JobsLifecycleOutcome } from "@azx-pbc/shared/telemetry";
+import type { JobsInstructionOutcome, JobsLifecycleOutcome } from "@azx-pbc/shared/telemetry";
 import type { JobsLifecycleApplier } from "./lifecycle.js";
 
 export { SERVICE_NAME };
@@ -195,6 +195,7 @@ async function serveLifecycle(
       "the lifecycle store could not apply a delivery",
     );
     span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsLifecycleOutcome);
+    deps.storage.reportRequestFailure();
     reply.header("cache-control", "no-store");
     return reply.code(503).send(jobRequestError("jobs_unavailable"));
   }
@@ -271,6 +272,7 @@ async function serveSubmit(
       "the acceptance store could not decide a submission",
     );
     span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsSubmitOutcome);
+    deps.storage.reportRequestFailure();
     reply.header("cache-control", "no-store");
     return reply.code(503).send(jobRequestError("jobs_unavailable"));
   }
@@ -345,6 +347,7 @@ async function serveCancel(
       "the cancellation store could not decide a request",
     );
     span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsCancelOutcome);
+    deps.storage.reportRequestFailure();
     reply.header("cache-control", "no-store");
     return reply.code(503).send(jobRequestError("jobs_unavailable"));
   }
@@ -419,6 +422,7 @@ async function serveSnapshot(
       "the observation store could not answer a status read",
     );
     span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsSnapshotOutcome);
+    deps.storage.reportRequestFailure();
     reply.header("cache-control", "no-store");
     return reply.code(503).send(jobRequestError("jobs_unavailable"));
   }
@@ -470,6 +474,7 @@ async function serveResult(
       "the observation store could not answer a result read",
     );
     span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsResultOutcome);
+    deps.storage.reportRequestFailure();
     reply.header("cache-control", "no-store");
     return reply.code(503).send(jobRequestError("jobs_unavailable"));
   }
@@ -562,6 +567,16 @@ function signedOperationHandler(
         [ATTR_JOBS_OPERATION]: operation,
       },
       async (span) => {
+        // Job routes answer 503 until the store verifies compatible (design
+        // §8). Each operation would otherwise run against whichever of its
+        // tables happen to exist while /health reports the store unusable.
+        // Lifecycle delivery stays open: it is the convergence path, and its
+        // own store answers for itself.
+        if (operation !== "lifecycle" && deps.storage.snapshot().state !== "ready") {
+          span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsInstructionOutcome);
+          reply.header("cache-control", "no-store");
+          return reply.code(503).send(jobRequestError("jobs_unavailable"));
+        }
         const verdict = await auth.authenticate(operation, {
           url: req.url,
           params: req.params as Readonly<Record<string, string>>,
@@ -584,6 +599,8 @@ function signedOperationHandler(
         if (!verdict.ok && verdict.reason !== undefined) attributes[ATTR_REASON] = verdict.reason;
         span.setAttributes(attributes);
         if (!verdict.ok) {
+          // The only 503 verdict is the burn store failing to answer.
+          if (verdict.status === 503) deps.storage.reportRequestFailure();
           reply.header("cache-control", "no-store");
           return reply.code(verdict.status).send(verdict.body);
         }

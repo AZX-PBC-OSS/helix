@@ -228,6 +228,175 @@ describe("the probe cadence", () => {
   });
 });
 
+describe("the early re-probe a failed request asks for", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function flush(): Promise<void> {
+    await vi.advanceTimersByTimeAsync(0);
+  }
+
+  test("a ready store whose probe now fails is re-probed immediately, not at the next steady tick", async () => {
+    let verdict: JobsStorageCompatibility = COMPATIBLE;
+    let probeCalls = 0;
+    const { storage } = makeStorage({
+      probe: async () => {
+        probeCalls += 1;
+        return verdict;
+      },
+      readyIntervalMs: 30_000,
+      retryInitialMs: 1_000,
+    });
+    storage.start();
+    await flush();
+    expect(storage.snapshot().state).toBe("ready");
+
+    verdict = { kind: "unreachable", message: "down" };
+    storage.reportRequestFailure();
+    // Not one tick of the clock has advanced: the store was pronounced
+    // unavailable now, not at the 30 s steady probe — /health must not keep
+    // saying ok for a store every request already cannot use.
+    await flush();
+    expect(storage.snapshot().state).toBe("unavailable");
+    expect(probeCalls).toBe(2); // the initial probe plus exactly one early one
+  });
+
+  test("a burst of failing requests collapses to one early probe per retryInitialMs", async () => {
+    let probeCalls = 0;
+    const { storage } = makeStorage({
+      probe: async () => {
+        probeCalls += 1;
+        return COMPATIBLE;
+      },
+      // No steady probe can fire inside this test's window, so the counts
+      // below are the early probes and nothing else.
+      readyIntervalMs: 30_000,
+      retryInitialMs: 1_000,
+    });
+    storage.start();
+    await flush();
+    expect(probeCalls).toBe(1);
+
+    for (let i = 0; i < 50; i += 1) storage.reportRequestFailure();
+    await flush();
+    expect(probeCalls).toBe(2); // fifty failing requests, ONE extra probe
+
+    // The early probe has settled, so the in-flight guard no longer explains
+    // the silence — only the rate window does.
+    storage.reportRequestFailure();
+    await flush();
+    expect(probeCalls).toBe(2);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    storage.reportRequestFailure();
+    await flush();
+    expect(probeCalls).toBe(3); // the window is exactly retryInitialMs wide
+  });
+
+  test("ignored while a probe is in flight under pending", async () => {
+    let releaseProbe!: () => void;
+    let probeCalls = 0;
+    const { storage } = makeStorage({
+      probe: () =>
+        new Promise<JobsStorageCompatibility>((resolve) => {
+          probeCalls += 1;
+          releaseProbe = () => resolve(COMPATIBLE);
+        }),
+      readyIntervalMs: 30_000,
+      retryInitialMs: 1_000,
+    });
+    storage.start();
+    await flush();
+    expect(storage.snapshot().state).toBe("pending");
+
+    storage.reportRequestFailure();
+    expect(probeCalls).toBe(1); // the first probe is still the only one
+
+    releaseProbe();
+    await flush();
+    expect(storage.snapshot().state).toBe("ready");
+  });
+
+  test("ignored while unavailable — the next probe comes from the backoff schedule, not earlier", async () => {
+    let probeCalls = 0;
+    const { storage } = makeStorage({
+      probe: async () => {
+        probeCalls += 1;
+        return { kind: "unreachable", message: "down" };
+      },
+      readyIntervalMs: 30_000,
+      retryInitialMs: 1_000,
+    });
+    storage.start();
+    await flush();
+    expect(storage.snapshot().state).toBe("unavailable");
+
+    storage.reportRequestFailure();
+    // One tick under the backoff's first delay (retryInitialMs * 2^0): the
+    // request failure must not have moved the schedule.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(probeCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(probeCalls).toBe(2); // the backoff's own probe, on time
+  });
+
+  test("ignored before start() and after stop()", async () => {
+    let beforeCalls = 0;
+    const before = makeStorage({
+      probe: async () => {
+        beforeCalls += 1;
+        return COMPATIBLE;
+      },
+    });
+    before.storage.reportRequestFailure();
+    await flush();
+    expect(beforeCalls).toBe(0);
+    expect(before.storage.snapshot().probes).toBe(0);
+
+    let stoppedCalls = 0;
+    const stopped = makeStorage({
+      probe: async () => {
+        stoppedCalls += 1;
+        return COMPATIBLE;
+      },
+      readyIntervalMs: 30_000,
+      retryInitialMs: 1_000,
+    });
+    stopped.storage.start();
+    await flush();
+    await stopped.storage.stop();
+    stopped.storage.reportRequestFailure();
+    await flush();
+    expect(stoppedCalls).toBe(1); // only the initial probe ever ran
+  });
+
+  test("the early probe replaces the steady timer — one loop, its cadence restarted from the early probe", async () => {
+    let probeCalls = 0;
+    const { storage } = makeStorage({
+      probe: async () => {
+        probeCalls += 1;
+        return COMPATIBLE;
+      },
+      readyIntervalMs: 1_000,
+      retryInitialMs: 1_000,
+    });
+    storage.start();
+    await flush(); // probe 1 at t=0; the steady timer sits at t=1_000
+    await vi.advanceTimersByTimeAsync(300);
+    storage.reportRequestFailure(); // probe 2 at t=300; the t=1_000 timer is cleared
+    await flush();
+    await vi.advanceTimersByTimeAsync(4_700); // through t=5_000
+    // Exactly: 1 initial + 1 early + steady at 1_300, 2_300, 3_300 and 4_300.
+    // A surviving steady timer would add the t=1_000 tick and its successors
+    // — two loops, more probes.
+    expect(probeCalls).toBe(6);
+  });
+});
+
 describe("release", () => {
   beforeEach(() => {
     vi.useFakeTimers();

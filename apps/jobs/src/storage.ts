@@ -99,6 +99,8 @@ export class JobsStorage {
   private timer: NodeJS.Timeout | null = null;
   private inFlight: Promise<void> | null = null;
   private stopped = false;
+  private probing = false;
+  private lastEarlyProbeAt = Number.NEGATIVE_INFINITY;
   private failedProbesInEpisode = 0;
 
   private current: JobsStorageSnapshot = {
@@ -197,6 +199,27 @@ export class JobsStorage {
     await pool?.end();
   }
 
+  /**
+   * A request path just failed against the store. While the supervisor still
+   * reads `ready`, probe now instead of at the next steady probe, which can be
+   * `readyIntervalMs` away: `/health` must not keep reporting a store that
+   * requests already cannot use. At most one early probe per
+   * `retryInitialMs`, so a burst of failing requests cannot become a probe
+   * storm. Ignored while a probe runs, while the store is already unavailable
+   * (the backoff owns those probes), before `start()` and after `stop()`.
+   */
+  reportRequestFailure(): void {
+    if (this.stopped || !this.pool || this.probing || this.current.state !== "ready") return;
+    const now = Date.now();
+    if (now - this.lastEarlyProbeAt < this.retryInitialMs) return;
+    this.lastEarlyProbeAt = now;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.launchProbe();
+  }
+
   /** The current readiness, for `/health` and any other readiness consumer. */
   snapshot(): JobsStorageSnapshot {
     return { ...this.current };
@@ -210,7 +233,10 @@ export class JobsStorage {
    * `finally` inside has already scheduled the next probe.
    */
   private runProbe(): Promise<void> {
-    const probe = this.probeOnce();
+    this.probing = true;
+    const probe = this.probeOnce().finally(() => {
+      this.probing = false;
+    });
     this.inFlight = probe;
     return probe;
   }
