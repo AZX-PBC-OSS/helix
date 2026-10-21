@@ -829,3 +829,51 @@ pnpm vitest run apps/jobs --project=node
 The integration suites run against the real test cluster through the real
 role split; each provisions its own scratch database from
 `.devcontainer/db-init/01-roles.sql` and drops it afterwards.
+
+### The real-stack harness (`src/test/realStack.ts`)
+
+`startRealStack()` boots the whole platform the way a developer runs it — every
+service from its normal `src/server.ts` entry point as a child process, on the
+ports `scripts/stack-env.mjs` resolves for the first offset between 5000 and
+8900 (in steps of 100) whose ports are all free. The stack env comes
+from `stack-env.mjs`; `scripts/ensure-db.mjs` provisions `helix_<suffix>` and
+`helix_jobs_<suffix>` and applies both migrations through the real role split.
+The harness mints its own self-signed TLS pair (trusted by the test process via
+`NODE_EXTRA_CA_CERTS` and per-request `ca`), leaves telemetry off, and sets
+exactly one dev relaxation: `EGRESS_ALLOW_PRIVATE=true`, so the outbound fetch
+can reach the harness's loopback JSON origin (`startJsonOrigin()`).
+
+The harness never frees a port, so suites in parallel vitest workers each get
+their own stack, and a developer's servers are never touched. The children resolve the stack's normal hostnames —
+`*.local.helix.azxlabs.io` resolves publicly to 127.0.0.1 — while the test
+process itself forces every connection to loopback and never depends on DNS.
+Service output is appended to `<logDir>/<name>.log` (`stack.logDir`).
+
+A failure to boot is a failure, never a skip: a missing ambient variable or a
+readiness timeout throws, naming the key or the last observation plus the
+service's log tail.
+
+```ts
+const stack = await startRealStack();
+const portal = await stack.portalAs("bob@azx.dev");
+await portal.post("/api/v1/apps", { slug, displayName: "Demo", visibility: { mode: "internal" } });
+await portal.uploadBundle(slug, zipFiles({ "index.html": "<h1>hi</h1>" }));
+await portal.post(`/api/v1/apps/${slug}/versions/1/promote`);
+const session = await stack.appSession(slug, "bob@azx.dev");
+await session.api("GET", "/_api/me");
+await stack.close(); // stops the children, drops both databases
+```
+
+Two helpers keep the journey suites short (both used by
+`src/journey.integration.test.ts`):
+
+- **`waitFor(stack, what, {timeoutMs, pollMs?}, probe)`** — a bounded poll:
+  runs `probe` until it returns a value (`undefined`/`null` means "not yet")
+  and throws naming `what` (a string, or a function evaluated at timeout so
+  the last observation can be quoted) plus the jobs and edge log tails. Every
+  wait in a journey test goes through it — never an unbounded loop.
+- **`createLiveApp(stack, portal, {slug, displayName?, files})`** — the owner
+  journey as one call: create (`internal`), upload, promote version 1, then
+  wait until the edge actually serves the app host (the registry projection
+  reloads on NOTIFY behind a debounce, so an immediate request would 404).
+  Returns the created `App`; each step's failure throws naming the step.

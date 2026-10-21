@@ -43,6 +43,20 @@ export const BASE_PORTS = {
   jobs: 3003,
 };
 
+/**
+ * The Fetch standard's "bad ports" (https://fetch.spec.whatwg.org/#port-blocking).
+ * Node's global `fetch` (undici) refuses every request to one of them, so a
+ * stack whose service lands on one boots but can never be reached by the
+ * services, the smoke driver or the tests that call it with `fetch`.
+ */
+const FETCH_BAD_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79, 87, 95, 101, 102,
+  103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137, 139, 143, 161, 179, 389, 427, 465,
+  512, 513, 514, 515, 526, 530, 531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993,
+  995, 1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668,
+  6669, 6679, 6697, 10080,
+]);
+
 /** Chrome DevTools port the smoke driver's browser group binds (cdp.mjs). */
 export const BASE_CDP_PORT = 9411;
 
@@ -288,6 +302,14 @@ export function resolveStack(opts = {}) {
 
   const ports = Object.fromEntries(Object.entries(BASE_PORTS).map(([k, v]) => [k, v + offset]));
   const cdpPort = BASE_CDP_PORT + offset;
+  const blocked = Object.entries(ports).filter(([, port]) => FETCH_BAD_PORTS.has(port));
+  if (blocked.length > 0) {
+    const named = blocked.map(([service, port]) => `${service} :${port}`).join(", ");
+    throw new Error(
+      `HELIX_PORT_OFFSET=${offset} puts ${named} on the fetch standard's blocked-port list — ` +
+        `Node's fetch refuses those ports, so the stack could never be reached; pick another offset`,
+    );
+  }
 
   // Offset 0 IS the developer stack: override nothing. The developer's own
   // settings (their .env.local files) are the jobs configuration there.
@@ -348,6 +370,11 @@ export function resolveStack(opts = {}) {
     APP_PUBLIC_BASE: `https://${baseDomain}:${ports.edge}`,
     DEV_API_PUBLIC_BASE: `https://dev-api.${baseDomain}:${ports.devGateway}`,
     EDGE_EGRESS_URL: `http://localhost:${ports.egress}`,
+    // The other two internal hops between this stack's planes. Inherited
+    // values would point the edge at the dev stack's portal and the portal at
+    // the dev stack's egress.
+    EDGE_PORTAL_URL: portalOrigin,
+    PORTAL_EGRESS_URL: `http://localhost:${ports.egress}`,
     PORTAL_ORIGIN: portalOrigin,
     HELIX_PORTAL_URL: portalOrigin,
 

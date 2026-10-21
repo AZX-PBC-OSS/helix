@@ -31,7 +31,7 @@ node .claude/skills/run-helix/smoke.mjs --only edge     # one group
 node .claude/skills/run-helix/smoke.mjs --no-browser    # skip Chromium
 node .claude/skills/run-helix/smoke.mjs --no-jobs       # fully disabled jobs composition
 node .claude/skills/run-helix/smoke.mjs --keep          # leave services up to poke by hand
-node .claude/skills/run-helix/smoke.mjs --offset 2000   # a different isolated stack
+node .claude/skills/run-helix/smoke.mjs --offset 3000   # a different isolated stack
 node .claude/skills/run-helix/smoke.mjs --offset 0      # share the dev ports + database
 ```
 

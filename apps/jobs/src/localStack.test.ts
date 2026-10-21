@@ -234,6 +234,10 @@ describe("the local stack's jobs plane (scripts/stack-env.mjs)", () => {
     // callback (and fail discovery when the dev IdP is not running).
     expect(minted.EDGE_OIDC_ISSUER).toBe(`http://localhost:${3002 + OFFSET}`);
     expect(minted.PORTAL_OIDC_ISSUER).toBe(minted.EDGE_OIDC_ISSUER);
+    // Every internal hop between the planes targets this stack's own ports.
+    expect(minted.EDGE_EGRESS_URL).toBe(`http://localhost:${8081 + OFFSET}`);
+    expect(minted.EDGE_PORTAL_URL).toBe(`http://localhost:${3001 + OFFSET}`);
+    expect(minted.PORTAL_EGRESS_URL).toBe(minted.EDGE_EGRESS_URL);
   });
 
   it("a typo'd HELIX_JOBS_ENABLED fails the resolution loudly, naming the value", () => {
@@ -432,6 +436,16 @@ describe("the local stack's jobs plane (scripts/stack-env.mjs)", () => {
     for (const bad of ["-5", "1000.5"]) {
       expect(() => stackEnv(["--env", "--offset", bad])).toThrow(/HELIX_PORT_OFFSET/);
     }
+  });
+
+  it("an offset that lands a service on a fetch-blocked port refuses the resolution", () => {
+    // Offset 2000 puts the edge on 10080, which Node's fetch refuses outright:
+    // the stack would boot and no probe, service hop or test could reach it.
+    expect(() => stackEnv(["--env", "--offset", "2000", "--suffix", SUFFIX])).toThrow(
+      /HELIX_PORT_OFFSET=2000 puts edge :10080 on the fetch standard's blocked-port list/,
+    );
+    expect(() => stackEnv(["--ports", "--offset", "2000"])).toThrow(/edge :10080/);
+    expect(stackEnv(["--env", "--offset", "3000", "--suffix", SUFFIX]).EDGE_PORT).toBe("11080");
   });
 
   it("a blank HELIX_PORT_OFFSET refuses the resolution — never silently the dev stack", () => {
