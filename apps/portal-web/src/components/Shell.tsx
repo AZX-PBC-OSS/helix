@@ -50,6 +50,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: "/admin/providers", label: "Providers", icon: "globe" },
   { to: "/admin/secrets", label: "Secrets", icon: "key" },
   { to: "/admin/sessions", label: "Sessions", icon: "user" },
+  { to: "/admin/settings", label: "Settings", icon: "settings" },
   { to: "/admin/violations", label: "Violations", icon: "shield" },
 ];
 

@@ -891,8 +891,9 @@ module alerts 'modules/alerts.bicep' = if (deployAlerts && deployApps) {
 // design (the host router mounts platform routes on platform hosts only), so
 // `auth.<appsDomain>` is the one public hostname that answers the platform
 // health JSON. The portal joins the list only when portalExternal put it on the
-// public LB; the dev-gateway never does, because `dev-api` is a valid app slug
-// and the edge image classifies that host as an app. Egress cannot be probed at
+// public LB; the dev-gateway never does: `dev-api` is a reserved label the main
+// edge does not route as an app, and the dev gateway serves no platform health
+// on it. Egress cannot be probed at
 // all — internal-only environment, no public LB, which is ADR-0001 working.
 var availabilityTargets = concat(
   [

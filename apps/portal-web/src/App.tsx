@@ -13,6 +13,7 @@ import { UsagePage } from "./pages/UsagePage";
 import { ApprovalsPage } from "./pages/admin/ApprovalsPage";
 import { AuditPage } from "./pages/admin/AuditPage";
 import { PlatformPage } from "./pages/admin/PlatformPage";
+import { PlatformSettingsPage } from "./pages/admin/PlatformSettingsPage";
 import { ProviderFormPage } from "./pages/admin/ProviderFormPage";
 import { ProvidersPage } from "./pages/admin/ProvidersPage";
 import { SecretsPage } from "./pages/admin/SecretsPage";
@@ -47,6 +48,7 @@ function Portal() {
         <Route path="/admin/registry" element={<Navigate to="/?scope=all" replace />} />
         <Route path="/admin/secrets" element={admin(<SecretsPage />)} />
         <Route path="/admin/sessions" element={admin(<SessionsPage />)} />
+        <Route path="/admin/settings" element={admin(<PlatformSettingsPage />)} />
         <Route path="/admin/violations" element={admin(<ViolationsPage />)} />
         <Route path="*" element={<AppsListPage />} />
       </Routes>

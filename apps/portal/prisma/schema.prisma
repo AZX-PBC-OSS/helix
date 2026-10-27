@@ -804,3 +804,33 @@ model RepoBinding {
 
   @@map("repo_bindings")
 }
+
+/// Platform-wide settings an administrator edits in the portal. Exactly one row
+/// (id = 1, enforced by a CHECK in the migration). The operator columns are
+/// shown to anonymous visitors on the edge's sign-in and about pages, so the
+/// edge has a column-scoped SELECT on those three and nothing else; a NOTIFY
+/// trigger reloads its registry projection when the row changes.
+model PlatformSettings {
+  id                  Int      @id @default(1) @db.SmallInt
+  operatorName        String?
+  operatorDescription String?
+  operatorContactUrl  String?
+  updatedAt           DateTime @default(now()) @updatedAt
+  /// The admin's `actor.sub`; null on the seeded row.
+  updatedBy           String?
+
+  @@map("platform_settings")
+}
+
+/// App-name terms the portal refuses at app creation, matched as whole
+/// hyphen-delimited tokens (`blockedTermIn` in @azx-pbc/shared). Portal-only:
+/// the edge never sees this list.
+model BlockedSlugTerm {
+  id        String   @id @default(uuid()) @db.Uuid
+  term      String   @unique
+  note      String?
+  createdBy String
+  createdAt DateTime @default(now())
+
+  @@map("blocked_slug_terms")
+}

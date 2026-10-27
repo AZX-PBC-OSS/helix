@@ -114,6 +114,8 @@ const registry = new LiveRegistry({
   // helix_dev has a column-scoped grant that omits the password columns — the dev
   // tier never serves the password login and must not read a prod credential.
   includePasswords: false,
+  // No grant on platform_settings, and the dev tier renders no anonymous pages.
+  includeOperatorSettings: false,
   log: {
     info: (obj, msg) => logRef.current.info(obj, msg),
     warn: (obj, msg) => logRef.current.warn(obj, msg),

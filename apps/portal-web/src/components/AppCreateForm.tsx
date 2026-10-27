@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Alert, Box, Button, Group, Radio, Stack, Text, Textarea, TextInput } from "@mantine/core";
+import { useDebouncedValue } from "@mantine/hooks";
+import { useQuery } from "@tanstack/react-query";
 import {
   SLUG_PATTERN,
   APP_DESCRIPTION_MAX,
@@ -8,6 +10,7 @@ import {
   type VisibilityMode,
 } from "@azx-pbc/shared";
 import { useCreateApp } from "../api/mutations";
+import { slugCheckQuery } from "../api/queries";
 import { GroupPicker } from "./GroupPicker";
 import { useAuth } from "../auth/AuthProvider";
 import { Icon } from "./Icon";
@@ -119,8 +122,21 @@ export function AppCreateForm({
   const [groupIds, setGroupIds] = useState<string[]>([]);
 
   const slugValid = SLUG_PATTERN.test(slug);
+  // The server knows what the pattern can't: reserved labels, the platform's
+  // blocked terms, and names already taken. A failed check never blocks the
+  // form; the create route enforces the same rules.
+  const [debouncedSlug] = useDebouncedValue(slug, 300);
+  const check = useQuery({
+    ...slugCheckQuery(debouncedSlug),
+    enabled: authenticated && SLUG_PATTERN.test(debouncedSlug),
+  });
+  const slugRefusal =
+    slugValid && debouncedSlug === slug && check.data && !check.data.ok ? check.data.message : null;
   const valid =
-    slugValid && displayName.trim().length > 0 && (mode !== "group" || groupIds.length > 0);
+    slugValid &&
+    !slugRefusal &&
+    displayName.trim().length > 0 &&
+    (mode !== "group" || groupIds.length > 0);
 
   function submit() {
     const visibility: Visibility = mode === "group" ? { mode, groupIds } : { mode };
@@ -149,7 +165,7 @@ export function AppCreateForm({
           error={
             slug && !slugValid
               ? "a-z, 0-9, hyphens; must start and end with a letter or number"
-              : undefined
+              : (slugRefusal ?? undefined)
           }
           classNames={{ input: "az-mono" }}
         />
@@ -163,7 +179,7 @@ export function AppCreateForm({
             </Text>
             <Text
               span
-              c={slug && !slugValid ? "red.4" : slug ? "teal.4" : "dark.2"}
+              c={slug && (!slugValid || slugRefusal) ? "red.4" : slug ? "teal.4" : "dark.2"}
               fw={600}
               inherit
             >

@@ -4,13 +4,18 @@ import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { EdgeConfig } from "./config.js";
 import type { BlobReader } from "./blob/client.js";
-import type { RegistryFreshnessReader, RegistryReader } from "./registry/projection.js";
+import type {
+  OperatorSettingsReader,
+  RegistryFreshnessReader,
+  RegistryReader,
+} from "./registry/projection.js";
 import { registryFreshnessCheck } from "./registry/health.js";
 import { classifyHost, type HostClass } from "./routing/hosts.js";
 import { trustProxyCheck, wireTrustProxyHealth } from "./routing/trustProxyHealth.js";
 import { makeAssetHandler } from "./serving/assets.js";
 import { makeVisitRecorder, type VisitStore } from "./serving/visits.js";
 import { edgeErrorHandler, sendMethodNotAllowed, sendNotFound, sendUnavailable } from "./errors.js";
+import { sendAboutPage } from "./serving/aboutPage.js";
 import { normalizeRequestPath } from "./serving/paths.js";
 import { deriveAuthKeys, deriveVisitorKey } from "./auth/secrets.js";
 import type { OidcClient } from "./auth/oidc.js";
@@ -76,6 +81,8 @@ export interface EdgeDeps {
   config: EdgeConfig;
   /** `/health` reads `freshness()`; every other consumer only routes on `getApp`. */
   registry: RegistryReader & RegistryFreshnessReader;
+  /** The operator identity for the anonymous pages; null renders the platform defaults. */
+  operator?: OperatorSettingsReader | null;
   blob: BlobReader;
   /** Session persistence; required for the auth routes to exist. */
   sessions?: SessionStore | null;
@@ -242,6 +249,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
         config,
         auth: authRuntime.auth,
         registry: deps.registry,
+        operator: deps.operator ?? null,
         sessions: authRuntime.sessions,
         throttle: deps.loginThrottle ?? new LoginThrottle(fallbackCounters),
       }
@@ -813,6 +821,12 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           return;
         }
         await serveAsset(req, reply, req.hostClass.slug);
+        return;
+      }
+      // The bare apps domain and the auth host's root are the first URLs a web
+      // filter's crawler tries; a plain 404 there gives it nothing to classify.
+      if ((req.raw.url ?? "/").split("?", 1)[0] === "/") {
+        sendAboutPage(reply, deps.operator?.operatorSettings() ?? null);
         return;
       }
       sendNotFound(reply);

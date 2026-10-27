@@ -154,6 +154,12 @@ versions, capabilities, usage, approvals, violations, secrets, and audit.
     (an "overdue" badge marks exactly the stale-snapshot window an admin might be here to kill)
     and expiry. Shared-password visitors appear as their own per-pseudonym cards. See
     [authentication.md](./authentication.md#admin-session-revocation) for the semantics.
+  - **Settings** (`/admin/settings`) — the operator identity the edge shows anonymous visitors,
+    the blocked app-name terms (with the existing apps that already match one), and a read-only
+    view of the portal's environment, with secrets shown only as set or not set. See
+    [platform-settings.md](./platform-settings.md). The create form calls
+    `GET /api/v1/slug-check` as the slug is typed, so a reserved, blocked or taken name is
+    refused before submit.
   - **Violations** (`/admin/violations`) — CSP violation reports off `GET /api/v1/csp/violations`,
     each a one-click origin-grant request (`useGrantOrigin`).
 - **Creating vs deploying** — two jobs, each on the screen its object lives on. **Create app**

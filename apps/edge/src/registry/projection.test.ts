@@ -574,3 +574,99 @@ describe("RegistryProjection freshness", () => {
     expect(projection.freshness().staleForMs).toBe(120_000);
   });
 });
+
+describe("RegistryProjection operator settings", () => {
+  /** Answers the apps query and the settings query by SQL, so call order does not matter. */
+  function querierBySql(settings: Array<Record<string, unknown>> | Error): ProjectionQuerier {
+    return {
+      query(sql: string) {
+        if (sql.includes("platform_settings")) {
+          return settings instanceof Error
+            ? Promise.reject(settings)
+            : Promise.resolve({ rows: settings });
+        }
+        return Promise.resolve({ rows: [ROW] });
+      },
+    };
+  }
+
+  it("does not read the settings unless asked (the dev gateway has no grant)", async () => {
+    const sqls: string[] = [];
+    const projection = new RegistryProjection({
+      query(sql: string) {
+        sqls.push(sql);
+        return Promise.resolve({ rows: [] });
+      },
+    });
+    await projection.load();
+    expect(sqls.some((s) => s.includes("platform_settings"))).toBe(false);
+    expect(projection.operatorSettings()).toBeNull();
+  });
+
+  it("loads the operator identity alongside the apps", async () => {
+    const projection = new RegistryProjection(
+      querierBySql([{ name: "Example Co", description: "About us", contact_url: null }]),
+      { includeOperatorSettings: true },
+    );
+    await projection.load();
+    expect(projection.operatorSettings()).toEqual({
+      name: "Example Co",
+      description: "About us",
+      contactUrl: null,
+    });
+    expect(projection.getApp("demo")).toBeDefined();
+  });
+
+  it("keeps serving apps and the previous settings when the settings read fails", async () => {
+    let settings: Array<Record<string, unknown>> | Error = [
+      { name: "Example Co", description: null, contact_url: null },
+    ];
+    const failures: unknown[] = [];
+    let recoveries = 0;
+    const projection = new RegistryProjection(
+      {
+        query(sql: string) {
+          if (sql.includes("platform_settings")) {
+            return settings instanceof Error
+              ? Promise.reject(settings)
+              : Promise.resolve({ rows: settings });
+          }
+          return Promise.resolve({ rows: [ROW] });
+        },
+      },
+      {
+        includeOperatorSettings: true,
+        onOperatorSettingsFailure: (err) => failures.push(err),
+        onOperatorSettingsRecovered: () => recoveries++,
+      },
+    );
+    await projection.load();
+    settings = new Error('relation "platform_settings" does not exist');
+    await projection.load();
+    await projection.load();
+
+    // Reported on the transition, not on every reload.
+    expect(failures).toHaveLength(1);
+    expect(projection.operatorSettings()?.name).toBe("Example Co");
+    expect(projection.isLoaded()).toBe(true);
+    expect(projection.freshness().consecutiveLoadFailures).toBe(0);
+    expect(projection.getApp("demo")).toBeDefined();
+
+    settings = [{ name: "Example Co", description: null, contact_url: null }];
+    await projection.load();
+    expect(recoveries).toBe(1);
+    expect(failures).toHaveLength(1);
+  });
+
+  it("treats a missing settings row as no operator", async () => {
+    const projection = new RegistryProjection(querierBySql([]), {
+      includeOperatorSettings: true,
+    });
+    await projection.load();
+    expect(projection.operatorSettings()).toEqual({
+      name: null,
+      description: null,
+      contactUrl: null,
+    });
+  });
+});

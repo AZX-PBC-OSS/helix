@@ -26,7 +26,12 @@ import {
 } from "@azx-pbc/shared";
 import { normalizeRequestPath } from "../serving/paths.js";
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
-import { ATTR_OUTCOME, ATTR_REGISTRY_APPS, SPAN_REGISTRY_LOAD } from "@azx-pbc/shared/telemetry";
+import {
+  ATTR_OUTCOME,
+  ATTR_REGISTRY_APPS,
+  ATTR_REGISTRY_OPERATOR_SETTINGS,
+  SPAN_REGISTRY_LOAD,
+} from "@azx-pbc/shared/telemetry";
 import { tracer } from "../telemetry.js";
 
 /**
@@ -355,9 +360,24 @@ interface ProjectionRow {
   capabilities: unknown;
 }
 
+/**
+ * Who runs this platform instance, as an administrator set it in the portal.
+ * Shown on the edge's anonymous pages; every field is optional plain text.
+ */
+export interface OperatorSettings {
+  name: string | null;
+  description: string | null;
+  contactUrl: string | null;
+}
+
+export interface OperatorSettingsReader {
+  /** null until a load has read the settings at least once. */
+  operatorSettings(): OperatorSettings | null;
+}
+
 /** Narrow query seam: `pg.Pool#query` shaped, fake-able in unit tests. */
 export interface ProjectionQuerier {
-  query(sql: string): Promise<{ rows: ProjectionRow[] }>;
+  query(sql: string): Promise<{ rows: unknown[] }>;
 }
 
 // Prisma created camelCase columns (no @map), so identifiers must be quoted —
@@ -387,9 +407,29 @@ const PROJECTION_SQL_NO_PASSWORD = `
   LEFT JOIN versions v ON v.id = a."currentVersionId"
 `;
 
-export class RegistryProjection implements RegistryReader, RegistryFreshnessReader {
+// Column-scoped: helix_edge may read exactly these three columns.
+const OPERATOR_SETTINGS_SQL = `
+  SELECT "operatorName" AS name, "operatorDescription" AS description,
+         "operatorContactUrl" AS contact_url
+  FROM platform_settings
+`;
+
+interface OperatorSettingsRow {
+  name: string | null;
+  description: string | null;
+  contact_url: string | null;
+}
+
+export class RegistryProjection
+  implements RegistryReader, RegistryFreshnessReader, OperatorSettingsReader
+{
   #querier: ProjectionQuerier;
   #sql: string;
+  #includeOperatorSettings: boolean;
+  #operatorSettings: OperatorSettings | null = null;
+  #onOperatorSettingsFailure: (err: unknown) => void;
+  #onOperatorSettingsRecovered: () => void;
+  #operatorSettingsFailing = false;
   #map = new Map<string, RegistryEntry>();
   #loaded = false;
   #inFlight: Promise<void> | null = null;
@@ -411,11 +451,28 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
       onLoadFailure?: (info: RegistryLoadFailure) => void;
       onLoadRecovered?: (info: RegistryLoadRecovery) => void;
       includePasswords?: boolean;
+      /**
+       * Also read the operator identity from `platform_settings`. Off by
+       * default; the edge turns it on, the dev gateway has no grant for it.
+       */
+      includeOperatorSettings?: boolean;
+      /**
+       * The operator-settings read started failing. Fires on the transition,
+       * not on every reload. It never fails the load: the app map still swaps
+       * and the previous settings are kept, so an edge that is deployed before
+       * the migration creating the table keeps serving apps.
+       */
+      onOperatorSettingsFailure?: (err: unknown) => void;
+      /** The operator-settings read succeeded again after a failure. */
+      onOperatorSettingsRecovered?: () => void;
       /** Test seam; defaults to `performance.now()` + `Date`. */
       clock?: ProjectionClock;
     } = {},
   ) {
     this.#querier = querier;
+    this.#includeOperatorSettings = opts.includeOperatorSettings ?? false;
+    this.#onOperatorSettingsFailure = opts.onOperatorSettingsFailure ?? (() => {});
+    this.#onOperatorSettingsRecovered = opts.onOperatorSettingsRecovered ?? (() => {});
     // Default includes the password columns (the edge, which serves the password
     // login). The dev-gateway passes false — it has no column grant for them.
     this.#sql = opts.includePasswords === false ? PROJECTION_SQL_NO_PASSWORD : PROJECTION_SQL;
@@ -426,6 +483,10 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
 
   getApp(slug: string): RegistryEntry | undefined {
     return this.#map.get(slug);
+  }
+
+  operatorSettings(): OperatorSettings | null {
+    return this.#operatorSettings;
   }
 
   isLoaded(): boolean {
@@ -479,13 +540,15 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
     // At most one of these is ever set.
     let recovery: RegistryLoadRecovery | null = null;
     let failure: RegistryLoadFailure | null = null;
+    let settingsFailure: { err: unknown } | null = null;
+    let settingsRecovered = false;
     // INTERNAL, and NOT a root span: a reload triggered by a NOTIFY has no
     // parent, but one triggered from within a request should nest under it.
     // Unlike the gateway handlers there is no untrusted caller here to graft a
     // trace from — the trigger is the portal's own LISTEN channel or our timer.
     const span = tracer.startSpan(SPAN_REGISTRY_LOAD, { kind: SpanKind.INTERNAL });
     try {
-      const { rows } = await this.#querier.query(this.#sql);
+      const rows = (await this.#querier.query(this.#sql)).rows as ProjectionRow[];
       span.setAttribute(ATTR_REGISTRY_APPS, rows.length);
       // Build fresh, swap atomically (single assignment — no torn reads).
       const next = new Map<string, RegistryEntry>();
@@ -509,6 +572,26 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
       }
       this.#map = next;
       this.#loaded = true;
+      if (this.#includeOperatorSettings) {
+        try {
+          const [row] = (await this.#querier.query(OPERATOR_SETTINGS_SQL))
+            .rows as OperatorSettingsRow[];
+          this.#operatorSettings = {
+            name: row?.name ?? null,
+            description: row?.description ?? null,
+            contactUrl: row?.contact_url ?? null,
+          };
+          span.setAttribute(ATTR_REGISTRY_OPERATOR_SETTINGS, "ok");
+          settingsRecovered = this.#operatorSettingsFailing;
+          this.#operatorSettingsFailing = false;
+        } catch (err) {
+          if (!this.#operatorSettingsFailing) settingsFailure = { err };
+          this.#operatorSettingsFailing = true;
+          span.setAttribute(ATTR_REGISTRY_OPERATOR_SETTINGS, "failed");
+        }
+      } else {
+        span.setAttribute(ATTR_REGISTRY_OPERATOR_SETTINGS, "skipped");
+      }
       span.setAttribute(ATTR_OUTCOME, "ok");
       // Freshness bookkeeping: capture the pre-swap state before restamping, so
       // a recovery can report how long the stale copy was served.
@@ -553,5 +636,8 @@ export class RegistryProjection implements RegistryReader, RegistryFreshnessRead
     if (recovery !== null)
       notify((info: RegistryLoadRecovery) => this.#onLoadRecovered(info), recovery);
     if (failure !== null) notify((info: RegistryLoadFailure) => this.#onLoadFailure(info), failure);
+    if (settingsFailure !== null)
+      notify(({ err }: { err: unknown }) => this.#onOperatorSettingsFailure(err), settingsFailure);
+    if (settingsRecovered) notify(() => this.#onOperatorSettingsRecovered(), undefined);
   }
 }

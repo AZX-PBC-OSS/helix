@@ -33,6 +33,7 @@ import { dataRoutes } from "./routes/data.js";
 import { dashboardRoutes } from "./routes/dashboard.js";
 import { authRoutes } from "./routes/auth.js";
 import { configRoutes } from "./routes/config.js";
+import { platformSettingsRoutes } from "./routes/platformSettings.js";
 import { catalogueRoutes } from "./routes/catalogue.js";
 import { directoryRoutes } from "./routes/directory.js";
 import { connectionsInternalRoutes } from "./routes/connectionsInternal.js";
@@ -132,6 +133,7 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(dataRoutes);
   app.register(authRoutes);
   app.register(configRoutes);
+  app.register(platformSettingsRoutes);
   app.register(catalogueRoutes);
   app.register(directoryRoutes);
   // The internal edge→portal consent seam: consult + cancel,

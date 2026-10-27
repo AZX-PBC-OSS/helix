@@ -1,7 +1,11 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthConfig, EdgeConfig } from "../../config.js";
 import { publicOrigin } from "../../config.js";
-import type { RegistryEntry, RegistryReader } from "../../registry/projection.js";
+import type {
+  OperatorSettingsReader,
+  RegistryEntry,
+  RegistryReader,
+} from "../../registry/projection.js";
 import { sendNotFound } from "../../errors.js";
 import { resolveServingEntry } from "./appHost.js";
 import { SESSION_COOKIE, parseCookieHeader, serializeSessionCookie } from "../cookies.js";
@@ -9,7 +13,14 @@ import { hashSessionToken, newSessionId, newSessionToken, type SessionStore } fr
 import { isSameOriginFormPost, validateReturnPath } from "../validate.js";
 import { newPasswordPrincipal, verifyPassword } from "../password.js";
 import type { LoginThrottle } from "../loginThrottle.js";
-import { AUTH_PAGE_CSP, escapeHtml, renderAuthPage } from "../../serving/authChrome.js";
+import {
+  AUTH_PAGE_CSP,
+  escapeHtml,
+  operatorFooter,
+  renderAuthPage,
+  renderSiteAbout,
+  type SiteOperator,
+} from "../../serving/authChrome.js";
 
 /**
  * The shared-password challenge (`password` visibility, docs/features/
@@ -27,6 +38,8 @@ export interface PasswordLoginRuntime {
   config: EdgeConfig;
   auth: AuthConfig;
   registry: RegistryReader;
+  /** The operator identity shown on the page; absent renders the platform defaults. */
+  operator?: OperatorSettingsReader | null;
   sessions: SessionStore;
   throttle: LoginThrottle;
 }
@@ -64,33 +77,38 @@ function ssoStartUrl(rt: PasswordLoginRuntime, slug: string, rd: string): string
   return url.toString();
 }
 
+/**
+ * The page a web filter's crawler sees for every password app, so it carries no
+ * username field and explains what the site is: a lone username/password form
+ * with a Microsoft sign-in link is what gets a domain categorized as webmail.
+ * The app's own name is not shown before sign-in (see `renderSiteAbout`).
+ */
 function renderLoginPage(opts: {
   rd: string;
   error: string | null;
   ssoUrl: string;
-  slug: string;
+  operator: SiteOperator | null;
 }): string {
   const errorBlock = opts.error ? `<p class="err" role="alert">${escapeHtml(opts.error)}</p>` : "";
+  const ssoLabel = opts.operator?.name
+    ? `Have an account with ${opts.operator.name}? Sign in with it instead`
+    : "Have an organization account? Sign in with it instead";
   const body = `${errorBlock}
     <form method="POST" action="/_auth/login">
       <input type="hidden" name="rd" value="${escapeHtml(opts.rd)}">
-      <!-- A stable per-app "username" so browsers/password managers can save and
-           offer the shared password (and to satisfy the password-form a11y
-           guidance). It carries no auth weight — the POST handler ignores it. -->
-      <label for="u" class="vh">App</label>
-      <input id="u" name="username" type="text" value="${escapeHtml(opts.slug)}"
-             autocomplete="username" readonly tabindex="-1" aria-hidden="true" class="vh">
-      <label for="pw">Password</label>
+      <label for="pw">Access code</label>
       <input id="pw" name="password" type="password" autocomplete="current-password"
              autofocus required>
       <button type="submit">Continue<svg class="chevg" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
     </form>
-    <p class="alt"><a href="${escapeHtml(opts.ssoUrl)}">Sign in with your account instead</a></p>`;
+    <p class="alt"><a href="${escapeHtml(opts.ssoUrl)}">${escapeHtml(ssoLabel)}</a></p>
+    ${renderSiteAbout(opts.operator)}`;
   return renderAuthPage({
-    title: "Password required",
-    heading: "This app is password protected",
-    sub: "Enter the shared password you were given to continue.",
+    title: "Private app",
+    heading: "This app is private",
+    sub: "Enter the access code you were given to view it.",
     bodyHtml: body,
+    footHtml: operatorFooter(opts.operator),
   });
 }
 
@@ -100,7 +118,7 @@ function sendLoginPage(
     rd: string;
     error: string | null;
     ssoUrl: string;
-    slug: string;
+    operator: SiteOperator | null;
     status: 200 | 401 | 403 | 429;
   },
 ): void {
@@ -137,7 +155,7 @@ export function makePasswordLoginPageHandler(rt: PasswordLoginRuntime) {
       rd,
       error: null,
       ssoUrl: ssoStartUrl(rt, entry.slug, rd),
-      slug: entry.slug,
+      operator: rt.operator?.operatorSettings() ?? null,
       status: 200,
     });
   };
@@ -173,7 +191,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       sendLoginPage(reply, {
         rd,
         ssoUrl,
-        slug: entry.slug,
+        operator: rt.operator?.operatorSettings() ?? null,
         error: "Couldn't verify that request. Please try again.",
         status: 403,
       });
@@ -189,7 +207,7 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       sendLoginPage(reply, {
         rd,
         ssoUrl,
-        slug: entry.slug,
+        operator: rt.operator?.operatorSettings() ?? null,
         error: "Too many attempts. Wait a few minutes and try again.",
         status: 429,
       });
@@ -203,8 +221,8 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
       sendLoginPage(reply, {
         rd,
         ssoUrl,
-        slug: entry.slug,
-        error: "Incorrect password — try again.",
+        operator: rt.operator?.operatorSettings() ?? null,
+        error: "That access code is not right — try again.",
         status: 401,
       });
       return;

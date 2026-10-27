@@ -168,3 +168,43 @@ describe("AppCreateForm", () => {
     expect(screen.queryByRole("textbox", { name: /group id/i })).toBeNull();
   });
 });
+
+describe("AppCreateForm slug check", () => {
+  it("shows the server's refusal and disables create for a blocked name", async () => {
+    setToken("t");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/v1/slug-check?slug=acme-demo"))
+          return Promise.resolve(
+            jsonResponse({
+              ok: false,
+              reason: "blocked",
+              message:
+                'app name contains "acme", which this platform\'s administrators have blocked',
+            }),
+          );
+        if (url.startsWith("/api/v1/slug-check"))
+          return Promise.resolve(jsonResponse({ ok: true }));
+        if (url === "/api/v1/config")
+          return Promise.resolve(jsonResponse({ appPublicBase: APPS_BASE }));
+        return new Promise<Response>(() => {});
+      }),
+    );
+    render();
+
+    await userEvent.type(await screen.findByRole("textbox", { name: /subdomain/i }), "acme-demo");
+    await userEvent.type(screen.getByRole("textbox", { name: /display name/i }), "Demo");
+
+    expect(await screen.findByText(/contains "acme"/)).toBeDefined();
+    expect(screen.getByRole("button", { name: /create app/i })).toHaveProperty("disabled", true);
+
+    await userEvent.clear(screen.getByRole("textbox", { name: /subdomain/i }));
+    await userEvent.type(screen.getByRole("textbox", { name: /subdomain/i }), "demo");
+    await vi.waitFor(() =>
+      expect(screen.getByRole("button", { name: /create app/i })).toHaveProperty("disabled", false),
+    );
+    expect(screen.queryByText(/contains "acme"/)).toBeNull();
+  });
+});

@@ -100,8 +100,8 @@ app host** (no auth host, no handoff), so the OIDC review surface is untouched.
   `toApp`/`toManifest` or any open read.
 - **Projection.** Only `passwordHash`/`passwordSalt` reach the edge (registry projection); the edge
   holds nothing decryptable.
-- **Challenge (edge).** `apps/edge/src/auth/routes/passwordLogin.ts` serves `GET /_auth/login` (a
-  whitelabeled form under its own strict CSP) and verifies `POST /_auth/login`: Origin-checked
+- **Challenge (edge).** `apps/edge/src/auth/routes/passwordLogin.ts` serves `GET /_auth/login` (an
+  "access code" form under its own strict CSP) and verifies `POST /_auth/login`: Origin-checked
   (login-CSRF), brute-force throttled (`loginThrottle.ts` — 429), and the password re-derived with
   async scrypt + `timingSafeEqual` (`password.ts`, fail-closed). On success it inserts an **active**
   session directly (`SessionStore.createActive` — no pending/redeem) and sets `__Host-session`.
@@ -118,6 +118,11 @@ app host** (no auth host, no handoff), so the OIDC review surface is untouched.
   identity + groups, silent refresh): the gate's refresh/visibility redirects target the auth
   host, while only the *cold* redirect picks the password form — a password session never reaches
   a refresh (its `refreshDueAt == expiresAt`).
+- **What the page shows.** The page has no username field, and it does not show the app's slug,
+  name or description. It explains that the site hosts privately shared apps and is not an email
+  service, and it names the operator from the portal's Platform Settings. Web filters categorize
+  the domain from this page, and a username/password pair with a Microsoft sign-in link reads as
+  webmail. See [platform-settings.md](./platform-settings.md).
 
 Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
 `apps/portal/src/routes/access-password.test.ts` + `access/password.test.ts`.

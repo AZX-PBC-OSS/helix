@@ -318,7 +318,7 @@ describe("fail-closed when unconfigured", () => {
 });
 
 describe("nothing else on the auth host changes (regression)", () => {
-  it("/start still begins the OIDC flow; /callback still errors without the flow cookie; / still 404s", async () => {
+  it("/start still begins the OIDC flow; /callback still errors without the flow cookie; / is the about page", async () => {
     const app = buildProxyEdge();
     const start = await app.inject({
       url: "/start?app=demo&rd=/page",
@@ -331,8 +331,12 @@ describe("nothing else on the auth host changes (regression)", () => {
     const callback = await app.inject({ url: "/callback?code=x&state=y", headers: AUTH_HOST });
     expect(callback.statusCode).toBe(400);
 
+    // The root serves the static about page, never the portal proxy.
     const root = await app.inject({ url: "/", headers: AUTH_HOST });
-    expect(root.statusCode).toBe(404);
+    expect(root.statusCode).toBe(200);
+    expect(root.body).toContain("Private app hosting");
+    const other = await app.inject({ url: "/anything", headers: AUTH_HOST });
+    expect(other.statusCode).toBe(404);
     await app.close();
   });
 

@@ -89,6 +89,12 @@ export const ATTR_DATA_MATCH_COUNT = "helix.data.match_count";
 /** How many apps the registry projection loaded. Bounded by the tenant. */
 export const ATTR_REGISTRY_APPS = "helix.registry.apps";
 /**
+ * Whether the projection load also read the operator identity
+ * (`platform_settings`): `ok`, `failed` (the previous copy is kept and the app
+ * map is unaffected) or `skipped` (the dev gateway, which has no grant).
+ */
+export const ATTR_REGISTRY_OPERATOR_SETTINGS = "helix.registry.operator_settings";
+/**
  * How many provider rows the egress cache holds after a reconcile. Bounded by
  * the tenant — the table is administrator-created.
  */

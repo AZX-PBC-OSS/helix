@@ -20,6 +20,77 @@ export const AUTH_PAGE_CSP = [
   "frame-ancestors 'none'",
 ].join("; ");
 
+/**
+ * Who runs this instance, as an administrator set it in the portal's Platform
+ * Settings. Plain text; every field is optional.
+ */
+export interface SiteOperator {
+  name: string | null;
+  description: string | null;
+  contactUrl: string | null;
+}
+
+/**
+ * The "what is this site" paragraph shown to anonymous visitors. Web filters
+ * classify a domain by what an unauthenticated crawler sees, and a bare
+ * password form with no context reads as a webmail login. This text says what
+ * the site is and, when configured, who runs it. It deliberately names no
+ * product, so a rename does not touch it, and no app: an app's name and
+ * description are owner-written and are not shown before sign-in.
+ */
+export function renderSiteAbout(operator: SiteOperator | null): string {
+  const paragraphs = [
+    "This site hosts private web apps, reports and prototypes that their owners share with specific people. " +
+      "It is not an email or account service.",
+  ].map((text) => `<p>${escapeHtml(text)}</p>`);
+  if (operator?.name || operator?.description) {
+    const name = operator.name ? `Operated by ${operator.name}.` : "";
+    const text = [name, operator.description ?? ""].filter(Boolean).join(" ");
+    paragraphs.push(`<p>${escapeHtml(text)}</p>`);
+  }
+  const contact = contactHref(operator?.contactUrl ?? null);
+  if (contact) {
+    paragraphs.push(
+      `<p><a href="${escapeHtml(contact.href)}">${escapeHtml(contact.label)}</a></p>`,
+    );
+  }
+  return `<div class="about">${paragraphs.join("")}</div>`;
+}
+
+/** The footer line: the operator when set, otherwise the platform default. */
+export function operatorFooter(operator: SiteOperator | null): string {
+  const text = operator?.name ? `Operated by ${operator.name}` : "Protected by AZX";
+  return `<p class="foot">${escapeHtml(text)}</p>`;
+}
+
+/**
+ * Re-check the contact link even though the portal validated it: this is the
+ * only link on the page an administrator controls, and a `javascript:` URL
+ * here would be script on an auth page.
+ */
+function contactHref(raw: string | null): { href: string; label: string } | null {
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (url.username !== "" || url.password !== "") return null;
+    if (url.protocol === "mailto:")
+      return { href: url.href, label: `Contact: ${mailtoLabel(url)}` };
+    if (url.protocol === "https:") return { href: url.href, label: `Contact: ${url.host}` };
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
+/** The address of a `mailto:` link as a person reads it, not percent-encoded. */
+function mailtoLabel(url: URL): string {
+  try {
+    return decodeURIComponent(url.pathname);
+  } catch {
+    return url.pathname;
+  }
+}
+
 /** Escape the five HTML-significant characters for safe attribute/text interpolation. */
 export function escapeHtml(value: string): string {
   return value
@@ -44,7 +115,7 @@ const STYLE = `
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px;
        font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-       color: #f6f2f5; position: relative; overflow: hidden;
+       color: #f6f2f5; position: relative; overflow-x: hidden;
        background: linear-gradient(#05060a 0%, #0a0810 34%, #120a14 46%, #08090b 47%, #08090b 100%); }
 /* fixed sunset scene (pure CSS — these pages run no JS) */
 .scene { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
@@ -116,6 +187,12 @@ p.err { margin: 0 0 18px; padding: 10px 13px; border-radius: 10px; text-align: l
 .alt a:hover { text-decoration: underline; }
 p.foot { margin: 18px 0 0; font-size: 11px; color: #756f77; text-align: center;
          font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: .12em; }
+.about { margin: 22px 0 0; padding-top: 16px; border-top: 1px solid rgba(255,255,255,.1);
+         text-align: left; font-size: 12.5px; color: #9d969c; }
+.about p { margin: 0 0 8px; }
+.about p:last-child { margin-bottom: 0; }
+.about a { color: #ff8a3d; text-decoration: none; }
+.about a:hover { text-decoration: underline; }
 .vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
       clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 `;

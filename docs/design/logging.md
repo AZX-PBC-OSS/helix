@@ -123,6 +123,7 @@ failure mode.
 | `boot.serving` | all three services, after `listen` |
 | `db.pool_client_error` | every pooled DB client, all services |
 | `registry.load_failed` / `registry.never_loaded` / `registry.load_recovered` | `apps/edge/src/registry/listener.ts` |
+| `registry.operator_settings_failed` / `registry.operator_settings_recovered` | `apps/edge/src/registry/listener.ts` (warn once when the read starts failing, info when it recovers; apps keep serving, the anonymous pages keep the previous operator text) |
 | `auth.oidc_discovery_ready` / `auth.oidc_discovery_failed` / `auth.code_exchange_failed` | `apps/edge/src/auth/oidc.ts` |
 | `auth.oidc_missing_principal` | `apps/edge/src/auth/oidc.ts` — the login refused because the ID token lacks the configured principal claim (ADR-0048 decision 2, as amended; no fallback exists, so this line is the whole diagnosis) |
 | `auth.token_missing_principal` | `apps/portal/src/auth/verifier.ts` — the access-token mirror of the same refusal: a correctly signed token with no usable principal claim yields no actor |
