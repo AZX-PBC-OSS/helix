@@ -60,11 +60,21 @@ allowBuilds:
 #   GHSA-67mh-4wv8-2f99 clears with it: vite 6.4.3 pulls esbuild
 #   0.25.12, nothing else requests ≤ 0.24. Drop when vitepress reaches
 #   the vite-7 2.x line.
+#   @azure/msal-node — GHSA-xcx6-jx8p-x3h5 (CVE-2026-109461): the
+#   authorization-code flow could send its parameters to an
+#   attacker-controlled endpoint; every 5.x and 6.x is affected, fixed in
+#   7.1.0. @azure/identity 4.14.0 still requires ^6, so no `pnpm update`
+#   reaches it. The 6.0 and 7.0 majors only removed the `responseMode` and
+#   `loopbackClient` options from acquireTokenInteractive, and identity
+#   passes neither. The portal reaches MSAL only through
+#   DefaultAzureCredential. Scoped to identity's own dependency. Drop once
+#   an @azure/identity release requires ^7.1.0.
 overrides:
   brace-expansion: ^5.0.12
   deepmerge-ts: ^8.0.1
   mysql2: ^3.24.3
   "vitepress>vite": ^6.4.5
+  "@azure/identity>@azure/msal-node": ^7.1.2
 
 # Single-source dependency versions across the monorepo (pnpm catalog).
 # Packages reference these with "catalog:" instead of pinning their own range,
@@ -84,7 +94,7 @@ catalog:
   "@azure/storage-blob": ^12.32.0
   # Managed-identity credential for portal blob writes (prod) — portal only,
   # never the dep-minimal edge, which fetches its own AAD token over undici.
-  "@azure/identity": ^4.5.0
+  "@azure/identity": ^4.14.0
   # Edge HTTP client: streams assets from Blob with hand-rolled SharedKey
   # signing — the edge stays off the Azure SDK (dep-minimal, project plan §1).
   undici: ^7.30.1
