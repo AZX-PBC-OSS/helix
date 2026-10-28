@@ -119,10 +119,13 @@ app host** (no auth host, no handoff), so the OIDC review surface is untouched.
   host, while only the *cold* redirect picks the password form — a password session never reaches
   a refresh (its `refreshDueAt == expiresAt`).
 - **What the page shows.** The page has no username field, and it does not show the app's slug,
-  name or description. It explains that the site hosts privately shared apps and is not an email
-  service, and it names the operator from the portal's Platform Settings. Web filters categorize
-  the domain from this page, and a username/password pair with a Microsoft sign-in link reads as
-  webmail. See [platform-settings.md](./platform-settings.md).
+  name or description. The code is posted as `access_code` with `autocomplete="off"`, and
+  `POST /_auth/login` ignores any other field name. The heading reads "<operator> access
+  required", the SSO link reads "<operator> staff? Sign in with SSO", and the page explains that
+  the site hosts privately shared apps and names the operator from the portal's Platform
+  Settings. Web filters categorize the domain from this page, and a username/password pair with a
+  Microsoft-style sign-in link reads as webmail, so the copy never mentions email, even to deny
+  it. See [platform-settings.md](./platform-settings.md).
 
 Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
 `apps/portal/src/routes/access-password.test.ts` + `access/password.test.ts`.

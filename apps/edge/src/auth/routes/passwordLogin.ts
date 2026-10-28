@@ -16,7 +16,6 @@ import type { LoginThrottle } from "../loginThrottle.js";
 import {
   AUTH_PAGE_CSP,
   escapeHtml,
-  operatorFooter,
   renderAuthPage,
   renderSiteAbout,
   type SiteOperator,
@@ -66,6 +65,9 @@ function resolvePasswordApp(
   return entry;
 }
 
+/** The form field that carries the access code. */
+const ACCESS_CODE_FIELD = "access_code";
+
 /** The login page's own strict CSP — the shared chrome plus a same-origin form. */
 const LOGIN_CSP = `${AUTH_PAGE_CSP}; form-action 'self'`;
 
@@ -78,10 +80,11 @@ function ssoStartUrl(rt: PasswordLoginRuntime, slug: string, rd: string): string
 }
 
 /**
- * The page a web filter's crawler sees for every password app, so it carries no
- * username field and explains what the site is: a lone username/password form
- * with a Microsoft sign-in link is what gets a domain categorized as webmail.
- * The app's own name is not shown before sign-in (see `renderSiteAbout`).
+ * The page a web filter's crawler sees for every password app. It has no
+ * username field, no Microsoft-style "organization account" wording and no
+ * mention of email, and it says who hosts the site: a lone sign-in form on an
+ * unexplained page is what gets a domain categorized as webmail. The app's own
+ * name is not shown before sign-in (see `renderSiteAbout`).
  */
 function renderLoginPage(opts: {
   rd: string;
@@ -90,25 +93,26 @@ function renderLoginPage(opts: {
   operator: SiteOperator | null;
 }): string {
   const errorBlock = opts.error ? `<p class="err" role="alert">${escapeHtml(opts.error)}</p>` : "";
-  const ssoLabel = opts.operator?.name
-    ? `Have an account with ${opts.operator.name}? Sign in with it instead`
-    : "Have an organization account? Sign in with it instead";
+  const name = opts.operator?.name ?? null;
+  const ssoLabel = name ? `${name} staff? Sign in with SSO` : "Staff? Sign in with SSO";
   const body = `${errorBlock}
     <form method="POST" action="/_auth/login">
       <input type="hidden" name="rd" value="${escapeHtml(opts.rd)}">
-      <label for="pw">Access code</label>
-      <input id="pw" name="password" type="password" autocomplete="current-password"
+      <label for="code">Access code</label>
+      <input id="code" name="${ACCESS_CODE_FIELD}" type="password" autocomplete="off"
              autofocus required>
       <button type="submit">Continue<svg class="chevg" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
     </form>
     <p class="alt"><a href="${escapeHtml(opts.ssoUrl)}">${escapeHtml(ssoLabel)}</a></p>
     ${renderSiteAbout(opts.operator)}`;
+  const heading = name ? `${name} access required` : "Access required";
   return renderAuthPage({
-    title: "Private app",
-    heading: "This app is private",
-    sub: "Enter the access code you were given to view it.",
+    title: heading,
+    heading,
+    sub: name
+      ? `This page is a private site hosted by ${name}. Enter the access code you were given to continue.`
+      : "This page is a private site. Enter the access code you were given to continue.",
     bodyHtml: body,
-    footHtml: operatorFooter(opts.operator),
   });
 }
 
@@ -171,7 +175,8 @@ export function makePasswordLoginSubmitHandler(rt: PasswordLoginRuntime) {
     if (!entry) return;
 
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const submitted = typeof body.password === "string" ? body.password : "";
+    const field = body[ACCESS_CODE_FIELD];
+    const submitted = typeof field === "string" ? field : "";
     const rd = validateReturnPath(typeof body.rd === "string" ? body.rd : undefined) ?? "/";
     const ssoUrl = ssoStartUrl(rt, entry.slug, rd);
 

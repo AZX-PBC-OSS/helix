@@ -24,7 +24,8 @@ describe("GET / on the platform and auth hosts", () => {
       expect(res.headers["content-type"]).toContain("text/html");
       expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
       expect(res.body).toContain("Private app hosting");
-      expect(res.body).toContain("It is not an email or account service.");
+      expect(res.body).not.toMatch(/e-?mail/i);
+      expect(res.body).toContain('<a href="https://azx.io">Built by AZX</a>');
       expect(res.body).not.toContain("<form");
     },
   );
@@ -45,6 +46,7 @@ describe("GET / on the platform and auth hosts", () => {
     expect(res.body).toContain("<title>Private app hosting · Example Co</title>");
     expect(res.body).toContain("Operated by Example Co. Client deliverables.");
     expect(res.body).toContain('href="https://example.com/contact"');
+    expect(res.body).toContain("Questions? Contact Example Co: example.com");
   });
 
   it("keeps every other platform path a plain 404", async () => {

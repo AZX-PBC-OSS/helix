@@ -21,7 +21,9 @@ Set the **Operator** fields:
 
 These appear on two kinds of page anyone can see without signing in:
 
-- the sign-in page of every password-protected app;
+- the sign-in page of every password-protected app, whose heading reads
+  "Example Co access required" and whose contact line reads "Questions? Contact
+  Example Co: …";
 - the home page of your apps domain.
 
 All three fields are plain text, and you can leave any of them empty.
@@ -39,6 +41,19 @@ runs it.
 
 The pages never show an app's name or description before sign-in. App owners
 often write client names into them.
+
+### If a filter still blocks you
+
+Filters categorize each hostname separately, so one app can be blocked while
+another is not, and a new app starts with no category of its own.
+
+1. Set the operator fields, then check what an anonymous visitor sees: open
+   your apps domain's home page and an app's sign-in page in a private window.
+2. Ask the filter vendor to recategorize your apps domain, your auth host and
+   each blocked app's address. Most vendors have a public URL-lookup page with a
+   change-request form.
+3. Ask the blocked company's IT team to allow `*.<your apps domain>`. This is
+   the only fix that also covers apps you create later.
 
 ## Block client names in app addresses
 

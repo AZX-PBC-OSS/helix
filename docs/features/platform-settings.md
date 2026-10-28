@@ -36,17 +36,23 @@ They are stored in the single-row `platform_settings` table. The edge renders th
 escaped, on three pages:
 
 - **The password page** (`GET /_auth/login` on an app host). It shows:
+  - the title and heading "<name> access required", and a line saying the page is a
+    private site hosted by <name>;
   - the access-code form;
-  - an SSO link that names the operator;
-  - a fixed paragraph saying the site hosts privately shared apps and is not an
-    email or account service;
-  - the operator paragraph;
-  - an "Operated by …" footer.
+  - an SSO link, "<name> staff? Sign in with SSO";
+  - a fixed paragraph saying the site hosts privately shared apps;
+  - the operator paragraph ("Operated by <name>." plus the description);
+  - the contact link, labelled "Questions? Contact <name>: <address or host>";
+  - a fixed "Built by AZX" footer linking `https://azx.io`.
 - **The about page.** `GET /` on the bare apps domain, on the auth host, and on the
   reserved platform labels (`www`, `api`, `dev-api`) returns 200 with the same paragraphs and
   no form. Every other platform path is still a plain 404.
-- **The fallback.** With no operator set, the paragraph is omitted and the footer
-  keeps its default.
+- **The fallback.** With no operator set, the operator paragraph is omitted and the
+  heading, SSO link and contact label drop the name ("Access required", "Staff? Sign in
+  with SSO", "Questions? Contact: …").
+
+None of this copy mentions email, even to deny it: a text classifier counts the word
+either way.
 
 Some things are left off these pages on purpose:
 

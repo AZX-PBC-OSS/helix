@@ -1,11 +1,5 @@
 import type { FastifyReply } from "fastify";
-import {
-  AUTH_PAGE_CSP,
-  operatorFooter,
-  renderAuthPage,
-  renderSiteAbout,
-  type SiteOperator,
-} from "./authChrome.js";
+import { AUTH_PAGE_CSP, renderAuthPage, renderSiteAbout, type SiteOperator } from "./authChrome.js";
 
 /**
  * `GET /` on the bare apps domain and the auth host: what this site is and who
@@ -25,7 +19,6 @@ export function sendAboutPage(reply: FastifyReply, operator: SiteOperator | null
         heading: "Private app hosting",
         sub: "Apps on this site are shared directly by their owners. Use the link you were sent.",
         bodyHtml: renderSiteAbout(operator),
-        footHtml: operatorFooter(operator),
       }),
     );
 }

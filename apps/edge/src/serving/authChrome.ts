@@ -34,21 +34,21 @@ export interface SiteOperator {
  * The "what is this site" paragraph shown to anonymous visitors. Web filters
  * classify a domain by what an unauthenticated crawler sees, and a bare
  * password form with no context reads as a webmail login. This text says what
- * the site is and, when configured, who runs it. It deliberately names no
- * product, so a rename does not touch it, and no app: an app's name and
- * description are owner-written and are not shown before sign-in.
+ * the site is and, when configured, who runs it. It does not mention email,
+ * even to deny it, because a text classifier counts the word either way. It
+ * names no product, so a rename does not touch it, and no app: an app's name
+ * and description are owner-written and are not shown before sign-in.
  */
 export function renderSiteAbout(operator: SiteOperator | null): string {
   const paragraphs = [
-    "This site hosts private web apps, reports and prototypes that their owners share with specific people. " +
-      "It is not an email or account service.",
+    "This site hosts private web apps, reports and prototypes that their owners share with specific people.",
   ].map((text) => `<p>${escapeHtml(text)}</p>`);
   if (operator?.name || operator?.description) {
     const name = operator.name ? `Operated by ${operator.name}.` : "";
     const text = [name, operator.description ?? ""].filter(Boolean).join(" ");
     paragraphs.push(`<p>${escapeHtml(text)}</p>`);
   }
-  const contact = contactHref(operator?.contactUrl ?? null);
+  const contact = contactHref(operator?.contactUrl ?? null, operator?.name ?? null);
   if (contact) {
     paragraphs.push(
       `<p><a href="${escapeHtml(contact.href)}">${escapeHtml(contact.label)}</a></p>`,
@@ -57,25 +57,23 @@ export function renderSiteAbout(operator: SiteOperator | null): string {
   return `<div class="about">${paragraphs.join("")}</div>`;
 }
 
-/** The footer line: the operator when set, otherwise the platform default. */
-export function operatorFooter(operator: SiteOperator | null): string {
-  const text = operator?.name ? `Operated by ${operator.name}` : "Protected by AZX";
-  return `<p class="foot">${escapeHtml(text)}</p>`;
-}
-
 /**
  * Re-check the contact link even though the portal validated it: this is the
  * only link on the page an administrator controls, and a `javascript:` URL
  * here would be script on an auth page.
  */
-function contactHref(raw: string | null): { href: string; label: string } | null {
+function contactHref(
+  raw: string | null,
+  name: string | null,
+): { href: string; label: string } | null {
   if (!raw) return null;
+  const prefix = name ? `Questions? Contact ${name}:` : "Questions? Contact:";
   try {
     const url = new URL(raw);
     if (url.username !== "" || url.password !== "") return null;
     if (url.protocol === "mailto:")
-      return { href: url.href, label: `Contact: ${mailtoLabel(url)}` };
-    if (url.protocol === "https:") return { href: url.href, label: `Contact: ${url.host}` };
+      return { href: url.href, label: `${prefix} ${mailtoLabel(url)}` };
+    if (url.protocol === "https:") return { href: url.href, label: `${prefix} ${url.host}` };
   } catch {
     // fall through
   }
@@ -187,6 +185,8 @@ p.err { margin: 0 0 18px; padding: 10px 13px; border-radius: 10px; text-align: l
 .alt a:hover { text-decoration: underline; }
 p.foot { margin: 18px 0 0; font-size: 11px; color: #756f77; text-align: center;
          font-family: ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: .12em; }
+p.foot a { color: inherit; text-decoration: none; }
+p.foot a:hover { text-decoration: underline; }
 .about { margin: 22px 0 0; padding-top: 16px; border-top: 1px solid rgba(255,255,255,.1);
          text-align: left; font-size: 12.5px; color: #9d969c; }
 .about p { margin: 0 0 8px; }
@@ -200,7 +200,7 @@ p.foot { margin: 18px 0 0; font-size: 11px; color: #756f77; text-align: center;
 /**
  * Wrap page-specific content in the shared chrome. `title`/`heading`/`sub` are
  * escaped as text; `bodyHtml`/`footHtml` are caller-built raw HTML (escape your
- * own interpolations there). Defaults to a "Protected by AZX" footer.
+ * own interpolations there). Defaults to a "Built by AZX" footer linking azx.io.
  *
  * The heading carries `tabindex="-1"` so a page that owns a script (the consent
  * popups) can focus it on load — the popup a11y contract. A negative tabindex
@@ -218,7 +218,7 @@ export function renderAuthPage(opts: {
 }): string {
   const sub = opts.sub ? `<p class="sub">${escapeHtml(opts.sub)}</p>` : "";
   const body = opts.bodyHtml ?? "";
-  const foot = opts.footHtml ?? `<p class="foot">Protected by AZX</p>`;
+  const foot = opts.footHtml ?? `<p class="foot"><a href="https://azx.io">Built by AZX</a></p>`;
   const bodyEnd = opts.bodyEndHtml ?? "";
   return `<!doctype html>
 <html lang="en">
