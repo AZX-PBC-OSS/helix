@@ -1,4 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
@@ -160,6 +162,42 @@ describe("a deliberate refusal", () => {
     const span = theSpan();
     expect(span.status.code).toBe(0); // UNSET
     expect(span.attributes["helix.outcome"]).not.toBe("ok");
+  });
+});
+
+describe("a response over the size cap before anything was flushed", () => {
+  it("is a 502 ERROR span, not an unhandled 500", async () => {
+    // One chunked 2 KiB write against a 1 KiB cap: the cap trips on the first
+    // chunk, before Fastify has sent the status line.
+    const upstream = createServer((_req, res) => {
+      res.setHeader("content-type", "text/plain");
+      res.write(Buffer.alloc(2048, 0x61));
+      res.end();
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const origin = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
+    const config = {
+      limits: { maxBodyBytes: 1024, timeoutMs: 5000 },
+      allowPrivate: true,
+      allowInsecureConnection: false,
+    } as EgressConfig;
+    const app = buildApp({ config, resolver: null, instructionKey: key, burnStore: null });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/proxy",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(origin),
+        [TARGET_HEADER]: `${origin}/large`,
+      },
+    });
+    expect(res.statusCode).toBe(502);
+    await app.close();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+
+    const span = theSpan();
+    expect(span.status.code).toBe(2); // ERROR
+    expect(span.attributes["helix.outcome"]).toBe("error");
   });
 });
 

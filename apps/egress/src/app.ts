@@ -1,6 +1,7 @@
 import Fastify, { type FastifyServerOptions, type FastifyInstance } from "fastify";
 import { HealthStatusSchema, OUTCOME_HEADER } from "@azx-pbc/shared";
 import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
+import { BodyTooLargeError } from "@azx-pbc/shared/bodyCap";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { EgressConfig } from "./config.js";
 import type { SecretResolver } from "./secrets.js";
@@ -109,10 +110,24 @@ export function buildApp(
   // credential material would hand the app a fragment of a live key. Answer with
   // a fixed opaque body and keep the detail on the log, where it belongs. Every
   // deliberate refusal already returns through the proxy's own `fail()`, so
-  // reaching here at all means an unhandled throw.
+  // reaching here at all means an unhandled throw, or a streamed upstream body
+  // that failed before its first chunk was flushed.
   app.setErrorHandler((err, req, reply) => {
-    req.log.error({ err, event: "egress.unhandled_error" }, "unhandled error in egress");
+    // A body-stream failure arrives after the proxy copied the upstream's
+    // response headers onto the reply. Drop them: they describe a body this
+    // answer does not carry, and an upstream `content-type` such as text/plain
+    // stops Fastify serializing the object below (FST_ERR_REP_INVALID_PAYLOAD_TYPE).
+    for (const name of Object.keys(reply.getHeaders())) reply.removeHeader(name);
     reply.header(OUTCOME_HEADER, "error");
+    // The response cap tripped on the first chunk, before anything was
+    // flushed, so nothing was truncated. Answer exactly as the content-length
+    // fast-path in proxy.ts does; the trip is already logged there.
+    if (err instanceof BodyTooLargeError && err.direction === "response") {
+      return reply
+        .code(502)
+        .send({ code: "upstream_error", message: "upstream response too large" });
+    }
+    req.log.error({ err, event: "egress.unhandled_error" }, "unhandled error in egress");
     reply.code(500).send({ code: "upstream_error", message: "egress request failed" });
   });
 
