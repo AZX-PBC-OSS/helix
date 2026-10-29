@@ -319,6 +319,13 @@ It renews on a daily cron. Requires `acmeEmail`; defaults to the **LE staging**
 directory (`acmeServer`) — validate the flow there, then flip `acmeServer` to the
 prod directory.
 
+**CAA.** `dns.bicep` publishes `0 issue "letsencrypt.org"` and
+`0 issuewild "letsencrypt.org"` at the zone apex. Without them, Let's Encrypt's
+CAA search would continue past the zone into the parent domain. There,
+`helix.azxlabs.io` is a CNAME, so the CNAME target's CAA policy would control
+issuance and could make renewals fail without any change in this zone. If you
+move to another CA, update the record in the same change.
+
 **Why a daily cron is safe.** The job container is ephemeral — nothing mounts
 `/etc/letsencrypt` — so certbot's own "skip unless due for renewal" logic can
 never fire: it always believes it has no cert. Left alone it would request a new
