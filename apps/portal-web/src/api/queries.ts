@@ -6,6 +6,7 @@ import {
   AppSchema,
   ApprovalRequestSchema,
   AuthConfigResponseSchema,
+  BlockedSlugTermsResponseSchema,
   CapabilityCatalogueSchema,
   CollectionItemsPageSchema,
   CollectionSummarySchema,
@@ -17,6 +18,8 @@ import {
   HealthStatusSchema,
   MyConnectionsResponseSchema,
   PasswordCredentialResponseSchema,
+  PlatformConfigResponseSchema,
+  PlatformSettingsResponseSchema,
   PlatformUsageSchema,
   PortalMeResponseSchema,
   ProviderImpactSchema,
@@ -25,6 +28,7 @@ import {
   RepoBindingSchema,
   SecretMetadataSchema,
   SessionListResponseSchema,
+  SlugCheckResponseSchema,
   UsageSummarySchema,
   VersionSchema,
   VisitorSummarySchema,
@@ -461,4 +465,37 @@ export const providerImpactQuery = (id: string) =>
     queryFn: () =>
       fetchJson(ProviderImpactSchema, `/api/v1/providers/${encodeURIComponent(id)}/impact`),
     retry: false,
+  });
+
+/* ---------------------------------------------------------------------------
+ * Platform Settings (admin): the operator identity the edge shows anonymous
+ * visitors, the app-name blocklist, and the portal's own configuration.
+ * ------------------------------------------------------------------------- */
+
+export const platformSettingsQuery = queryOptions({
+  queryKey: ["admin", "settings"],
+  queryFn: () => fetchJson(PlatformSettingsResponseSchema, "/api/v1/admin/settings"),
+});
+
+export const blockedSlugTermsQuery = queryOptions({
+  queryKey: ["admin", "slug-terms"],
+  queryFn: () => fetchJson(BlockedSlugTermsResponseSchema, "/api/v1/admin/slug-terms"),
+});
+
+export const platformConfigQuery = queryOptions({
+  queryKey: ["admin", "config"],
+  queryFn: () => fetchJson(PlatformConfigResponseSchema, "/api/v1/admin/config"),
+});
+
+/**
+ * Everything the create route would refuse about a slug (reserved, blocked,
+ * taken), checked as the user types. Callers debounce the slug and gate on the
+ * local pattern via `enabled`.
+ */
+export const slugCheckQuery = (slug: string) =>
+  queryOptions({
+    queryKey: ["slug-check", slug],
+    queryFn: () =>
+      fetchJson(SlugCheckResponseSchema, `/api/v1/slug-check?slug=${encodeURIComponent(slug)}`),
+    staleTime: 10_000,
   });

@@ -57,7 +57,7 @@ terminates untrusted traffic (decision 4).
 | `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation |
 | `helix.egress.renewal` | egress token renewal — the operation the delegated-call resolution runs when an access token is expired; nests inside the resolution span, and its own duration is where the advisory lock's bounded wait is visible (ADR-0031 decision 15) |
 | `helix.egress.retire` | egress credential-retirement sweep pass — one background pass over the `pendingRetire` ledger; per-entry results ride the `helix.egress.retirements` counter |
-| `helix.registry.load` | the projection reload |
+| `helix.registry.load` | the projection reload; carries `helix.registry.apps` and `helix.registry.operator_settings` ∈ {`ok`, `failed`, `skipped`} (a `failed` settings read never fails the load, see [platform-settings.md](./platform-settings.md)) |
 | `helix.providers.reconcile` | the egress provider-cache reconcile |
 | `helix.deploy.bundle` → `.validate` / `.upload` | the portal deploy path |
 | `helix.deploy.repo` | the portal's CI deploy route, `POST /api/v1/apps/:slug/ci/versions` (ADR-0051); wraps `helix.deploy.bundle` when the token is accepted. Carries `helix.app_id` (once the slug resolves) and `helix.outcome` ∈ `REPO_DEPLOY_OUTCOMES`. A refusal is not an error status; never the repo name, the GitHub actor or the token |

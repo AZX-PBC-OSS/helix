@@ -8,8 +8,11 @@ import {
   SetManifestRequestSchema,
   SetPasswordRequestSchema,
   SetVisibilityRequestSchema,
+  SLUG_PATTERN,
+  SlugCheckResponseSchema,
   UpdateAppRequestSchema,
   captureSnapshot,
+  slugRejectionMessage,
   classifyVisibilityChange,
   visibilityGroupIds,
   visibilityLabel,
@@ -20,6 +23,7 @@ import {
 import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
 import { AppError } from "../plugins/errors.js";
 import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPolicy.js";
+import { checkSlugPolicy } from "../policy/slugPolicy.js";
 import { casPolicyWrite } from "../policy/policyWrite.js";
 import { isUniqueViolation } from "../db/errors.js";
 import {
@@ -66,9 +70,59 @@ export async function appRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
+  // Live feedback for the create form and `helix create`: everything the create
+  // route would refuse about a slug, without the caller holding the blocklist.
+  // Not under /api/v1/apps/ so it can never shadow an app's own slug.
+  app.get("/api/v1/slug-check", { preHandler: authenticate }, async (req) => {
+    requireActor(req);
+    const { slug } = req.query as { slug?: unknown };
+    if (typeof slug !== "string" || !SLUG_PATTERN.test(slug)) {
+      return SlugCheckResponseSchema.parse({
+        ok: false,
+        reason: "invalid",
+        message: "use a-z, 0-9 and hyphens; start and end with a letter or number",
+      });
+    }
+    const rejection = await checkSlugPolicy(app.prisma, slug);
+    if (rejection) {
+      return SlugCheckResponseSchema.parse({
+        ok: false,
+        reason: rejection.reason,
+        message: slugRejectionMessage(slug, rejection),
+      });
+    }
+    const existing = await app.prisma.app.findUnique({ where: { slug }, select: { id: true } });
+    if (existing) {
+      return SlugCheckResponseSchema.parse({
+        ok: false,
+        reason: "taken",
+        message: `"${slug}" is already taken`,
+      });
+    }
+    return SlugCheckResponseSchema.parse({ ok: true });
+  });
+
   app.post("/api/v1/apps", { preHandler: authenticate }, async (req, reply) => {
     const body = CreateAppRequestSchema.parse(req.body);
     const actor = requireActor(req);
+    const rejection = await checkSlugPolicy(app.prisma, body.slug);
+    if (rejection) {
+      await app.prisma.auditEvent.create({
+        data: {
+          appId: null,
+          actor: actor.sub,
+          action: "app.create.rejected",
+          metadata: { slug: body.slug, ...rejection },
+        },
+      });
+      // validation_failed rather than a new code: released CLIs parse the error
+      // envelope against the code enum they shipped with, and would print a
+      // bare "request failed" for a code they do not know.
+      throw new AppError("validation_failed", slugRejectionMessage(body.slug, rejection), {
+        field: "slug",
+        ...rejection,
+      });
+    }
     // Operator policy: this deployment may forbid creating an open-surface app
     // (PORTAL_ALLOW_*_APPS). The edge enforces the same policy on serving.
     if (body.visibility.mode === "public" && !publicAppsAllowed()) {

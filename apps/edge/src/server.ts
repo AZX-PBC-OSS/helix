@@ -304,6 +304,7 @@ const llmProvider: LlmProvider | null =
 const app = buildApp({
   config,
   registry,
+  operator: registry,
   blob,
   sessions,
   oidc,

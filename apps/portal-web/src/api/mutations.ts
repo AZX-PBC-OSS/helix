@@ -2,10 +2,12 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AppSchema,
   ApprovalRequestSchema,
+  BlockedSlugTermSchema,
   DevTokenMintResponseSchema,
   DisconnectResponseSchema,
   ManifestUpdateResultSchema,
   PasswordCredentialResponseSchema,
+  PlatformSettingsResponseSchema,
   ProviderDeleteResponseSchema,
   ProviderImportResponseSchema,
   ProviderMetadataSchema,
@@ -18,6 +20,7 @@ import {
   type ApprovalRequest,
   type Capabilities,
   type CreateAppRequest,
+  type CreateBlockedSlugTermRequest,
   type App,
   type DeployReport,
   type DevTokenMintResponse,
@@ -34,6 +37,7 @@ import {
   type SecretMetadata,
   type SessionRevokeResult,
   type UpdateAppRequest,
+  type UpdatePlatformSettingsRequest,
   type UploadVersionResponse,
   type Visibility,
   type VisibilityUpdateResult,
@@ -685,5 +689,42 @@ export function useImportProvider() {
     mutationFn: (body: ProviderImportRequest): Promise<ProviderImportResponse> =>
       fetchJson(ProviderImportResponseSchema, "/api/v1/providers/import", { method: "POST", body }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["providers", "list"] }),
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Platform Settings (admin).
+ * ------------------------------------------------------------------------- */
+
+export function useUpdatePlatformSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: UpdatePlatformSettingsRequest) =>
+      fetchJson(PlatformSettingsResponseSchema, "/api/v1/admin/settings", { method: "PUT", body }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["admin", "settings"] }),
+  });
+}
+
+export function useAddBlockedSlugTerm() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateBlockedSlugTermRequest) =>
+      fetchJson(BlockedSlugTermSchema, "/api/v1/admin/slug-terms", { method: "POST", body }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin", "slug-terms"] });
+      void queryClient.invalidateQueries({ queryKey: ["slug-check"] });
+    },
+  });
+}
+
+export function useRemoveBlockedSlugTerm() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      requestVoid(`/api/v1/admin/slug-terms/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin", "slug-terms"] });
+      void queryClient.invalidateQueries({ queryKey: ["slug-check"] });
+    },
   });
 }

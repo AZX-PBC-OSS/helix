@@ -41,7 +41,8 @@ need a fetch to the uncached `/_helix/` namespace. Revocation or archive serves
 a worker that clears its cache and unregisters itself.
 
 Reserved platform routes never fall through to Blob. Platform hosts expose
-`GET /health`; the auth host also handles `/start` and `/callback` — and
+`GET /health` and an "about this site" page at `GET /` (also on the auth host;
+see `docs/features/platform-settings.md`); the auth host also handles `/start` and `/callback` — and
 proxies `/connections/*` to the portal: the consent
 callback and the portal-rendered completion pages are control-plane surfaces
 reached at the auth host through one narrow reverse proxy. The proxy carries a

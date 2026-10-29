@@ -13,6 +13,7 @@ import {
 } from "../test/fakes.js";
 import { LoginThrottle } from "./loginThrottle.js";
 import { InMemoryCounterStore } from "../gateway/counterStore.js";
+import type { OperatorSettingsReader } from "../registry/projection.js";
 
 /**
  * Adversarial twin for the shared-password challenge (`password` visibility,
@@ -37,7 +38,12 @@ function hashFor(password: string): { passwordHash: string; passwordSalt: string
 }
 
 function buildEdge(
-  opts: { visibilityMode?: VisibilityMode; withPassword?: boolean; throttle?: LoginThrottle } = {},
+  opts: {
+    visibilityMode?: VisibilityMode;
+    withPassword?: boolean;
+    throttle?: LoginThrottle;
+    operator?: OperatorSettingsReader;
+  } = {},
 ): FastifyInstance {
   const blob = new FakeBlobReader();
   blob.set(`${PREFIX}index.html`, {
@@ -60,6 +66,7 @@ function buildEdge(
     sessions: new FakeSessionStore(),
     oidc: new FakeOidcClient(),
     loginThrottle: opts.throttle ?? new LoginThrottle(new InMemoryCounterStore()),
+    operator: opts.operator ?? null,
   });
 }
 
@@ -96,23 +103,96 @@ function sessionCookie(res: { headers: Record<string, unknown> }): string | null
 }
 
 describe("GET /_auth/login (the challenge page)", () => {
-  it("serves the password form with a strict CSP and an SSO link", async () => {
+  it("serves the access-code form with a strict CSP and an SSO link", async () => {
     const res = await buildEdge().inject({
       method: "GET",
       url: "/_auth/login",
       headers: navHeaders,
     });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain('name="password"');
+    expect(res.body).toContain('name="access_code"');
+    expect(res.body).toContain('autocomplete="off"');
     expect(res.body).toContain("/_auth/login");
-    // Hidden per-app username so password managers can save/offer the credential
-    // (and to satisfy the password-form a11y guidance).
-    expect(res.body).toContain('name="username"');
-    expect(res.body).toContain('autocomplete="username"');
-    expect(res.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(res.headers["content-security-policy"]).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    );
     // A password app also admits SSO users — the page links to the auth host.
     expect(res.body).toContain("auth.local.helix.azxlabs.io");
     expect(res.body).toContain("/start?app=pw");
+  });
+
+  it("does not look like a mailbox login to a web filter", async () => {
+    const res = await buildEdge().inject({
+      method: "GET",
+      url: "/_auth/login",
+      headers: navHeaders,
+    });
+    // A username + password pair is what gets a domain categorized as webmail.
+    expect(res.body).not.toContain('name="username"');
+    expect(res.body).not.toContain('autocomplete="username"');
+    expect(res.body).not.toMatch(/<input[^>]+type="(?:text|email)"/);
+    expect(res.body).not.toContain('name="password"');
+    expect(res.body).not.toContain("current-password");
+    // A text classifier counts "email" even in a denial, and "organization
+    // account" is Microsoft's own sign-in wording.
+    expect(res.body).not.toMatch(/e-?mail/i);
+    expect(res.body).not.toMatch(/organization account/i);
+    // The app's slug no longer rides the page as a prefilled field value.
+    expect(res.body).not.toContain('value="pw"');
+    expect(res.body).toContain("<title>Access required</title>");
+    expect(res.body).toContain("Staff? Sign in with SSO");
+    expect(res.body).toContain('<a href="https://azx.io">Built by AZX</a>');
+  });
+
+  it("shows the operator identity, escaped, with only a safe contact link", async () => {
+    const operator = {
+      operatorSettings: () => ({
+        name: "Example Co",
+        description: '<script>alert(1)</script> & "quotes"',
+        contactUrl: "mailto:ops@example.com",
+      }),
+    };
+    const res = await buildEdge({ operator }).inject({
+      method: "GET",
+      url: "/_auth/login",
+      headers: navHeaders,
+    });
+    expect(res.body).toContain("Operated by Example Co.");
+    expect(res.body).toContain("<title>Example Co access required</title>");
+    expect(res.body).toContain("This page is a private site hosted by Example Co.");
+    expect(res.body).toContain("Example Co staff? Sign in with SSO");
+    expect(res.body).toContain("&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;quotes&quot;");
+    expect(res.body).not.toContain("<script>");
+    expect(res.body).toContain('href="mailto:ops@example.com"');
+    expect(res.body).toContain("Questions? Contact Example Co: ops@example.com");
+    expect(res.body).toContain('<a href="https://azx.io">Built by AZX</a>');
+
+    for (const contactUrl of ["javascript:alert(1)", "https://user:secret@example.com"]) {
+      const unsafe = {
+        operatorSettings: () => ({ name: null, description: null, contactUrl }),
+      };
+      const res2 = await buildEdge({ operator: unsafe }).inject({
+        method: "GET",
+        url: "/_auth/login",
+        headers: navHeaders,
+      });
+      expect(res2.body, contactUrl).not.toContain("javascript:");
+      expect(res2.body, contactUrl).not.toContain("secret@");
+    }
+
+    const unicode = {
+      operatorSettings: () => ({
+        name: null,
+        description: null,
+        contactUrl: "mailto:jörg@example.com",
+      }),
+    };
+    const res3 = await buildEdge({ operator: unicode }).inject({
+      method: "GET",
+      url: "/_auth/login",
+      headers: navHeaders,
+    });
+    expect(res3.body).toContain("Questions? Contact: jörg@example.com");
   });
 
   it("404s on a non-password app (no signal that login even exists)", async () => {
@@ -128,7 +208,7 @@ describe("GET /_auth/login (the challenge page)", () => {
 describe("POST /_auth/login (verification)", () => {
   it("mints a session on the correct password and redirects to rd", async () => {
     const app = buildEdge();
-    const res = await submit(app, { password: PASSWORD, rd: "/dashboard" });
+    const res = await submit(app, { access_code: PASSWORD, rd: "/dashboard" });
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe("/dashboard");
     const cookie = sessionCookie(res);
@@ -149,21 +229,31 @@ describe("POST /_auth/login (verification)", () => {
     expect(me.json().user).toHaveProperty("email", null);
   });
 
-  it("rejects a wrong password (401, no cookie, form re-rendered)", async () => {
-    const app = buildEdge();
-    const res = await submit(app, { password: "wrong-password-guess", rd: "/" });
+  it("ignores the old `password` field name (401, no cookie)", async () => {
+    const res = await submit(buildEdge(), { password: PASSWORD, rd: "/" });
     expect(res.statusCode).toBe(401);
     expect(sessionCookie(res)).toBeNull();
-    expect(res.body).toContain("Incorrect password");
+  });
+
+  it("rejects a wrong password (401, no cookie, form re-rendered)", async () => {
+    const app = buildEdge();
+    const res = await submit(app, { access_code: "wrong-password-guess", rd: "/" });
+    expect(res.statusCode).toBe(401);
+    expect(sessionCookie(res)).toBeNull();
+    expect(res.body).toContain("That access code is not right");
   });
 
   it("rejects a foreign Origin and a cross-site fetch-metadata (403 — login CSRF)", async () => {
     const app = buildEdge();
     // A cross-origin POST always carries Origin; a mismatch is refused — but
     // with the retry form, never a bare "Forbidden" page, and never a cookie.
-    const foreign = await submit(app, { password: PASSWORD }, { origin: "https://evil.example" });
+    const foreign = await submit(
+      app,
+      { access_code: PASSWORD },
+      { origin: "https://evil.example" },
+    );
     expect(foreign.statusCode).toBe(403);
-    expect(foreign.body).toContain('name="password"');
+    expect(foreign.body).toContain('name="access_code"');
     expect(sessionCookie(foreign)).toBeNull();
 
     // Sec-Fetch-Site is authoritative where present: a sibling-subdomain
@@ -178,7 +268,7 @@ describe("POST /_auth/login (verification)", () => {
           "sec-fetch-site": site,
           "content-type": "application/x-www-form-urlencoded",
         },
-        payload: new URLSearchParams({ password: PASSWORD }).toString(),
+        payload: new URLSearchParams({ access_code: PASSWORD }).toString(),
       });
       expect(res.statusCode).toBe(403);
     }
@@ -196,7 +286,7 @@ describe("POST /_auth/login (verification)", () => {
         host: "pw.local.helix.azxlabs.io",
         "content-type": "application/x-www-form-urlencoded",
       },
-      payload: new URLSearchParams({ password: PASSWORD, rd: "/" }).toString(),
+      payload: new URLSearchParams({ access_code: PASSWORD, rd: "/" }).toString(),
     });
     expect(res.statusCode).toBe(302);
     expect(sessionCookie(res)).toBeTruthy();
@@ -212,13 +302,13 @@ describe("POST /_auth/login (verification)", () => {
         "sec-fetch-site": "same-origin",
         "content-type": "application/x-www-form-urlencoded",
       },
-      payload: new URLSearchParams({ password: PASSWORD, rd: "/" }).toString(),
+      payload: new URLSearchParams({ access_code: PASSWORD, rd: "/" }).toString(),
     });
     expect(res.statusCode).toBe(302);
   });
 
   it("404s a login POST on a non-password app", async () => {
-    const res = await submit(buildEdge({ visibilityMode: "internal" }), { password: PASSWORD });
+    const res = await submit(buildEdge({ visibilityMode: "internal" }), { access_code: PASSWORD });
     expect(res.statusCode).toBe(404);
   });
 
@@ -229,12 +319,12 @@ describe("POST /_auth/login (verification)", () => {
     });
     const app = buildEdge({ throttle });
     for (let i = 0; i < 3; i++) {
-      expect((await submit(app, { password: "nope" })).statusCode).toBe(401);
+      expect((await submit(app, { access_code: "nope" })).statusCode).toBe(401);
     }
-    const blocked = await submit(app, { password: "nope" });
+    const blocked = await submit(app, { access_code: "nope" });
     expect(blocked.statusCode).toBe(429);
     // Even the correct password is refused while blocked.
-    expect((await submit(app, { password: PASSWORD })).statusCode).toBe(429);
+    expect((await submit(app, { access_code: PASSWORD })).statusCode).toBe(429);
   });
 });
 

@@ -480,9 +480,24 @@ describe("egress body-size cap (issue #8)", () => {
   beforeAll(async () => {
     upstream = createServer((req, res) => {
       if (req.url === "/large") {
-        // 320 bytes, chunked (no content-length) — the headline bypass.
+        // 320 bytes, chunked (no content-length) — the headline bypass. The
+        // first 40 bytes go out alone and the rest follow after a pause, so
+        // egress has flushed status + headers before the cap trips. Written
+        // back to back, the chunks can coalesce into one socket read and trip
+        // the cap before anything is flushed (the `/large-first` case).
         res.setHeader("content-type", "text/plain");
-        for (let i = 0; i < 8; i++) res.write(bytes(40));
+        res.write(bytes(40));
+        setTimeout(() => {
+          for (let i = 0; i < 7; i++) res.write(bytes(40));
+          res.end();
+        }, 50);
+        return;
+      }
+      if (req.url === "/large-first") {
+        // One 320-byte chunk, no content-length: over the cap before egress
+        // has forwarded a single byte.
+        res.setHeader("content-type", "text/plain");
+        res.write(bytes(320));
         res.end();
         return;
       }
@@ -565,6 +580,24 @@ describe("egress body-size cap (issue #8)", () => {
     } finally {
       process.off("uncaughtException", onUncaught);
     }
+  });
+
+  it("answers the fast-path 502 when the first chunk is already over the cap", async () => {
+    const res = await undiciRequest(`${base}/proxy`, {
+      method: "POST",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint(capOrigin),
+        [TARGET_HEADER]: `${capOrigin}/large-first`,
+        [METHOD_HEADER]: "GET",
+      },
+    });
+    // Nothing was flushed when the cap tripped, so this is a clean refusal, the
+    // same answer a truthful oversized content-length gets, not a generic 500.
+    expect(res.statusCode).toBe(502);
+    expect(await res.body.json()).toEqual({
+      code: "upstream_error",
+      message: "upstream response too large",
+    });
   });
 
   it("streams an under-cap response through intact (no false trip)", async () => {

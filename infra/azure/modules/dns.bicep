@@ -6,9 +6,10 @@
 // environment's public static IP (the edge takes external ingress there).
 //
 // TLS: the wildcard cert (*.azx.helix.azxlabs.io) and the ACA custom-domain bindings are
-// handled separately — issuance/renewal is the portal's ACME DNS-01 job
-// (deferred, M5 tail). `domainVerificationId`, when supplied, writes the asuid
-// TXT record ACA needs to verify ownership before a custom-domain binding.
+// handled separately — issuance/renewal is the certbot ACME DNS-01 job
+// (certbot.bicep). This zone publishes the CAA record that authorizes it.
+// `domainVerificationId`, when supplied, writes the asuid TXT record ACA needs
+// to verify ownership before a custom-domain binding.
 //
 // NOTE: azx.helix.azxlabs.io is a SUBDOMAIN of azxlabs.io (the parent zone lives
 // in Cloudflare). Delegate it by adding NS records for `azx.helix` in the
@@ -77,6 +78,26 @@ resource devApiRecord 'Microsoft.Network/dnsZones/A@2018-05-01' = if (deployDevG
     TTL: 3600
     ARecords: [
       { ipv4Address: edgeStaticIp }
+    ]
+  }
+}
+
+// CAA at the zone apex. A CA's CAA search climbs from the requested name toward
+// the root and stops at the first CAA RRset it finds; without one here it would
+// reach helix.azxlabs.io, a CNAME in the Cloudflare parent zone, and the CNAME
+// target's CAA policy would decide whether the wildcard cert can renew. This
+// record keeps that decision inside this zone. Let's Encrypt is the only issuer
+// the template uses (the certbot job, staging and prod both check this
+// identity). There is no `accounturi` pin: the job's container is ephemeral and
+// registers a fresh ACME account on each issuance.
+resource caaRecord 'Microsoft.Network/dnsZones/CAA@2018-05-01' = {
+  parent: zone
+  name: '@'
+  properties: {
+    TTL: 3600
+    caaRecords: [
+      { flags: 0, tag: 'issue', value: 'letsencrypt.org' }
+      { flags: 0, tag: 'issuewild', value: 'letsencrypt.org' }
     ]
   }
 }

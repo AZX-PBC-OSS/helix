@@ -1,4 +1,6 @@
-import { SLUG_PATTERN } from "@azx-pbc/shared";
+import { RESERVED_SUBDOMAINS, SLUG_PATTERN } from "@azx-pbc/shared";
+
+export { RESERVED_SUBDOMAINS };
 
 /**
  * Host classification — the two-router discipline (architecture §3, decision
@@ -8,13 +10,6 @@ import { SLUG_PATTERN } from "@azx-pbc/shared";
  * (architecture §4.2, Appendix A) — its routes answer nowhere else.
  */
 export type HostClass = { kind: "app"; slug: string } | { kind: "auth" } | { kind: "platform" };
-
-/**
- * Subdomain labels that can never be apps — reserved for platform services
- * (architecture §4.2, Appendix A). Note: the portal does not yet reject these
- * at app creation; until it does, a colliding app simply never gets traffic.
- */
-export const RESERVED_SUBDOMAINS = new Set(["auth", "portal", "api", "www"]);
 
 /** Classify a raw Host header against the configured apps base domain. */
 export function classifyHost(hostHeader: string | undefined, baseDomain: string): HostClass {

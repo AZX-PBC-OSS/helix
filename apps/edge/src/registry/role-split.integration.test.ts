@@ -39,6 +39,30 @@ async function edgeRoleAvailable(): Promise<boolean> {
 }
 
 describe("helix_edge least-privilege grants", () => {
+  it("reads only the operator columns of platform_settings, and never the slug blocklist", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const pool = new Pool({ connectionString: edgeUrl(), max: 1 });
+    try {
+      await expect(
+        pool.query(
+          `SELECT "operatorName", "operatorDescription", "operatorContactUrl" FROM platform_settings`,
+        ),
+      ).resolves.toBeDefined();
+      // Column-scoped: who changed the settings is not the edge's business.
+      await expect(pool.query(`SELECT "updatedBy" FROM platform_settings`)).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(pool.query(`UPDATE platform_settings SET "operatorName" = 'x'`)).rejects.toThrow(
+        /permission denied/i,
+      );
+      await expect(pool.query("SELECT count(*) FROM blocked_slug_terms")).rejects.toThrow(
+        /permission denied/i,
+      );
+    } finally {
+      await pool.end();
+    }
+  });
+
   it("reads the registry but cannot write it, and cannot drop tables", async () => {
     if (!(await edgeRoleAvailable())) {
       // Roles not provisioned on this cluster (e.g. CI without db-init) — the

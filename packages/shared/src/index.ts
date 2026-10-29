@@ -38,6 +38,7 @@ export * from "./jobsFixtures.js";
 export * from "./jobsHealth.js";
 export * from "./jobsProtocol.js";
 export * from "./sessions.js";
+export * from "./platformSettings.js";
 // NB: `./bodyCap.js`, `./devToken.js` and `./logging.js` are deliberately NOT
 // re-exported here — they depend on `node:stream`/`Buffer` / `node:crypto` /
 // `process.env`, and this barrel is consumed by the browser SPA

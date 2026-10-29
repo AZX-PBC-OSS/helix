@@ -321,6 +321,13 @@ It renews on a daily cron. Requires `acmeEmail`; defaults to the **LE staging**
 directory (`acmeServer`) — validate the flow there, then flip `acmeServer` to the
 prod directory.
 
+**CAA.** `dns.bicep` publishes `0 issue "letsencrypt.org"` and
+`0 issuewild "letsencrypt.org"` at the zone apex. Without them, Let's Encrypt's
+CAA search would continue past the zone into the parent domain. There,
+`helix.azxlabs.io` is a CNAME, so the CNAME target's CAA policy would control
+issuance and could make renewals fail without any change in this zone. If you
+move to another CA, update the record in the same change.
+
 **Why a daily cron is safe.** The job container is ephemeral — nothing mounts
 `/etc/letsencrypt` — so certbot's own "skip unless due for renewal" logic can
 never fire: it always believes it has no cert. Left alone it would request a new
@@ -1239,9 +1246,13 @@ metric alert that notifies on it.
 
 Standard tests, not the old free URL ping tests — **those retire 30 September
 2026** and existing ones are deleted from the resource. Standard tests are billed
-per execution; five locations every five minutes is ~43k executions/month per
-URL, which is what `availabilityTestFrequencySeconds` and
-`availabilityTestLocations` control.
+per execution, which is what `availabilityTestFrequencySeconds` and
+`availabilityTestLocations` control. The default is three US locations every
+900 s: ~8.8k executions/month per URL, and an outage detected within 15 minutes.
+Five locations every five minutes, Azure's own default and its recommended
+minimum location count, is ~43k a month per URL for ~1-minute detection. Add
+`emea-nl-ams-azr` and `apac-sg-sin-azr` back for an install with users outside
+the US.
 
 | Probed                                    | When                                                                      |
 | ----------------------------------------- | ------------------------------------------------------------------------- |
@@ -1281,8 +1292,9 @@ on ADR-0029's certbot job: the job renewing is the mechanism, a certificate with
 days left is the outcome, and a job that succeeds while renewing the wrong thing
 is the failure that otherwise gets missed.
 
-`availabilityFailedLocationCount` (3 of 5) follows Azure's guidance of
-(locations − 2). It is **clamped** to the number of locations, because a
+`availabilityFailedLocationCount` defaults to 2 of 3: 1 would alert on a single
+region's network blip. With five locations, Azure's guidance of (locations − 2)
+gives 3. It is **clamped** to the number of locations, because a
 threshold above that is a rule that can never fire — indistinguishable from a
 healthy platform.
 

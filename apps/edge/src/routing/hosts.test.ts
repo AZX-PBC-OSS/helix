@@ -45,7 +45,7 @@ describe("classifyHost", () => {
   });
 
   it("reserves platform subdomains", () => {
-    for (const label of ["portal", "api", "www"]) {
+    for (const label of ["portal", "api", "www", "dev-api"]) {
       expect(classifyHost(`${label}.local.helix.azxlabs.io`, BASE)).toEqual({ kind: "platform" });
     }
   });

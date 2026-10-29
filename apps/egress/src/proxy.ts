@@ -693,13 +693,15 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       // when the body drains — never closed per-request (that would defeat the
       // pooling this connector exists to recover).
       // Count the response bytes: a chunked / CL-absent / lying-CL body can't
-      // stream past the cap uncounted. Status + headers are already committed,
-      // so a trip *truncates* the body (not a 502) — accepted per issue #8; we
-      // surface it out-of-band on the log rather than to the app.
+      // stream past the cap uncounted. Fastify flushes status + headers with the
+      // first body chunk, so a trip after that *truncates* the body (accepted
+      // per issue #8, surfaced on the log rather than to the app). A trip on the
+      // first chunk lands before the flush; the error handler in app.ts turns
+      // that into the fast-path's 502.
       const cappedBody = capBody(upstream.body, deps.limits.maxBodyBytes, "response", () => {
         req.log.warn(
           { origin: instruction.origin, appId: instruction.appId, limit: deps.limits.maxBodyBytes },
-          "egress response body exceeded the size cap — truncated",
+          "egress response body exceeded the size cap",
         );
       });
       return reply.send(cappedBody);

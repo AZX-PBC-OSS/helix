@@ -47,6 +47,7 @@ export default defineConfig({
             { text: "Getting started", link: "/deploy/getting-started" },
             { text: "Entra ID setup", link: "/deploy/entra-setup" },
             { text: "Access control", link: "/deploy/access-control" },
+            { text: "Platform settings", link: "/deploy/platform-settings" },
             { text: "Database & migrations", link: "/deploy/database" },
             { text: "Azure AI Foundry", link: "/deploy/foundry" },
             { text: "Deploying updates", link: "/deploy/updates" },

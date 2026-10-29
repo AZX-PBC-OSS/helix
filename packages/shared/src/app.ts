@@ -11,6 +11,58 @@ import { VisibilitySchema } from "./visibility.js";
 export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 /**
+ * Subdomain labels that can never be apps — reserved for platform services
+ * (architecture §4.2, Appendix A), including `dev-api`, where the opt-in dev
+ * gateway is served. The edge routes these as platform hosts and the portal
+ * refuses them at app creation.
+ */
+export const RESERVED_SUBDOMAINS: ReadonlySet<string> = new Set([
+  "auth",
+  "portal",
+  "api",
+  "www",
+  "dev-api",
+]);
+
+/**
+ * Shape of a blocked app-name term: one or more hyphen-joined `[a-z0-9]` tokens.
+ * Terms are matched as whole tokens, never as regexes, so an admin cannot write
+ * a pattern that is slow or matches more than they meant.
+ */
+export const SLUG_TERM_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * The first blocked term that appears in `slug` as whole hyphen-delimited
+ * tokens, or `null`. `acme` matches `acme`, `acme-demo` and `demo-acme`, but
+ * not `acmeish` or `acme2`; a multi-token term such as `acme-energy` matches
+ * that exact token run.
+ */
+export function blockedTermIn(slug: string, terms: Iterable<string>): string | null {
+  const padded = `-${slug}-`;
+  for (const term of terms) {
+    if (term && padded.includes(`-${term}-`)) return term;
+  }
+  return null;
+}
+
+/** Why a well-formed slug is still refused at app creation. */
+export type SlugRejection = { reason: "reserved" } | { reason: "blocked"; term: string };
+
+/** Check a slug against the reserved labels and the platform's blocked terms. */
+export function slugRejection(slug: string, blockedTerms: Iterable<string>): SlugRejection | null {
+  if (RESERVED_SUBDOMAINS.has(slug)) return { reason: "reserved" };
+  const term = blockedTermIn(slug, blockedTerms);
+  return term ? { reason: "blocked", term } : null;
+}
+
+/** The user-facing sentence for a {@link SlugRejection}, shared by the portal, SPA and CLI. */
+export function slugRejectionMessage(slug: string, rejection: SlugRejection): string {
+  return rejection.reason === "reserved"
+    ? `"${slug}" is reserved for the platform; choose another app name`
+    : `app name contains "${rejection.term}", which this platform's administrators have blocked; choose another app name`;
+}
+
+/**
  * Cap for the app description — a subtitle for a list row, not a README.
  * Exported so the SPA's counter and the CLI's prompt validate against the same
  * number the schema enforces.

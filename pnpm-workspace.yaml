@@ -46,6 +46,11 @@ allowBuilds:
 #   vite — GHSA-4w7w-66w2-5vf9 (path traversal, optimized-deps .map),
 #   GHSA-fx2h-pf6j-xcff (fs.deny bypass, Windows), GHSA-v6wh-96g9-6wx3
 #   (launch-editor NTLMv2 leak): all dev-server, all patched in 6.4.3+.
+#   GHSA-rq7h-c2jc-7f22 (fs.allow bypass when project paths match system
+#   paths), GHSA-9jrq-w75r-8gcw (cross-origin script via custom
+#   middleware), and launch-editor GHSA-698v-4r3x-3vcv, GHSA-587h-7wmj-h5pm,
+#   GHSA-r825-w8mm-5pxw (Windows/WSL command execution): also dev-server,
+#   patched in 6.4.4; floored at 6.4.5, the latest 6.x.
 #   vitepress 1.6.4 is the only parent still requesting vite ^5 (its
 #   vite-7-based 2.x is unreleased) and no patched 5.x exists — floor
 #   its copy at the patched 6.x. Scoped to vitepress's own dependency:
@@ -55,18 +60,28 @@ allowBuilds:
 #   GHSA-67mh-4wv8-2f99 clears with it: vite 6.4.3 pulls esbuild
 #   0.25.12, nothing else requests ≤ 0.24. Drop when vitepress reaches
 #   the vite-7 2.x line.
+#   @azure/msal-node — GHSA-xcx6-jx8p-x3h5 (CVE-2026-109461): the
+#   authorization-code flow could send its parameters to an
+#   attacker-controlled endpoint; every 5.x and 6.x is affected, fixed in
+#   7.1.0. @azure/identity 4.14.0 still requires ^6, so no `pnpm update`
+#   reaches it. The 6.0 and 7.0 majors only removed the `responseMode` and
+#   `loopbackClient` options from acquireTokenInteractive, and identity
+#   passes neither. The portal reaches MSAL only through
+#   DefaultAzureCredential. Scoped to identity's own dependency. Drop once
+#   an @azure/identity release requires ^7.1.0.
 overrides:
   brace-expansion: ^5.0.12
   deepmerge-ts: ^8.0.1
   mysql2: ^3.24.3
-  "vitepress>vite": ^6.4.3
+  "vitepress>vite": ^6.4.5
+  "@azure/identity>@azure/msal-node": ^7.1.2
 
 # Single-source dependency versions across the monorepo (pnpm catalog).
 # Packages reference these with "catalog:" instead of pinning their own range,
 # so a bump happens in exactly one place. https://pnpm.io/catalogs
 catalog:
   # ── Runtime ──
-  fastify: ^5.12.5
+  fastify: ^5.12.6
   zod: ^4.4.3
   "@fastify/multipart": ^10.0.0 # bundle upload (M1)
   # Registry persistence — portal only (the edge stays dependency-minimal and
@@ -87,10 +102,10 @@ catalog:
   "@azure/storage-blob": ^12.32.0
   # Managed-identity credential for portal blob writes (prod) — portal only,
   # never the dep-minimal edge, which fetches its own AAD token over undici.
-  "@azure/identity": ^4.5.0
+  "@azure/identity": ^4.14.0
   # Edge HTTP client: streams assets from Blob with hand-rolled SharedKey
   # signing — the edge stays off the Azure SDK (dep-minimal, project plan §1).
-  undici: ^7.30.0
+  undici: ^7.30.1
   # Zip handling: yauzl reads (portal, streaming + zip-bomb-safe), archiver
   # writes (helix CLI). fflate reads + writes in the browser (portal-web bundle
   # salvage — ADR-0038): tiny, dependency-free, and can list a zip's central
@@ -161,7 +176,7 @@ catalog:
   # is what put "`esbuild` option ... use `oxc` instead" on every `pnpm test` —
   # vite 8 deprecates options @vitejs/plugin-react 5 still sets. Keep it declared
   # so runner and build share one copy.
-  vite: ^7.3.6
+  vite: ^7.3.7
   "@vitejs/plugin-react": ^5.2.0 # v6 peers on vite ^8 — moves with the rolldown bump
   postcss: ^8.5.23
   postcss-preset-mantine: ^1.18.0
@@ -206,4 +221,4 @@ catalog:
   tsx: ^4.22.4
   typescript: ^6.0.3
   typescript-eslint: ^8.61.0
-  vitest: ^4.1.11
+  vitest: ^4.1.12

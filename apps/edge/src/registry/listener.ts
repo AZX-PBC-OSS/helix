@@ -6,6 +6,8 @@ import { instruments } from "../telemetry.js";
 import { safeInterval, STALE_ERROR_INTERVALS } from "./health.js";
 import {
   RegistryProjection,
+  type OperatorSettings,
+  type OperatorSettingsReader,
   type RegistryEntry,
   type RegistryFreshness,
   type RegistryFreshnessReader,
@@ -62,7 +64,9 @@ export interface RegistryLogger {
   error(obj: Record<string, unknown>, msg: string): void;
 }
 
-export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
+export class LiveRegistry
+  implements RegistryReader, RegistryFreshnessReader, OperatorSettingsReader
+{
   #databaseUrl: string;
   #reconcileIntervalMs: number;
   #statementTimeoutMs: number;
@@ -107,6 +111,8 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
      * not read a prod credential (dev-mode §5.3).
      */
     includePasswords?: boolean;
+    /** Whether the projection also reads the operator identity. Default true; the dev gateway passes false. */
+    includeOperatorSettings?: boolean;
   }) {
     this.#databaseUrl = opts.databaseUrl;
     this.#reconcileIntervalMs = opts.reconcileIntervalMs;
@@ -130,6 +136,21 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
     });
     this.#projection = new RegistryProjection(this.#pool, {
       includePasswords: opts.includePasswords,
+      includeOperatorSettings: opts.includeOperatorSettings ?? true,
+      // Warn, not error: apps keep serving, only the anonymous pages keep the
+      // previous operator text. Logged once per outage (the projection reports
+      // the transition), e.g. when the edge rolls out before the migration
+      // that creates platform_settings.
+      onOperatorSettingsFailure: (err) =>
+        this.#log.warn(
+          { event: "registry.operator_settings_failed", err },
+          "could not read the operator settings; keeping the previous copy",
+        ),
+      onOperatorSettingsRecovered: () =>
+        this.#log.info(
+          { event: "registry.operator_settings_recovered" },
+          "operator settings readable again",
+        ),
       onLoadFailure: (info) => this.#onLoadFailure(info),
       onLoadRecovered: ({ failures, staleForMs }) => {
         this.#staleErrorLogged = false;
@@ -152,6 +173,10 @@ export class LiveRegistry implements RegistryReader, RegistryFreshnessReader {
 
   isLoaded(): boolean {
     return this.#projection.isLoaded();
+  }
+
+  operatorSettings(): OperatorSettings | null {
+    return this.#projection.operatorSettings();
   }
 
   freshness(): RegistryFreshness {

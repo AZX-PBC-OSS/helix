@@ -49,11 +49,11 @@ param targets array
 @description('Availability test location ids (the "population tags", not Azure region names — e.g. `us-va-ash-azr`). Azure recommends a MINIMUM OF FIVE so a network blip in one region cannot be mistaken for an outage, and allows up to 16.')
 param testLocations array
 
-@description('How many locations must fail simultaneously to fire the alert. Azure\'s guidance is (locations - 2), floor 1 — 3 of 5 by default. It is clamped to the number of locations below, because a threshold larger than the location count is a rule that can never fire, which looks exactly like a healthy platform.')
-param failedLocationCount int = 3
+@description('How many locations must fail simultaneously to fire the alert. Default 2, matching main.bicep\'s three-location default; Azure\'s guidance is (locations - 2), floor 1. It is clamped to the number of locations below, because a threshold larger than the location count is a rule that can never fire, which looks exactly like a healthy platform.')
+param failedLocationCount int = 2
 
-@description('Seconds between test runs FROM EACH LOCATION. 300 (the Azure default) with five locations means the platform is probed roughly every minute. This is the knob that multiplies the bill — halve it and you double the executions.')
-param frequencySeconds int = 300
+@description('Seconds between test runs FROM EACH LOCATION. Default 900, the slowest Azure allows; 300 is the Azure default. This is the knob that multiplies the bill — halve it and you double the executions.')
+param frequencySeconds int = 900
 
 @description('Seconds before a test run counts as failed. Lower it to be alerted on slow responses.')
 param timeoutSeconds int = 30

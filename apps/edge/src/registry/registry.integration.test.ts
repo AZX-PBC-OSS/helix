@@ -98,6 +98,39 @@ describe("LiveRegistry against the test database", () => {
     await eventually(() => registry.getApp(late.slug) === undefined);
   });
 
+  it("refreshes the operator identity when platform_settings changes", async () => {
+    const live = new LiveRegistry({
+      databaseUrl: TEST_DATABASE_URL,
+      reconcileIntervalMs: 60_000,
+      log: QUIET,
+    });
+    const name = `Operator ${Date.now()}`;
+    try {
+      await live.start();
+      // The portal suite writes the same singleton row in parallel, so a write
+      // can be overwritten before the reload reads it: re-issue it until seen.
+      let seen = false;
+      for (let attempt = 0; attempt < 5 && !seen; attempt++) {
+        await pool.query(
+          `INSERT INTO platform_settings (id, "operatorName") VALUES (1, $1)
+           ON CONFLICT (id) DO UPDATE SET "operatorName" = EXCLUDED."operatorName"`,
+          [name],
+        );
+        seen = await eventually(() => live.operatorSettings()?.name === name, 1000).then(
+          () => true,
+          () => false,
+        );
+      }
+      expect(seen).toBe(true);
+    } finally {
+      await live.stop();
+      await pool.query(
+        `UPDATE platform_settings SET "operatorName" = NULL WHERE "operatorName" = $1`,
+        [name],
+      );
+    }
+  });
+
   // The fetch grant's binding map carries the manifest's provider
   // bindings (manifest data only — no provider rows cross to the edge), and the
   // existing registry NOTIFY loop refreshes the widened shape without restart.

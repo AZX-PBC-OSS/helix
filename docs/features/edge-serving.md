@@ -187,6 +187,11 @@ HTTP request/response proxy): WebSocket, EventSource/SSE, `<img>`/`<form>`/font 
 
 `apps/edge/src/errors.ts` holds the 403/404/410 responders.
 
+`GET /` on a platform host (the bare apps domain, `www`, `api`, `dev-api`) and on the auth host is the one
+exception: it serves a 200 "about this site" page with the operator identity, because it is the
+first URL a web filter's crawler tries. Every other platform path is still a plain 404. See
+[platform-settings.md](./platform-settings.md).
+
 ### DB role split (containment)
 
 The edge connects as the least-privilege `helix_edge` role: `SELECT` on `apps`/`versions`

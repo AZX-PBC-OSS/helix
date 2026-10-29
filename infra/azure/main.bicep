@@ -339,23 +339,21 @@ param alertEmails array = []
 @description('Registry staleness that fires the alert, in ms. Default 1200000 (20 min) is the ADR-0025 `error` line — 20x the 60s default reconcile interval, the point the edge itself stops calling the projection merely degraded. 300000 fires at the `degraded` line instead, at the cost of noise from transient DB blips.')
 param registryStalenessThresholdMs int = 1200000
 
-@description('Deploy the Application Insights AVAILABILITY TESTS — the only monitoring that looks at this platform from OUTSIDE it, and the probe ADR-0025 wanted (`/health` answers 200 in every state by design, so grading it means reading the body, which no ACA probe can do). Standard tests, not the free `ping` tests: those RETIRE 30 SEPTEMBER 2026. Requires deployTelemetry — an availability test reports into an Application Insights component and is not a standalone resource. Unlike every other rule here these cost real money, billed per execution: the default five locations every five minutes is ~43k executions/month per URL, so read `availabilityTestFrequencySeconds` before turning it up.')
+@description('Deploy the Application Insights AVAILABILITY TESTS — the only monitoring that looks at this platform from OUTSIDE it, and the probe ADR-0025 wanted (`/health` answers 200 in every state by design, so grading it means reading the body, which no ACA probe can do). Standard tests, not the free `ping` tests: those RETIRE 30 SEPTEMBER 2026. Requires deployTelemetry — an availability test reports into an Application Insights component and is not a standalone resource. Unlike every other rule here these cost real money, billed per execution: the default three locations every 15 minutes is ~8.8k executions/month per URL (five every five minutes would be ~43k), so read `availabilityTestFrequencySeconds` before turning it up.')
 param deployAvailabilityTests bool = true
 
-@description('Availability test locations, as Azure\'s "population tags" (NOT region names — `us-va-ash-azr`, not `eastus`). Default is the five Azure recommends as a minimum, spread across three continents so one region\'s network trouble cannot read as an outage. Up to 16 are allowed; each one multiplies the bill.')
+@description('Availability test locations, as Azure\'s "population tags" (NOT region names — `us-va-ash-azr`, not `eastus`). Default is three US regions, deliberately fewer than the five Azure recommends as a minimum: each location multiplies the bill, and three still keeps one region\'s network trouble from reading as an outage (see availabilityFailedLocationCount). Add the five-continent spread back (`emea-nl-ams-azr`, `apac-sg-sin-azr`) for an install with users outside the US. Up to 16 are allowed.')
 param availabilityTestLocations array = [
   'us-va-ash-azr' // East US
   'us-ca-sjc-azr' // West US
   'us-il-ch1-azr' // North Central US
-  'emea-nl-ams-azr' // West Europe
-  'apac-sg-sin-azr' // Southeast Asia
 ]
 
-@description('How many test locations must fail together to fire the alert. Azure\'s guidance is (locations - 2) with a floor of 1, so 3 of 5. The module clamps it to the number of locations, because a threshold above that is a rule that can never fire — which looks exactly like a healthy platform.')
-param availabilityFailedLocationCount int = 3
+@description('How many test locations must fail together to fire the alert. Default 2 of 3: 1 would page on a single region\'s network blip. Azure\'s guidance is (locations - 2) with a floor of 1, which with five locations is 3. The module clamps it to the number of locations, because a threshold above that is a rule that can never fire — which looks exactly like a healthy platform.')
+param availabilityFailedLocationCount int = 2
 
-@description('Seconds between availability test runs from EACH location. 300 (the Azure default) with five locations probes the platform about every minute. This is the cost knob.')
-param availabilityTestFrequencySeconds int = 300
+@description('Seconds between availability test runs from EACH location. Default 900, the slowest Azure allows: an outage is detected within at most 15 minutes. 300 (the Azure default) triples the bill for ~5-minute detection. This is the cost knob.')
+param availabilityTestFrequencySeconds int = 900
 
 @description('Extra public URLs to probe, as `[{ name: \'pilot\', url: \'https://pilot.<appsDomain>/\' }]`. The platform hosts (edge, and the portal when portalExternal) are added automatically; this is for probing a real hosted app end to end — the path that also exercises Blob asset serving, which no platform health check covers. Must be publicly reachable: the test agents run in Azure regions, not in the VNet.')
 param availabilityExtraTargets array = []
@@ -1032,8 +1030,9 @@ module jobsAlerts 'modules/alerts-jobs.bicep' = if (deployAlerts && deployApps &
 // design (the host router mounts platform routes on platform hosts only), so
 // `auth.<appsDomain>` is the one public hostname that answers the platform
 // health JSON. The portal joins the list only when portalExternal put it on the
-// public LB; the dev-gateway never does, because `dev-api` is a valid app slug
-// and the edge image classifies that host as an app. Egress cannot be probed at
+// public LB; the dev-gateway never does: `dev-api` is a reserved label the main
+// edge does not route as an app, and the dev gateway serves no platform health
+// on it. Egress cannot be probed at
 // all — internal-only environment, no public LB, which is ADR-0001 working.
 var availabilityTargets = concat(
   [
