@@ -168,7 +168,7 @@ async function* resolveOne(item, h) {
 
 **Composition.**
 - `h.all([...])` yields several requests or child runs at once, as one **wave**. The runner performs them concurrently, within the rate limits, and resumes the job when every one has answered.
-- `h.child(fn, input)` starts a child run with its own history, so no single history grows long. ListGen uses one child per property. A child's return value is its answer to the parent; it is not separately readable by the app. **A child run is part of its parent, not a job.** It has no `/_api/jobs` reference and does not count against ADR-0045's unfinished or retained job caps (20 and 1,000 per app and environment), which a 21,000-child ListGen refresh would otherwise exceed. Instead, its requests count against the parent's request ceiling, and its history against the parent's `historyMiB`. The runner caps children in flight per run (default 8, within an operator maximum).
+- `h.child(fn, input)` starts a child run with its own history, so no single history grows long. ListGen uses one child per property; the [worked example](#worked-example-a-listgen-refresh) shows the whole job. A child's return value is its answer to the parent; it is not separately readable by the app. **A child run is part of its parent, not a job.** It has no `/_api/jobs` reference and does not count against ADR-0045's unfinished or retained job caps (20 and 1,000 per app and environment), which a ListGen refresh, with a child per property, would otherwise exceed. Instead, its requests count against the parent's request ceiling, and its history against the parent's `historyMiB`. The runner caps children in flight per run (default 8, within an operator maximum).
 
 **Projection.** A request may name a projection (`select`). The runner applies it **before** recording the answer, which keeps the history small and keeps fields the job does not need out of storage. For ListGen, only the matched premise is kept.
 
@@ -402,7 +402,7 @@ Splitting the runner and the sandbox into separate processes costs about 25 µs 
 3. checks its stop list and the ceilings, then dispatches the request through the callback;
 4. appends `{request, answer}` to the history.
 
-**The history is the source of truth, and a sticky instance is only a cache (I7).** After a crash, a restart, an eviction or a move, a fresh instance replays the job against its history until it yields a request with no recorded answer. Replay makes no network calls, and costs milliseconds for thousands of steps [spikes §2]. History appends are batched per wave, because a ListGen refresh is about 21,000 child runs. A crash therefore loses at most the answered-but-unflushed entries of the current wave, and the cap on children in flight bounds that number.
+**The history is the source of truth, and a sticky instance is only a cache (I7).** After a crash, a restart, an eviction or a move, a fresh instance replays the job against its history until it yields a request with no recorded answer. Replay makes no network calls, and costs milliseconds for thousands of steps [spikes §2]. History appends are batched per wave, because a ListGen refresh starts thousands of child runs. A crash therefore loses at most the answered-but-unflushed entries of the current wave, and the cap on children in flight bounds that number.
 
 **Requests are at-least-once.** Only answers not yet in the history can repeat.
 - `h.fetch` carries an idempotency key (`run/step/item`), so an upstream that supports one can de-duplicate.
@@ -592,6 +592,178 @@ QuickJS in Wasm closes the same surface by construction. An instance has only wh
 9. **quickjs-ng or Bellard QuickJS?** ng releases faster and runs test262 in CI. Bellard's is in OSS-Fuzz, and was slightly faster in the spike [spikes §5].
 10. **The out-of-memory trap.** Is it in the glue or in the engine, and does quickjs-ng master's `8e14a39` fix it? The terminal-instance rule contains it either way [spikes §1].
 11. **Is the Javy plus Wasmtime fallback needed** for any customer's threat model?
+
+## Worked example: a ListGen refresh
+
+This section shows one real workload end to end. It is illustrative, like the manifest syntax in decision 2. The request kinds and the rules it relies on are the ones decided above.
+
+**The workload.** ListGen keeps a list of properties in `shared` app-data, about 50 properties to a group record (`aln/<group>`). A refresh confirms each property against a rate-limited account-lookup API. Each property gets at most **15 lookup calls**, and stops at its first match. The address planner works in tiers, cheapest first:
+
+| Tier | Candidates tried | Public data it needs |
+|---|---|---|
+| 0 | The address as listed | None |
+| 1 | Spelling repairs, from the official address point | One address-point lookup |
+| 2 | Other addresses on the same parcel, and on parcels with the same owner nearby | One parcel lookup |
+| 3 | Addresses from affordable-housing records near the property | None: the records are bundled with the module |
+| 4 | Addresses at other address points within 150 m | One address-point lookup |
+
+A refresh makes two **passes**. Pass 1 runs tiers 0–1 for every property. Pass 2 runs tiers 2–4, only for properties still unresolved after pass 1. (A pass is ListGen's word. Each `h.all` inside it is still a wave in this ADR's sense.) Results go to one `results/<group>` record per group, and the job is the only writer of those records. People's review decisions live in separate records that the job never touches.
+
+### The job module
+
+The app's build bundles this file with the planner and matcher it already uses in the browser. `planQueries`, `matchPremise`, `checkEligibility`, `pointQuery` and `parcelQuery` are those pure functions. None of them performs I/O.
+
+```js
+// jobs/refresh.js
+const CAP = 15;                      // lookup calls per property, per refresh
+const IN_FLIGHT = 8;                 // groups resolved at once; the runner also caps children in flight
+
+export default async function* refresh({ refreshId, groups }, h) {
+  for (const pass of [1, 2]) {
+    let done = 0;
+    for (const chunk of chunks(groups, IN_FLIGHT)) {
+      yield h.all(chunk.map(group => h.child(resolveGroup, { refreshId, group, pass })));
+      done += chunk.length;
+      yield h.progress({ step: done, of: groups.length, label: `Pass ${pass} of 2` });
+    }
+  }
+  return { refreshId, groups: groups.length };
+}
+
+// One group: read its properties and earlier results, resolve what is left, write one record.
+async function* resolveGroup({ refreshId, group, pass }, h) {
+  const aln = yield h.data.get({ scope: "shared", key: `aln/${group}` });
+  const prev = yield h.data.get({ scope: "shared", key: `results/${group}` });
+  const before = prev?.value.refreshId === refreshId ? prev.value.properties : {};
+
+  // Pass 1 skips properties this refresh already settled, so a re-run after a stop resumes.
+  const todo = aln.value.properties.filter(p =>
+    pass === 1 ? !before[p.id] : before[p.id]?.resolution === "unresolved");
+  if (todo.length === 0) return 0;
+
+  const found = yield h.all(todo.map(p =>
+    h.child(resolveProperty, { property: p, pass, used: before[p.id]?.calls ?? 0 })));
+
+  const properties = { ...before };
+  todo.forEach((p, i) => { properties[p.id] = found[i]; });
+  const write = yield h.data.put({
+    scope: "shared", key: `results/${group}`,
+    value: { refreshId, properties },
+    ...(prev ? { ifMatch: prev.version } : { ifNoneMatch: "*" }),       // CAS (ADR-0041)
+  });
+  if (write.status === 412) throw new Error(`results/${group} changed during the refresh`);
+  return todo.length;
+}
+
+// One property: walk this pass's tiers, cheapest first, and stop at the first match.
+async function* resolveProperty({ property, pass, used }, h) {
+  let calls = used;
+  const tried = [];
+  for (const tier of pass === 1 ? [0, 1] : [2, 3, 4]) {
+    const context = yield* publicData(property, tier, h);
+    for (const query of planQueries(property, tier, context, tried)) {
+      if (calls === CAP) return { resolution: "stopped_at_cap", calls, tried };
+      calls += 1;
+      tried.push(query);
+      const res = yield h.fetch({ origin: "lookup", path: "/premises/search", query, select: "/premises" });
+      if (res.status !== 200) return { resolution: "lookup_failed", status: res.status, calls, tried };
+      const premise = matchPremise(property, tier, res.body);
+      if (premise) {
+        return { resolution: "candidate", premise, tier, query, calls,
+                 eligibility: checkEligibility(premise) };
+      }
+    }
+  }
+  return { resolution: pass === 1 ? "unresolved" : "not_found", calls, tried };
+}
+
+// The public lookups a tier needs. Tiers 0 and 3 need none.
+async function* publicData(property, tier, h) {
+  if (tier === 1) return yield h.fetch({ origin: "addresses", query: pointQuery(property, 0), select: "/features" });
+  if (tier === 2) return yield h.fetch({ origin: "parcels", query: parcelQuery(property), select: "/features" });
+  if (tier === 4) return yield h.fetch({ origin: "addresses", query: pointQuery(property, 150), select: "/features" });
+  return null;
+}
+
+function chunks(list, size) {
+  const out = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+```
+
+Three things to notice:
+- **Nothing in the file waits, retries, counts a rate or saves a checkpoint.** Each `yield` hands one request to the runner, which does all of that.
+- **`select: "/premises"` keeps the history small.** Only the premise list from each lookup is recorded, so other fields in the response never reach storage.
+- **A lookup error is an answer, not a refusal.** An upstream 5xx, or a 429 that outlasts the runner's back-off, comes back as `res.status` and becomes `lookup_failed` for that property. A refusal by a ceiling or a budget never reaches this code. It ends the run instead (I6).
+
+### The manifest entry
+
+```ts
+jobs: {
+  modules: {
+    refresh: {
+      path: "jobs/refresh.js",
+      uses: {
+        fetch: ["lookup", "addresses", "parcels"],         // origins the app already has
+        data: { shared: ["aln/", "results/"] },             // never the review decisions
+      },
+      ceilings: { requests: 30000, wallClock: "12h", historyMiB: 128, llmDollars: 0 },
+      rates: { lookup: "4/s", addresses: "5/s", parcels: "5/s" },  // lookup: the pace its owner allows
+      concurrency: { perApp: 1, perUser: 1, childrenInFlight: 8 },
+    },
+  },
+}
+```
+
+An admin approves this once. After that, a redeploy that only changes `jobs/refresh.js` needs no new approval (decision 2).
+
+### Starting a refresh
+
+```js
+// In the ListGen app, behind the "Start refresh" button.
+const input = { refreshId, groups };                       // ~100 group keys, ~5,000 properties
+const { grantId } = await window.helix.jobs.request({
+  module: "refresh",
+  input,
+  ceilings: { requests: 30000, wallClock: "12h" },
+});
+const res = await fetch("/_api/jobs/modules/types/refresh", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ grantId, input }),
+});
+const job = await res.json();                              // poll, cancel and read it with ADR-0045's routes
+```
+
+The popup the user sees is the platform's, not ListGen's. It shows the module's version, the input's size and digest, "up to 30,000 requests and 12 hours", the expiry, and "runs with this app's access; you own the run and its cost".
+
+### What happens during the run
+
+1. **Pass 1 starts.** The job resolves eight groups at a time. Each group's properties run as child runs, so no single history grows long, and none of them counts against ADR-0045's job caps (decision 1).
+2. **Every lookup goes through the edge.** The edge checks the run grant and the `lookup` origin and meters the call. Egress injects the lookup's API key, which the job never sees. The `(ListGen, lookup)` bucket keeps the whole run at 4 calls per second. On a 429 the bucket slows down and later recovers (decision 6). The job code sees none of this.
+3. **The user closes the tab.** Nothing changes. Progress (`Pass 1 of 2`, 40 of 100 groups) is there when anyone opens ListGen again.
+4. **A runner process crashes.** A fresh sandbox replays each open run from its history in milliseconds, makes no lookups while it does, and carries on from the first request with no recorded answer (decision 9).
+5. **The app's daily fetch budget runs out.** The edge refuses the next lookup. The run ends `failed` with `outbound_quota_exceeded`, and ListGen shows "paused on budget". The group records already written stand. Tomorrow's run, with a new consent, skips every property this refresh already settled.
+6. **The run finishes.** The parent returns `{ refreshId, groups: 100 }`. The real output is the `results/` records. ListGen's map and review queue read them as they do today.
+
+**Keep searching**, ListGen's button that runs the rest of one property's queries on a reviewer's request, needs no server run. The app runs `resolveProperty` in the tab with the client-side driver (decision 1), on the same code.
+
+### What moves out of the app
+
+Today ListGen runs refreshes in users' tabs. Its design carries this machinery, all of which the module service replaces:
+
+| ListGen runs this in the browser today | With app-authored jobs |
+|---|---|
+| Batch leases in app-data, with heartbeat tokens and lease expiry judged by each tab's own clock | The runner's claim on the run |
+| Rate-grant slot records, and a token bucket in each tab at a share of the total pace | One platform bucket per (app, origin) |
+| Back-off durations written to slot records so other tabs slow down too | The bucket's back-off on 429 and `Retry-After` |
+| Checkpoint writes in a fixed order, with a cursor per batch | The history, and replay |
+| A dedicated Web Worker, so hidden-tab timer throttling does not stall the work | Nothing: the run needs no tab |
+| A stall warning for when no tab holds a lease | Nothing: the run does not stall when tabs close |
+| A self-imposed daily call cap, summed from per-batch counts | Per-run ceilings, and the edge's budgets |
+
+What stays ListGen's is its domain: the planner, the matcher, the eligibility rules, the record layout, and people's review decisions.
 
 ## Appendix: evidence
 
