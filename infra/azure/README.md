@@ -979,9 +979,13 @@ metric alert that notifies on it.
 
 Standard tests, not the old free URL ping tests — **those retire 30 September
 2026** and existing ones are deleted from the resource. Standard tests are billed
-per execution; five locations every five minutes is ~43k executions/month per
-URL, which is what `availabilityTestFrequencySeconds` and
-`availabilityTestLocations` control.
+per execution, which is what `availabilityTestFrequencySeconds` and
+`availabilityTestLocations` control. The default is three US locations every
+900 s: ~8.8k executions/month per URL, and an outage detected within 15 minutes.
+Five locations every five minutes, Azure's own default and its recommended
+minimum location count, is ~43k a month per URL for ~1-minute detection. Add
+`emea-nl-ams-azr` and `apac-sg-sin-azr` back for an install with users outside
+the US.
 
 | Probed                                    | When                                                                      |
 | ----------------------------------------- | ------------------------------------------------------------------------- |
@@ -1021,8 +1025,9 @@ on ADR-0029's certbot job: the job renewing is the mechanism, a certificate with
 days left is the outcome, and a job that succeeds while renewing the wrong thing
 is the failure that otherwise gets missed.
 
-`availabilityFailedLocationCount` (3 of 5) follows Azure's guidance of
-(locations − 2). It is **clamped** to the number of locations, because a
+`availabilityFailedLocationCount` defaults to 2 of 3: 1 would alert on a single
+region's network blip. With five locations, Azure's guidance of (locations − 2)
+gives 3. It is **clamped** to the number of locations, because a
 threshold above that is a rule that can never fire — indistinguishable from a
 healthy platform.
 
