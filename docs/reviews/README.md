@@ -16,6 +16,7 @@ mistake. Where a review's conclusion still stands, it was folded into an
 | [`2026-08-20-entra-group-permissions-probe.md`](2026-08-20-entra-group-permissions-probe.md) | 2026-08-20 | Empirical probe of Microsoft Graph permission scoping for Entra group visibility: `GroupMember.Read.All` vs `Group.Read.All` across sixteen calls, claim transitivity, and the delegated user-plane alternative. Folded into [ADR-0040](../adr/0040-entra-group-visibility-directory-seam.md). |
 | [`2026-08-20-entra-group-permissions-probe-protocol.md`](2026-08-20-entra-group-permissions-probe-protocol.md) | 2026-08-20 | The handoff brief that errand ran from — the `az`/Graph test protocol, kept so the probe can be repeated against another tenant. |
 | [`jobs-runner-poc-2026-10-08.md`](jobs-runner-poc-2026-10-08.md) | 2026-10-08 | Local pg-boss/TaskQ experiments: shared fault matrix, observed execution overlap, integration costs and production gaps. Informs ADR-0045's later runner decision. |
+| [`2026-10-28-app-jobs-engine-spikes/`](2026-10-28-app-jobs-engine-spikes/README.md) | 2026-10-28 | Five spikes testing QuickJS-in-Wasm and self-hosted workerd as the engine for app-authored, no-I/O jobs: step and replay cost, limits, escape surface, isolation unit, a Helix-owned QuickJS build. Folded into [ADR-0053](../adr/0053-app-authored-jobs.md). |
 
 ADRs 0001–0013 were scaffolded from the 2026-06-25 review; `ISSUE-xx` / `DEC-xx` references in
 those ADRs point into it. ADRs 0025–0026 came out of the same pass. The open follow-ups distilled
