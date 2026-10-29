@@ -13,7 +13,7 @@
 - ADRs [0011](0011-in-memory-rate-limiting.md) and [0021](0021-metering-ledger.md): shared rate counters and attribution (decision 6).
 - ADRs [0012](0012-edge-portal-codeploy.md) ("egress must remain separate because it holds connection credentials") and [0028](0028-deployment-model-customer-deployed.md) (patches are customer-pulled): why the sandbox holds nothing and must contain an unpatched bug (decisions 7–8, Security).
 - `docs/design/custom-backends.md` §1 (the invariant), §2 (the isolation landscape), §3 rung 1, and §8 open question 2 (whether Wasm runtimes are a real rung-1 boundary, which this ADR answers for one workload).
-- Evidence: five spike reports in [`docs/reviews/2026-10-28-app-jobs-engine-spikes/`](../reviews/2026-10-28-app-jobs-engine-spikes/README.md), cited as `[quickjs-2 Q1]` and so on.
+- Evidence: [`docs/reviews/2026-10-28-app-jobs-engine-spikes.md`](../reviews/2026-10-28-app-jobs-engine-spikes.md), the findings of five engine spikes, cited as `[spikes §n]`.
 
 ## Summary
 
@@ -113,7 +113,7 @@ App-written job code is untrusted tenant code running on our servers, which is r
 - **Figma plugins** moved in 2019 from a JavaScript-level sandbox (the Realms shim) to "a JavaScript VM written in C and cross-compiled to WebAssembly", after a vulnerability in the earlier sandbox. quickjs-emscripten's README identifies that VM as QuickJS, and whether Figma still uses it is unverified. Figma's sandbox runs in the user's browser, not on a server. *Lesson:* another team chose this kind of boundary after a JavaScript-level sandbox failed, meaning one that hides globals inside the same engine.
 - **Temporal's TypeScript SDK** originally ran workflows in `isolated-vm`. Temporal's own introduction to `isolated-vm` now carries a note that the SDK has switched away from it. *Lesson:* a sandbox for determinism is not a sandbox for security; `isolated-vm` itself is now in maintenance mode (see Alternatives).
 
-The spikes found no production system that runs **paused** QuickJS generators for many tenants server-side [quickjs-1 §4]. That combination is new here, and the spikes are its evidence.
+The spikes found no production system that runs **paused** QuickJS generators for many tenants server-side [spikes §5]. That combination is new here, and the spikes are its evidence.
 
 ## Decision
 
@@ -164,7 +164,7 @@ async function* resolveOne(item, h) {
 | `h.sleep(ms)` | A durable timer | None |
 | `h.progress({step, of, label})`, `h.log(str)` | Progress in ADR-0045's snapshot shape, and logs for this run (decision 9) | Size caps |
 
-**Refusals are not answers (I6).** When the runner or the edge refuses a request because of a ceiling, a cap, a budget or a revocation, the run ends with a visible outcome (decision 9). It does not continue with an error value that it might treat as data. In a spike, a daily-cap refusal delivered as an ordinary answer silently became "processed, no match" for 44 properties [quickjs-1 Q8]. Outcomes from the upstream or the data store are answers, not refusals. That covers an upstream 4xx or 5xx, an upstream 429 after the runner's back-off is used up, and a CAS `412`, which ADR-0041 expects writers to handle by retrying.
+**Refusals are not answers (I6).** When the runner or the edge refuses a request because of a ceiling, a cap, a budget or a revocation, the run ends with a visible outcome (decision 9). It does not continue with an error value that it might treat as data. In a spike, a daily-cap refusal delivered as an ordinary answer silently became "processed, no match" for 44 properties [spikes §4]. Outcomes from the upstream or the data store are answers, not refusals. That covers an upstream 4xx or 5xx, an upstream 429 after the runner's back-off is used up, and a CAS `412`, which ADR-0041 expects writers to handle by retrying.
 
 **Composition.**
 - `h.all([...])` yields several requests or child runs at once, as one **wave**. The runner performs them concurrently, within the rate limits, and resumes the job when every one has answered.
@@ -286,7 +286,7 @@ Because the runner dispatches every request:
 
 - **Per-run ceilings are enforced exactly, before dispatch.** Nothing is counted after the fact, so nothing overshoots. The edge re-checks them (decision 5).
 - **Each (app, origin) gets a token bucket.** It is set to the manifest's declared rate and shared by all of that app's runs. It backs off with AIMD on 429 and honours `Retry-After`.
-- **Each origin also gets a global bucket,** so that several apps calling one upstream cannot together exceed it. In a spike, two apps sharing an upstream doubled each other's run time [workerd-io Q9].
+- **Each origin also gets a global bucket,** so that several apps calling one upstream cannot together exceed it. In a spike, two apps sharing an upstream doubled each other's run time [spikes §4].
 - **Buckets are shared across runner processes.** Per-process buckets would multiply the effective rate, and ADR-0045's rolling deployments briefly run two workers. The buckets are Postgres-backed counters in the module service's own database, following ADR-0011's resolution.
 - **The edge's existing outbound spend policy and per-app daily budgets still apply** (ADR-0021). A run grant can only narrow them.
 - **`gateway_calls` gains a `jobRunId` column.** The change is additive and needs no backfill, like ADR-0021's request-path amendment.
@@ -295,31 +295,31 @@ ADR-0045's capacity controls (unfinished and retained job caps, edge submission 
 
 ### Decision 7. The engine: QuickJS compiled to WebAssembly, one instance per run, built by Helix
 
-**Why this engine.** A job does no I/O, so its engine needs no Web APIs and no bindings: only ECMAScript over JSON. That makes the smallest available boundary practical. In a QuickJS Wasm instance, guest objects hold no references to host objects. The instance reaches the host only through a short, fixed list of imports: 19 in the Helix build, covering abort and assert, a clock, heap resize, stdout and stderr, and the glue's callbacks, with no file or socket imports [quickjs-2 Q1]. A QuickJS memory-safety bug therefore corrupts only that instance's own memory. Reaching anything else takes a **second, independent** bug, in V8's WebAssembly implementation or in one of those imports (I9).
+**Why this engine.** A job does no I/O, so its engine needs no Web APIs and no bindings: only ECMAScript over JSON. That makes the smallest available boundary practical. In a QuickJS Wasm instance, guest objects hold no references to host objects. The instance reaches the host only through a short, fixed list of imports: 19 in the Helix build, covering abort and assert, a clock, heap resize, stdout and stderr, and the glue's callbacks, with no file or socket imports [spikes §1]. A QuickJS memory-safety bug therefore corrupts only that instance's own memory. Reaching anything else takes a **second, independent** bug, in V8's WebAssembly implementation or in one of those imports (I9).
 
 **One instance per run, never shared.** A shared instance would expose every run's heap to a single QuickJS bug, and turn one run's fault into everyone's.
 
-**Loading.** The sandbox host creates a fresh instance, loads the prelude, then loads the job module's **source**. It never accepts bytecode, because quickjs-ng treats untrusted bytecode as equivalent to untrusted native code [quickjs-1 §2]. No module loader is installed, so job code cannot import anything, including platform code.
+**Loading.** The sandbox host creates a fresh instance, loads the prelude, then loads the job module's **source**. It never accepts bytecode, because quickjs-ng treats untrusted bytecode as equivalent to untrusted native code [spikes §5]. No module loader is installed, so job code cannot import anything, including platform code.
 
 **Ambient API (I2).** The job gets ECMAScript built-ins only:
 - `Date` is not installed, and `Math.random` throws.
 - There are no timers, `console`, `WebAssembly`, `Atomics`, `WeakRef` or `FinalizationRegistry`.
 - `h` is frozen, and the prelude deletes its own globals before the job loads.
 
-The spike found no source of non-determinism at a fixed configuration [quickjs-1 Q9]. The configuration-dependent sources (memory cap, stack limit, engine build) are pinned in the run header (decision 9). On every engine upgrade, the list of reachable globals is checked against an allowlist, and any change blocks the upgrade.
+The spike found no source of non-determinism at a fixed configuration [spikes §1]. The configuration-dependent sources (memory cap, stack limit, engine build) are pinned in the run header (decision 9). On every engine upgrade, the list of reachable globals is checked against an allowlist, and any change blocks the upgrade.
 
 **Limits are enforced inside the engine, per run:**
 
 | Limit | Mechanism | What a tripped limit takes down |
 |---|---|---|
-| Memory | The QuickJS heap limit (for example 48 MiB), plus a hard `WebAssembly.Memory` maximum per instance (default 64 MiB), which is the guarantee | The run. **Any out-of-memory error ends the instance.** It is dropped without another call into it, because a runtime that has run out of memory can trap on later calls [quickjs-2 Q1] |
-| Stack | A QuickJS stack limit of 256 KiB or less. At 512 KiB or more, V8's own stack overflows first [quickjs-1 Q6] | The run. Any host-level fault discards the instance |
+| Memory | The QuickJS heap limit (for example 48 MiB), plus a hard `WebAssembly.Memory` maximum per instance (default 64 MiB), which is the guarantee | The run. **Any out-of-memory error ends the instance.** It is dropped without another call into it, because a runtime that has run out of memory can trap on later calls [spikes §1] |
+| Stack | A QuickJS stack limit of 256 KiB or less. At 512 KiB or more, V8's own stack overflows first [spikes §1] | The run. Any host-level fault discards the instance |
 | CPU per step | A QuickJS interrupt deadline of 100–250 ms. Job code cannot catch it, and it also stops regex backtracking | The run. Other runs on the same thread wait out the deadline (decision 8) |
 | CPU and wall time per run | The runner adds up step time against the run's ceilings. A run that keeps hitting the deadline fails against its CPU budget | The run |
 
-In the spike, a runaway or memory-bomb job stopped only its own run, and a canary run in another instance survived every probe [quickjs-1 Q5, Q6].
+In the spike, a runaway or memory-bomb job stopped only its own run, and a canary run in another instance survived every probe [spikes §1].
 
-**Helix builds the engine.** The npm `quickjs-emscripten` builds are unsuitable [quickjs-1 Q6; quickjs-2 Q1]:
+**Helix builds the engine.** The npm `quickjs-emscripten` builds are unsuitable [spikes §1]:
 - they bundle quickjs-ng v0.12.1, five or more releases behind, and upstream's regression test for the critical GHSA-m53g-qx47-3h38 crashes both of them;
 - their memory limit does not hold: a 32 MiB limit let a job reach 2 GiB.
 
@@ -329,7 +329,7 @@ Helix CI therefore builds quickjs-ng to Wasm from these inputs:
 - `emcc` from the `emscripten/emsdk` image, pinned by digest;
 - no quickjs-libc, so there are no `std` or `os` modules.
 
-The build is reproducible, passes the GHSA-m53g regression test, and its memory limit holds [quickjs-2 Q1]. Every engine bump must pass a release suite:
+The build is reproducible, passes the GHSA-m53g regression test, and its memory limit holds [spikes §1]. Every engine bump must pass a release suite:
 - the smoke job;
 - the memory bombs;
 - the CPU-interrupt and stack probes;
@@ -340,12 +340,12 @@ The build is reproducible, passes the GHSA-m53g regression test, and its memory 
 
 Each release records the upstream tag or commit, the amalgam sha256, the emsdk digest and the `.wasm` sha256.
 
-**The standing cost, stated plainly.** Since 2026-10-11, quickjs-ng accepts no private security reports and issues no CVEs. Its fixes land on master weeks before a release [quickjs-1 §2]. So a scanner will never tell a customer they are exposed, and:
+**The standing cost, stated plainly.** Since 2026-10-11, quickjs-ng accepts no private security reports and issues no CVEs. Its fixes land on master weeks before a release [spikes §5]. So a scanner will never tell a customer they are exposed, and:
 - the module service's owner reviews quickjs-ng's master commits at least weekly;
 - when a memory-safety fix lands, the owner rebuilds from a pinned commit;
 - engine rebuilds ship as flagged security releases, named in the release notes and the deployment catalogue (ADR-0036).
 
-The estimated effort is about half a day per routine upstream release. It is one to three days when the C API or emsdk breaks, which happened once in the five releases from 0.12.1 to 0.17.0 [quickjs-2 Q1].
+The estimated effort is about half a day per routine upstream release. It is one to three days when the C API or emsdk breaks, which happened once in the five releases from 0.12.1 to 0.17.0 [spikes §1].
 
 **Node's patch level becomes part of the boundary,** because V8 runs the Wasm.
 
@@ -376,7 +376,7 @@ A deployment can optionally harden further with ACA dynamic sessions (Hyper-V) p
 **Inside a sandbox host.** A router runs on the main thread, with N `worker_threads` sized to the cgroup's cores.
 - **Placement.** A run's instance lives on exactly one thread, because V8 cannot move a `WebAssembly.Memory` between threads. Moving a run therefore means replaying it. New and replayed runs go to the least-loaded thread.
 - **Eviction.** Idle instances are evicted under a per-thread cap and replayed on their next step. The cap must cover the active working set.
-- **Thread death.** If a thread dies, its runs replay on other threads. In the spike, 250 runs recovered in 83–195 ms with no step lost or duplicated [quickjs-2 Q2].
+- **Thread death.** If a thread dies, its runs replay on other threads. In the spike, 250 runs recovered in 83–195 ms with no step lost or duplicated [spikes §2].
 - **Spinning runs.** A spinning run stalls only the runs on its own thread, and only until the deadline.
 
 **The protocol (I7).** The runner talks to sandbox hosts over the pool's private network, using newline-delimited JSON multiplexed by request id. Frames are capped at 8 MiB.
@@ -392,7 +392,7 @@ A deployment can optionally harden further with ACA dynamic sessions (Hyper-V) p
 - **Recorded values** from `h.now()` and `h.random()` are produced in the sandbox. The runner appends them to the history and sends them back on replay.
 - **A supervisor reaps sandbox hosts** if the runner dies, and their runs replay elsewhere.
 
-Splitting the runner and the sandbox into separate processes costs about 25 µs per step, and a few milliseconds per 1,000-step replay [quickjs-2 Q3]. That is negligible next to steps paced by an upstream rate limit.
+Splitting the runner and the sandbox into separate processes costs about 25 µs per step, and a few milliseconds per 1,000-step replay [spikes §2]. That is negligible next to steps paced by an upstream rate limit.
 
 ### Decision 9. Durability, history, results, logs and telemetry
 
@@ -402,13 +402,13 @@ Splitting the runner and the sandbox into separate processes costs about 25 µs 
 3. checks its stop list and the ceilings, then dispatches the request through the callback;
 4. appends `{request, answer}` to the history.
 
-**The history is the source of truth, and a sticky instance is only a cache (I7).** After a crash, a restart, an eviction or a move, a fresh instance replays the job against its history until it yields a request with no recorded answer. Replay makes no network calls, and costs milliseconds for thousands of steps [quickjs-2 Q2]. History appends are batched per wave, because a ListGen refresh is about 21,000 child runs. A crash therefore loses at most the answered-but-unflushed entries of the current wave, and the cap on children in flight bounds that number.
+**The history is the source of truth, and a sticky instance is only a cache (I7).** After a crash, a restart, an eviction or a move, a fresh instance replays the job against its history until it yields a request with no recorded answer. Replay makes no network calls, and costs milliseconds for thousands of steps [spikes §2]. History appends are batched per wave, because a ListGen refresh is about 21,000 child runs. A crash therefore loses at most the answered-but-unflushed entries of the current wave, and the cap on children in flight bounds that number.
 
 **Requests are at-least-once.** Only answers not yet in the history can repeat.
 - `h.fetch` carries an idempotency key (`run/step/item`), so an upstream that supports one can de-duplicate.
 - `h.data.put` is safe under replay because of its precondition.
 
-In a crash test that killed both the runner and the sandbox mid-run, the run recovered and resolved all 50 of its properties (301 calls) with no duplicate answered request [workerd-noio Q6].
+In a crash test that killed both the runner and the sandbox mid-run, the run recovered and resolved all 50 of its properties (301 calls) with no duplicate answered request [spikes §4].
 
 **The run header pins** the module hash, the engine build and the limit settings. A resume refuses to proceed when any of them differs, rather than relying on replay to notice.
 
@@ -504,7 +504,7 @@ The design puts three independent walls between a hostile job and anything worth
   - its design assumes trusted, cooperative handlers and a 60-minute deadline (`background-jobs-plane.md` §6).
 
   A separate named service keeps the two stores, keys and failure domains apart, at the cost of a second deployment.
-- **Jobs that do their own I/O (`await env.FETCH.fetch()`).** This needs network-level containment of a live engine, and a credential channel for each run. It was spiked on workerd [workerd-io], and is recorded as a possible later stage. That stage would need its own ADR, and probably a second engine.
+- **Jobs that do their own I/O (`await env.FETCH.fetch()`).** This needs network-level containment of a live engine, and a credential channel for each run. It was spiked on workerd [spikes §3], and is recorded as a possible later stage. That stage would need its own ADR, and probably a second engine.
 - **Running with the user's session, token or delegated authority.** Rejected for now; ADR-0031 stays open.
 - **The status quo: browser tabs.** It is kept as the in-tab path of decision 1. It fails whenever the tab does.
 
@@ -518,16 +518,16 @@ Every candidate was held to the same requirements:
 - its build is pinned;
 - it contains one bug on an unpatched install.
 
-**workerd, Cloudflare's open-source Workers runtime, was looked at seriously, and was spiked three times** [workerd-io, workerd-noio, workerd-noio-2]. The case for it is real:
+**workerd, Cloudflare's open-source Workers runtime, was looked at seriously, and was spiked three times** [spikes §3]. The case for it is real:
 - Cloudflare is one of the largest companies building agent infrastructure, and it builds it on Workers. Choosing workerd would align Helix's module format, tooling and V8 patch stream with that ecosystem.
 - Authors get the same V8 semantics as in their browser.
 - It leaves an easier path to jobs that do their own I/O. The I/O spike showed that working through a deny-by-default outbound worker.
 
 It was not chosen, because for this design the spikes found the following:
-- **Self-hosted workerd enforces no limits.** Its limit enforcer is a no-op ("single-tenant policy: no limits") [workerd-io Q5]. Every limit falls to an external watchdog and cgroups, and a kill takes down every run in the process, which then has to replay [workerd-noio Q4].
-- **The isolation unit is a process, not an instance.** Runs in one isolate form one trust domain: in the spike, one run polluted intrinsics and captured another's requests [workerd-noio Q10]. Safe isolation needs a container per (app, owner), created at runtime for each new owner. That sits awkwardly with ADR-0028's posture of "no per-app infrastructure at runtime" [workerd-noio-2 Q3].
-- **The ambient surface is large and must be closed by hand.** A prelude must neutralise each non-deterministic global, on the global object and on every prototype in its chain. A per-upgrade audit of 83 own and 79 inherited globals gates that [workerd-noio-2 Q2, Q2(c)]. With `network = (allow = [])` alone, workerd still made a DNS lookup on any hostname the job chose [workerd-noio Q5].
-- **Platform modules were reachable from job code.** A job could import the shim and drive another run's generator with forged answers. Mitigations were drafted but not verified [workerd-noio Q10; workerd-noio-2 §Could not verify].
+- **Self-hosted workerd enforces no limits.** Its limit enforcer is a no-op ("single-tenant policy: no limits") [spikes §3]. Every limit falls to an external watchdog and cgroups, and a kill takes down every run in the process, which then has to replay [spikes §3].
+- **The isolation unit is a process, not an instance.** Runs in one isolate form one trust domain: in the spike, one run polluted intrinsics and captured another's requests [spikes §3]. Safe isolation needs a container per (app, owner), created at runtime for each new owner. That sits awkwardly with ADR-0028's posture of "no per-app infrastructure at runtime" [spikes §3].
+- **The ambient surface is large and must be closed by hand.** A prelude must neutralise each non-deterministic global, on the global object and on every prototype in its chain. A per-upgrade audit of 83 own and 79 inherited globals gates that [spikes §3]. With `network = (allow = [])` alone, workerd still made a DNS lookup on any hostname the job chose [spikes §3].
+- **Platform modules were reachable from job code.** A job could import the shim and drive another run's generator with forged answers. Mitigations were drafted but not verified [spikes §3].
 
 QuickJS in Wasm closes the same surface by construction. An instance has only what the prelude installs and 19 fixed imports, and its limits are inside the engine. The price is that Helix owns a build and an upstream watch (d7), and that authors run on a different engine from their browser.
 
@@ -537,10 +537,10 @@ QuickJS in Wasm closes the same surface by construction. An instance has only wh
 | Limits | Inside the engine, per run | An external watchdog and cgroups; a kill takes the whole process | Deterministic fuel and a memory cap, per step |
 | Ambient surface | Only what the prelude installs; 19 imports | A prelude plus a per-upgrade globals audit | Javy's fixed surface |
 | One bug, unpatched | Stays in its run's instance | Reaches its container's runs | Stays in its step's process |
-| Patch stream | A Helix-owned build; no upstream CVEs | Cloudflare's, including V8's | The Bytecode Alliance's; 57 Wasmtime advisories in 2026 at the time of the spike [quickjs-1 §3] |
+| Patch stream | A Helix-owned build; no upstream CVEs | Cloudflare's, including V8's | The Bytecode Alliance's; 57 Wasmtime advisories in 2026 at the time of the spike [spikes §5] |
 | Paused runs between steps | Yes (sticky) | Yes (sticky) | No: every step replays, so cost grows with the square of the history length |
 
-- **Javy plus Wasmtime** is the strongest per-step boundary, and is **kept as the named fallback** for a deployment whose threat model needs a process per step. It costs a second runtime artifact (a 60 MB CLI or a Rust sidecar), and a replay on every step [quickjs-1 Q1, Q3].
+- **Javy plus Wasmtime** is the strongest per-step boundary, and is **kept as the named fallback** for a deployment whose threat model needs a process per step. It costs a second runtime artifact (a 60 MB CLI or a Rust sidecar), and a replay on every step [spikes §1].
 - **Native QuickJS**, as an addon or its own process, is faster. But a single QuickJS memory bug would then run native code in the host, which gives up the Wasm wall that justifies the engine.
 - **The npm `quickjs-emscripten` builds as shipped** are behind on security fixes, and their memory limit does not hold (d7).
 - **`isolated-vm` inside Node.** Rejected: it is in maintenance mode, and its README warns that leaked handles are "usually trivial" to turn into "a springboard back into the nodejs isolate".
@@ -588,31 +588,31 @@ QuickJS in Wasm closes the same surface by construction. An instance has only wh
 5. **Consent on the dev gateway.** The dev gateway authenticates with dev tokens. Does the developer consent in the same control-plane popup, or does the `dev` environment use a simpler local grant?
 6. **Can ACA express the pool?** It needs a dedicated workload profile, a pool with no egress, a blocked identity endpoint and cgroup limits we control. If it can't, ACA dynamic sessions may be the v1 path.
 7. **History and source limits.** What are the maximum history, answer and module-source sizes? Should `select` be mandatory above some threshold?
-8. **`h.any`.** Should there be a variant of `h.all` that resumes on whichever answer arrives first, and records the order? In a spike, lockstep waves under a rate limit ran no faster than sequential calls [quickjs-1 Q11].
-9. **quickjs-ng or Bellard QuickJS?** ng releases faster and runs test262 in CI. Bellard's is in OSS-Fuzz, and was slightly faster in the spike [quickjs-1 §1].
-10. **The out-of-memory trap.** Is it in the glue or in the engine, and does quickjs-ng master's `8e14a39` fix it? The terminal-instance rule contains it either way [quickjs-2 Q1].
+8. **`h.any`.** Should there be a variant of `h.all` that resumes on whichever answer arrives first, and records the order? In a spike, lockstep waves under a rate limit ran no faster than sequential calls [spikes §4].
+9. **quickjs-ng or Bellard QuickJS?** ng releases faster and runs test262 in CI. Bellard's is in OSS-Fuzz, and was slightly faster in the spike [spikes §5].
+10. **The out-of-memory trap.** Is it in the glue or in the engine, and does quickjs-ng master's `8e14a39` fix it? The terminal-instance rule contains it either way [spikes §1].
 11. **Is the Javy plus Wasmtime fallback needed** for any customer's threat model?
 
 ## Appendix: evidence
 
-All figures come from the spike reports in [`docs/reviews/2026-10-28-app-jobs-engine-spikes/`](../reviews/2026-10-28-app-jobs-engine-spikes/README.md). They were measured on synthetic data, mostly on a developer laptop (macOS, arm64, Docker Desktop), so ACA and production hardware may differ.
+All figures come from the [engine spikes](../reviews/2026-10-28-app-jobs-engine-spikes.md). They were measured on synthetic data, mostly on a developer laptop (macOS, arm64, Docker Desktop), so ACA and production hardware may differ.
 
-| Claim | Figure | Source |
+| Claim | Figure | Spikes section |
 |---|---|---|
-| Starting an instance with prelude and job loaded | about 0.5–0.6 ms | quickjs-2 Q1 |
-| One step, in-thread | 11–12 µs (async generator) | quickjs-2 Q1 |
-| Replaying 1,000 steps | 11–12 ms in-thread; 18–19 ms across the process split | quickjs-2 Q1, Q3 |
-| Memory per paused run | about 0.4–0.5 MiB, plus about 24 MiB per thread | quickjs-2 Q1, Q2 |
-| Throughput | about 29k steps/s on one pool thread; about 100k steps/s on four threads with 1,000 paused runs | quickjs-2 Q2 |
-| Process-split cost | about 25 µs per step at p50 | quickjs-2 Q3 |
-| Thread-death recovery | 250 runs in 83–195 ms, with no step lost or duplicated | quickjs-2 Q2 |
-| Eviction cliff | about 30× slower when the resident cap is below the working set | quickjs-2 Q2 |
-| Helix build | about 20 s, byte-identical across runs, a 571 KB `.wasm` with 19 imports, passes the GHSA-m53g test | quickjs-2 Q1 |
-| Memory limit | a 32 MiB limit stops bombs at 31 MiB with the Helix build; a job reached 2 GiB with the npm build | quickjs-2 Q1 |
-| Runaway containment | a canary in another instance survived every probe | quickjs-1 Q5, Q6 |
-| Crash test | after the runner and sandbox were both killed mid-run, the run resolved all 50 properties (301 calls) with no duplicate answered request | workerd-noio Q6 |
-| Shared upstream | two apps on one upstream doubled each other's run time | workerd-io Q9 |
-| workerd limits | none enforced when self-hosted | workerd-io Q5 |
-| workerd isolation | runs sharing an isolate could pollute intrinsics and capture each other's requests | workerd-noio Q10 |
-| workerd DNS | `allow = []` alone still performed host DNS lookups | workerd-noio Q5 |
-| workerd containers | about 22 MiB per container; after a SIGKILL, 20 runs recovered by replay in 14 ms | workerd-noio-2 Q3 |
+| Starting an instance with prelude and job loaded | about 0.5–0.6 ms | §1 |
+| One step, in-thread | 11–12 µs (async generator) | §1 |
+| Replaying 1,000 steps | 11–12 ms in-thread; 18–19 ms across the process split | §1, §2 |
+| Memory per paused run | about 0.4–0.5 MiB, plus about 24 MiB per thread | §1, §2 |
+| Throughput | about 29k steps/s on one pool thread; about 100k steps/s on four threads with 1,000 paused runs | §2 |
+| Process-split cost | about 25 µs per step at p50 | §2 |
+| Thread-death recovery | 250 runs in 83–195 ms, with no step lost or duplicated | §2 |
+| Eviction cliff | about 30× slower when the resident cap is below the working set | §2 |
+| Helix build | about 20 s, byte-identical across runs, a 571 KB `.wasm` with 19 imports, passes the GHSA-m53g test | §1 |
+| Memory limit | a 32 MiB limit stops bombs at 31 MiB with the Helix build; a job reached 2 GiB with the npm build | §1 |
+| Runaway containment | a canary in another instance survived every probe | §1 |
+| Crash test | after the runner and sandbox were both killed mid-run, the run resolved all 50 properties (301 calls) with no duplicate answered request | §4 |
+| Shared upstream | two apps on one upstream doubled each other's run time | §4 |
+| workerd limits | none enforced when self-hosted | §3 |
+| workerd isolation | runs sharing an isolate could pollute intrinsics and capture each other's requests | §3 |
+| workerd DNS | `allow = []` alone still performed host DNS lookups | §3 |
+| workerd containers | about 22 MiB per container; after a SIGKILL, 20 runs recovered by replay in 14 ms | §3 |
