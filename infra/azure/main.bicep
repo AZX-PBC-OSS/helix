@@ -1792,7 +1792,10 @@ module jobsApp 'modules/containerapp.bicep' = if (deployApps && deployJobs) {
       { name: 'JOBS_PORT', value: '3003' }
       { name: 'HOST', value: '0.0.0.0' }
       { name: 'JOBS_SERVER_ID', value: 'jobs' }
-      { name: 'JOBS_ACCEPTING', value: string(jobsServerConfig.accepting) }
+      // config.ts parses JOBS_ACCEPTING strictly ("true" or "false", anything
+      // else fails boot), and ARM's string(bool) renders 'True'/'False' — so
+      // emit the lowercase literal, as for the visibility pair above.
+      { name: 'JOBS_ACCEPTING', value: jobsServerConfig.accepting ? 'true' : 'false' }
       { name: 'JOBS_EDGE_PROD_URL', value: jobsServer.edgeProdCallbackUrl }
       { name: 'JOBS_EDGE_DEV_URL', value: jobsServer.edgeDevCallbackUrl }
       { name: 'JOBS_DATABASE_URL', secretRef: 'jobs-database-url' }

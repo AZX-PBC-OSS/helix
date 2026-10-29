@@ -216,9 +216,11 @@ function jobsAppEnv(fullEntry: Record<string, unknown>): Record<string, string> 
       env[entry.name] = expr.slice(1, -1);
     } else if (expr === "logLevel") {
       env[entry.name] = "info";
-    } else if (expr === "string(jobsServerConfig.accepting)") {
-      // Bicep's string() of a bool is its lowercase literal.
-      env[entry.name] = String(fullEntry.accepting);
+    } else if (expr === "jobsServerConfig.accepting ? 'true' : 'false'") {
+      // The template's ternary of lowercase literals. ARM's string() of a bool
+      // renders 'True'/'False', which the loader refuses, so the template must
+      // not use it; a test below pins the expression.
+      env[entry.name] = fullEntry.accepting === true ? "true" : "false";
     } else if (expr.startsWith("jobsServer.")) {
       env[entry.name] = resolveOnEntry(expr, fullEntry);
     } else if (expr.includes("deployTelemetry")) {
@@ -761,6 +763,14 @@ describe("serving, retiring and the fully disabled deployment", () => {
       const config = loadJobsConfig(jobsAppEnv({ ...FULL_ENTRY, state, accepting }));
       expect(config.accepting, `${state} with jobsIntakeOpen=${intakeOpen}`).toBe(expected);
     }
+  });
+
+  it("JOBS_ACCEPTING is a lowercase literal ternary, never ARM's string(bool)", () => {
+    // ARM renders string(true) as 'True', which config.ts refuses at boot.
+    const entry = envEntries(appCall("jobsApp")).find((e) => e.name === "JOBS_ACCEPTING");
+    expect(entry, "the jobs app must set JOBS_ACCEPTING").toBeDefined();
+    expect(entry!.value).not.toMatch(/\bstring\(/);
+    expect(entry!.value).toBe("jobsServerConfig.accepting ? 'true' : 'false'");
   });
 
   it("a fully disabled deployment evaluates to the empty map everywhere", () => {
