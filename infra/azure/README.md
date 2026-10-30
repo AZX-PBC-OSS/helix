@@ -12,14 +12,14 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 
 ## What it provisions
 
-| Layer    | Resources                                                                                                                                                                                                    |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                                                                                                  |
-| Data     | Postgres Flexible Server (private): the platform `helix` database + the jobs plane's private `helix_jobs` database; Storage (blob, private)                                                                  |
-| Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) + `kv-delegated` (user-delegated token material, egress-only) — all private                                                         |
-| Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`); the two migrate jobs get one deploy-scoped identity each                     |
-| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`) and the default-on jobs plane's container app and migrate job (`deployJobs`) |
-| DNS      | public zone for the apps domain (`*`, `auth`, `portal`; `dev-api` when `deployDevGateway`)                                                                                                                   |
+| Layer    | Resources                                                                                                                                                                                                |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                                                                                              |
+| Data     | Postgres Flexible Server (private): the platform `helix` database + the jobs plane's private `helix_jobs` database; Storage (blob, private)                                                              |
+| Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) + `kv-delegated` (user-delegated token material, egress-only) — all private                                                     |
+| Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`); the two migrate jobs get one deploy-scoped identity each                 |
+| Compute  | 2 ACA environments (`apps`, `egress`) + edge / portal / egress container apps, plus the opt-in dev-gateway (`deployDevGateway`) and the opt-in jobs plane's container app and migrate job (`deployJobs`) |
+| DNS      | public zone for the apps domain (`*`, `auth`, `portal`; `dev-api` when `deployDevGateway`)                                                                                                               |
 
 ### The security shape, in one diagram
 
@@ -456,9 +456,11 @@ section is the reference for what the template provisions.
 The background-jobs plane keeps the same database isolation as everywhere else
 (background-jobs design §8): its own private database on the platform's Postgres
 server, two identities that never cross the boundary, and migrations that run
-separately from the service. On by default; `deployJobs` gates the jobs
-container app, the edge / dev-gateway / portal jobs wiring, the jobs secrets in
-kv-platform and the jobs migrate job.
+separately from the service. Off by default: set `deployJobs=true` to enable it
+(the upgrade procedure below). `deployJobs` gates the jobs container app, the
+edge / dev-gateway / portal jobs wiring, the jobs secrets in kv-platform and the
+jobs migrate job. With it on, the apply refuses to run without the two jobs DSNs
+(or their bootstrap passwords) and the three signing roots.
 
 - **The database (`helix_jobs`) is declared unconditionally** — `deployJobs`
   gates the plane's _dependencies_, never the store. An apply can therefore
@@ -571,9 +573,11 @@ kv-platform and the jobs migrate job.
    idempotent: it creates what is missing (including the jobs identities and
    the jobs database on an install that predates them) and re-applies the
    current ACL posture without touching passwords or data.
-2. **Template apply** — the `helix_jobs` databases resource, the jobs
-   secrets, the jobs migrate job, the jobs container app and the edge /
-   portal jobs wiring land on the first `deployJobs=true` apply. The first
+2. **Template apply** — set `deployJobs=true` (in your params file, or
+   `--parameters deployJobs=true`). The jobs secrets, the jobs migrate job,
+   the jobs container app and the edge / portal jobs wiring land on the first
+   `deployJobs=true` apply; the `helix_jobs` database resource is declared on
+   every apply. The first
    such apply must compose the two DSNs from the bootstrap passwords
    (`HELIX_JOBS_DB_PASSWORD` / `HELIX_JOBS_MIGRATE_DB_PASSWORD`) and take the
    three signing roots from `HELIX_JOBS_EDGE_TO_JOBS_ROOT` /
@@ -996,6 +1000,10 @@ apps boot before the schema exists — they answer `/health` and fail real
 requests until the first migration lands. Expected on a fresh install, and
 invisible from outside: DNS isn't delegated until step 7.
 
+The background-jobs plane is off by default. To deploy it with this pass, add
+`deployJobs=true`; the apply then needs the `HELIX_JOBS_*` exports from step 2
+and creates the `<namePrefix>-jobs-migrate` job too. See "Background jobs".
+
 #### (Optional) the dev-gateway
 
 The opt-in dev-mode surface (`dev-api.<appsDomain>`) is off by default. To stand
@@ -1062,7 +1070,7 @@ in "Every migration" above (pin the image to the tag being deployed, start it,
 confirm the execution reports `Succeeded`). Apps that booted before the schema
 existed pick it up on their own; nothing needs restarting.
 
-With `deployJobs=true` (the default) the apply also created the
+With `deployJobs=true` the apply also created the
 `<namePrefix>-jobs-migrate` job — run it the same way, pinned to the same tag,
 so the jobs store's schema and queue policy are in place before anything
 submits work. See "Background jobs" above for the two jobs' relationship (the

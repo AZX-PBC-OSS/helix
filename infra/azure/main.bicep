@@ -7,7 +7,7 @@
 //   - four user-assigned identities with a least-privilege RBAC matrix (the
 //     fourth, dev-gateway, is idle unless deployDevGateway is set)
 //   - two ACA environments + the edge / portal / egress container apps, the
-//     helix-jobs app (internal ingress in the apps environment, default-on with
+//     helix-jobs app (internal ingress in the apps environment, opt-in with
 //     deployJobs), plus the opt-in dev-gateway (edge image, helix_dev role)
 //     when deployDevGateway=true
 //   - the public DNS zone for the apps domain
@@ -317,8 +317,8 @@ param deployApps bool = false
 @description('Opt-in dev-gateway (dev-mode design §3): the cross-origin dev surface on dev-api.<appsDomain>, run as helix_dev. Off by default — enabling it needs the helix_dev role + password (README step 4) and the pre-deploy riders in docs/features/dev-mode.md. Only takes effect together with deployApps=true.')
 param deployDevGateway bool = false
 
-@description('Deploy the background-jobs plane (ADR-0045): its private database provisioning is unconditional (an apply must never be able to delete the jobs store — a re-enabled jobs plane reuses its retained records), and this flag gates the jobs container app, the edge / dev-gateway / portal jobs wiring, and the kv-platform jobs DSN secrets + the jobs server\'s three signing roots + the <namePrefix>-jobs-migrate job (README "Background jobs"). Flip it off only to park the feature; the retained store stays.')
-param deployJobs bool = true
+@description('Deploy the background-jobs plane (ADR-0045): its private database provisioning is unconditional (an apply must never be able to delete the jobs store — a re-enabled jobs plane reuses its retained records), and this flag gates the jobs container app, the edge / dev-gateway / portal jobs wiring, and the kv-platform jobs DSN secrets + the jobs server\'s three signing roots + the <namePrefix>-jobs-migrate job (README "Background jobs"). Off by default: enabling the plane is an explicit operator step, and an enabled apply refuses to run without the jobs DSNs and signing roots. Flipping it back off parks the feature; the retained store stays.')
+param deployJobs bool = false
 
 @description('The `jobs` server\'s serving state (background-jobs design §8). `serving` advertises its types for new grants; `retiring` withdraws them from new-grant discovery and closes intake (new submissions are refused 503 jobs_disabled) while keeping every route, credential and the service itself, so retained jobs stay readable, cancellable, recoverable by their retry keys and cleaned up. Fully disabling the plane (deployJobs=false) is the step after retirement completes, never a substitute for it.')
 @allowed(['serving', 'retiring'])
@@ -739,9 +739,9 @@ var devDbConn = deployDevGateway
 //
 // The fail() guard is the safe default the platform DSNs predate (their
 // empty-password composition is a documented bootstrap hazard instead): an
-// existing install upgrades this template while in steady state — both jobs
-// params unset — and would otherwise silently write an unauthenticatable
-// empty-password DSN into the vault. The first jobs-enabled apply composes
+// existing install that opts in while in steady state — both jobs params
+// unset — would otherwise silently write an unauthenticatable empty-password
+// DSN into the vault. The first jobs-enabled apply composes
 // from the bootstrap passwords (or --parameters); steady state sources the
 // vault copies via az.getSecret() in the bicepparam.
 var jobsDbConn = deployJobs

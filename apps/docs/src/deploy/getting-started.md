@@ -264,7 +264,8 @@ RG=<rg> PREFIX=<namePrefix> infra/azure/scripts/create-roles.sh
 It reads the same `HELIX_*` variables you exported in step 3 — set all seven,
 including `HELIX_DEV_DB_PASSWORD` and the two `HELIX_JOBS_*` passwords. The
 `helix_dev` role is created even when the dev gateway stays off, and the jobs
-identities even on an install that parks the jobs plane (`deployJobs=false`):
+identities even on an install that leaves the jobs plane off (`deployJobs=false`,
+the default):
 the extra roles are harmless without their apps, and adding them later means
 re-running migrations to pick up their grants.
 
@@ -295,7 +296,12 @@ one under *Package settings → Change visibility*. To keep them private
 instead, pass a `registries` credential to the container apps (see the infra
 README).
 
-This pass also creates the two migrate jobs used in step 6. The apps boot
+The background-jobs plane is off by default. To deploy it in this pass, add
+`deployJobs=true` to `--parameters`; the apply then refuses to run without the
+`HELIX_JOBS_*` exports from step 3. See [Operating background
+jobs](/deploy/jobs).
+
+This pass also creates the migrate jobs used in step 6. The apps boot
 before the schema exists: they answer `/health` but fail real requests until
 step 6 lands. That is expected on a fresh install — nothing has been delegated
 in DNS yet, so nothing external can reach them.
@@ -308,18 +314,18 @@ with your own (they are literals by design — and keep every line: a parameter
 left unset falls back to composing a database DSN from an *empty* password,
 which the apply would then write into the vault). On a `deployDevGateway=true`
 install, also uncomment the `edgeDevDatabaseUrl` line — that secret exists only
-where the dev surface deploys. With the jobs plane on (the default), uncomment
-the five jobs lines too — the two jobs DSNs and the three signing roots; the
-apply refuses to run without them. The vault was created with
-`enabledForTemplateDeployment`, and your deploy principal needs
+where the dev surface deploys. With the jobs plane on (`deployJobs=true`), set
+it in the file and uncomment the five jobs lines too — the two jobs DSNs and
+the three signing roots; the apply refuses to run without them. The vault
+was created with `enabledForTemplateDeployment`, and your deploy principal needs
 `Microsoft.KeyVault/vaults/deploy/action` (Owner/Contributor include it) —
 nothing else has to change hands.
 
 ## Step 6: Run the first migration
 
-Two migration jobs were created by the apps apply: `<namePrefix>-migrate`
+The apps apply created the migration jobs: `<namePrefix>-migrate`
 (the platform schema, running the portal image) and — with the jobs plane
-enabled, which is the default — `<namePrefix>-jobs-migrate` (the jobs store's
+enabled (`deployJobs=true`) — `<namePrefix>-jobs-migrate` (the jobs store's
 own schema and queue policy, running the helix-jobs image). Both read their
 credentials from Key Vault with their own managed identities — no credential
 passes through your shell. Pin each to the tag being deployed, start it, and

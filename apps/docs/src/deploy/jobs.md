@@ -11,9 +11,11 @@ for the operator who runs it. It covers the states a server can be in, the
 procedures that move it between them without losing a job reference, how to
 read its health, and what has been measured about its capacity.
 
-The deployment definitions ship the plane on by default (`deployJobs=true`).
-Turning it on in a production install is your rollout decision; nothing on
-this page assumes it has happened.
+The plane is off by default (`deployJobs=false`). Turning it on is an
+explicit rollout step: set `deployJobs=true` and follow
+[Enable jobs on an existing installation](#enable-jobs-on-an-existing-installation).
+With it on, the apply refuses to run until the jobs passwords and signing
+roots are supplied.
 
 There is no administration UI for jobs, in production or locally. You diagnose
 the plane from health bodies, structured logs and the jobs API. The

@@ -52,6 +52,14 @@ param imageTag = readEnvironmentVariable('HELIX_IMAGE_TAG', 'latest')
 // (with deployApps) to stand up dev-api.<appsDomain>. Needs devDbPassword + the
 // helix_dev role (README step 4) and the pre-deploy riders in the feature doc.
 param deployDevGateway = false
+// Opt-in background-jobs plane (ADR-0045, README "Background jobs"). Off by
+// default; flip to true (with deployApps) to deploy it. Needs the jobs roles
+// (README step 4); the first true apply also needs the HELIX_JOBS_* passwords
+// and signing roots, and from then on the jobs az.getSecret() lines in
+// main.bicepparam. The apply refuses to run without them.
+param deployJobs = false
+// param jobsServerState = 'serving'   // 'retiring' withdraws the jobs types from new grants and closes intake (README "Background jobs")
+// param jobsIntakeOpen = true          // false closes intake on a serving server (README "Background jobs")
 
 // Egress firewall (ADR-0001/0005). true = deploy the Azure Firewall that enforces
 // the egress-only network zone (the PRIMARY SSRF/egress control). Secure default.

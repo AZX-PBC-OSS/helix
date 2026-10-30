@@ -35,6 +35,7 @@ function read(relativePath: string): string {
 }
 
 const MAIN = read("infra/azure/main.bicep");
+const PARAM = read("infra/azure/main.bicepparam");
 const KV_SECRETS = read("infra/azure/modules/kv-secrets.bicep");
 const JOBS_MIGRATE_JOB = read("infra/azure/modules/jobs-migrate-job.bicep");
 const JOBS_PACKAGE: { scripts?: Record<string, string> } = JSON.parse(
@@ -177,11 +178,16 @@ describe("main.bicep wires the jobs DSNs and the job", () => {
     ).not.toBeNull();
   });
 
-  it("deployJobs defaults to on — a stock apply deploys the capability", () => {
-    // A default of false would silently drop the jobs plane (its DSN secrets
-    // and its migrate job) from every fresh deployment; parking the feature
-    // is the operator's explicit flip, never the silent default.
-    expect(MAIN).toMatch(/param deployJobs bool = true/);
+  it("deployJobs defaults to off — enabling the plane is an explicit operator step", () => {
+    // With the plane on, the apply refuses to run until the jobs DSNs and
+    // signing roots are supplied. A default of true would make every existing
+    // install's routine apply fail on those guards before anyone opted in.
+    expect(MAIN).toMatch(/param deployJobs bool = false/);
+    for (const file of [PARAM, BOOTSTRAP_PARAMS]) {
+      expect(file, "the param files must state the opt-in explicitly").toMatch(
+        /^param deployJobs = false$/m,
+      );
+    }
   });
 
   it("a fully-disabled install composes neither DSN, so the vault lands no jobs secret", () => {

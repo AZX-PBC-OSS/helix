@@ -85,7 +85,7 @@ The deployment map (`EDGE_JOBS_CONFIG`, `PORTAL_JOBS_CONFIG`,
 `PORTAL_JOBS_CATALOGUE` and the jobs service's own env) is validated by
 `@azx-pbc/shared/jobsDeployment`. Each consumer receives only its own
 credentials. Locally, `scripts/stack-env.mjs` mints the whole plane for a
-stack, and `apps/jobs/README.md` covers running it. In Azure, `deployJobs`
+stack, and `apps/jobs/README.md` covers running it. In Azure, `deployJobs` (off by default)
 gates the plane and `infra/azure/README.md` describes the topology. With jobs
 fully disabled, the catalogue advertises nothing, the routes refuse, and
 ordinary hosting does not depend on jobs configuration.
