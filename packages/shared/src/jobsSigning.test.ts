@@ -15,6 +15,7 @@ import * as subpathVectors from "@azx-pbc/shared/jobsSigningVectors";
 import { JOBS_FETCH_QUALIFIED_TYPE } from "./jobs.js";
 import {
   buildJobsInternalResource,
+  confirmJobsInstructionBody,
   deriveJobsInstructionKey,
   JobsCancelClaimsSchema,
   JobsFetchCallbackClaimsSchema,
@@ -25,6 +26,7 @@ import {
   JobsSnapshotClaimsSchema,
   JobsSubmitClaimsSchema,
   JOBS_EMPTY_BODY,
+  JOBS_INSTRUCTION_BODY_PHASE_REJECT_REASONS,
   JOBS_INSTRUCTION_BURN_RETENTION_SECONDS,
   JOBS_INSTRUCTION_CLOCK_TOLERANCE_SECONDS,
   JOBS_INSTRUCTION_MAX_LIFETIME_SECONDS,
@@ -33,7 +35,9 @@ import {
   sha256BodyDigest,
   signJobsInstructionClaims,
   verifyJobsInstruction,
+  verifyJobsInstructionHeader,
   type JobsInstructionMintSpec,
+  type JobsInstructionPendingBody,
   type JobsInstructionVerifyResult,
 } from "./jobsSigning.js";
 import {
@@ -1008,5 +1012,230 @@ describe("the keyed-submit golden token", () => {
     if (verdict.ok && verdict.claims.operation === "submit") {
       expect(verdict.claims.idempotencyKey).toBe("retry-key-1");
     }
+  });
+});
+
+/**
+ * The two-phase path judged by the same corpus: the header phase alone, then
+ * the body phase over the header phase's pending verdict. A body-phase reason
+ * from the header phase (or the reverse) is a phase leak — the receiver that
+ * reads the body only after the header phase would then read it for a token
+ * that could never pass, or skip a check that belongs before the read.
+ */
+const BODY_PHASE_REASONS: readonly string[] = JOBS_INSTRUCTION_BODY_PHASE_REJECT_REASONS;
+
+async function verifyInTwoPhases(
+  token: string,
+  key: Uint8Array,
+  expected: Parameters<typeof verifyJobsInstruction>[2],
+  nowS: number,
+): Promise<JobsInstructionVerifyResult & { phase: "header" | "body" }> {
+  const header = await verifyJobsInstructionHeader(token, key, expected, nowS);
+  if (!header.ok) {
+    if (BODY_PHASE_REASONS.includes(header.reason)) {
+      throw new Error(`the header phase reported the body-phase reason "${header.reason}"`);
+    }
+    return { ...header, phase: "header" };
+  }
+  const body = confirmJobsInstructionBody(header.pending, {
+    body: expected.body,
+    ...(expected.idempotencyKeyHeader !== undefined
+      ? { idempotencyKeyHeader: expected.idempotencyKeyHeader }
+      : {}),
+  });
+  if (!body.ok && !BODY_PHASE_REASONS.includes(body.reason)) {
+    throw new Error(`the body phase reported the header-phase reason "${body.reason}"`);
+  }
+  return { ...body, phase: "body" };
+}
+
+const twoPhaseHarness: JobsSigningVectorHarness = {
+  ...referenceHarness,
+  async verify({ token, keyId, expected, nowS }) {
+    const verdict = await verifyInTwoPhases(token, vectorKey(keyId), expected, nowS);
+    return verdict.ok ? { ok: true } : { ok: false, reason: verdict.reason };
+  },
+};
+
+describe("two-phase verification", () => {
+  it("passes the whole minted corpus and the golden tokens through the header phase, then the body phase", async () => {
+    await expect(runJobsSigningVectors(twoPhaseHarness)).resolves.toBeUndefined();
+    await expect(
+      runJobsGoldenTokenVectors((input) => twoPhaseHarness.verify(input)),
+    ).resolves.toBeUndefined();
+  });
+
+  it("gives every vector the composed verifier's exact verdict, claims and jti included", async () => {
+    for (const vector of JOBS_SIGNING_VECTORS) {
+      let token = await signJobsInstructionClaims(
+        vector.sign.typ,
+        vector.sign.claims,
+        vectorKey(vector.sign.keyId),
+      );
+      if (vector.transform) token = implementJobsVectorTransform(token, vector.transform);
+      const key = vectorKey(vector.present.keyId);
+      const composed = await verifyJobsInstruction(
+        token,
+        key,
+        vector.present.expected,
+        vector.present.nowS,
+      );
+      const { phase, ...split } = await verifyInTwoPhases(
+        token,
+        key,
+        vector.present.expected,
+        vector.present.nowS,
+      );
+      expect(split, vector.name).toEqual(composed);
+      if (!composed.ok) {
+        expect(phase, vector.name).toBe(
+          BODY_PHASE_REASONS.includes(composed.reason) ? "body" : "header",
+        );
+      }
+    }
+  });
+
+  it("the body-binding vectors pass the header phase and fail the body phase", async () => {
+    const bodyVectors = JOBS_SIGNING_VECTORS.filter(
+      (v) => v.expect !== "accept" && BODY_PHASE_REASONS.includes(v.expect.reject),
+    );
+    // Each body-phase reason, and each direction's body binding, has a vector.
+    const reasons = new Set(bodyVectors.map((v) => (v.expect === "accept" ? "" : v.expect.reject)));
+    expect([...reasons].sort()).toEqual([...BODY_PHASE_REASONS].sort());
+    const operations = new Set(bodyVectors.map((v) => v.present.expected.operation));
+    for (const operation of ["submit", "snapshot", "fetch", "lifecycle"] as const) {
+      expect(operations.has(operation), operation).toBe(true);
+    }
+    for (const vector of bodyVectors) {
+      const token = await signJobsInstructionClaims(
+        vector.sign.typ,
+        vector.sign.claims,
+        vectorKey(vector.sign.keyId),
+      );
+      const header = await verifyJobsInstructionHeader(
+        token,
+        vectorKey(vector.present.keyId),
+        vector.present.expected,
+        vector.present.nowS,
+      );
+      expect(header.ok, vector.name).toBe(true);
+    }
+  });
+
+  it("the header phase never reads a body: it takes no body and its verdict carries no claims or jti", async () => {
+    const body = utf8.encode(SUBMIT_BODY);
+    const token = await mintJobsInstruction(
+      {
+        operation: "fetch",
+        server: SERVER,
+        identity: {
+          appId: APP_ID,
+          env: "dev",
+          ownerKind: "user",
+          ownerOid: OWNER_OID,
+          type: JOBS_FETCH_QUALIFIED_TYPE,
+        },
+        jobId: JOB_ID,
+        generation: "7",
+        body,
+        iatS: 1_800_000_000,
+      },
+      vectorKey("jobs-to-edge.jobs"),
+    );
+    const header = await verifyJobsInstructionHeader(
+      token,
+      vectorKey("jobs-to-edge.jobs"),
+      {
+        server: SERVER,
+        operation: "fetch",
+        method: JobsOperations.fetch.method,
+        resource: buildJobsInternalResource("fetch"),
+      },
+      1_800_000_000,
+    );
+    if (!header.ok) throw new Error(`the header phase refused: ${header.reason}`);
+    const pending = header.pending;
+
+    // Only the refusal facts are readable before the body phase.
+    expect(pending.operation).toBe("fetch");
+    expect(pending.env).toBe("dev");
+    expect(Object.keys(pending).sort()).toEqual(["env", "operation"]);
+    expect(JSON.stringify(pending)).not.toContain(APP_ID);
+    expect(JSON.stringify(pending)).not.toContain(JOB_ID);
+    expect(Object.isFrozen(pending)).toBe(true);
+    // @ts-expect-error -- the claims exist only on the body phase's verdict.
+    expect(pending.claims).toBeUndefined();
+    // @ts-expect-error -- the nonce exists only on the body phase's verdict.
+    expect(pending.jti).toBeUndefined();
+    // @ts-expect-error -- the header verdict has no claims either.
+    expect(header.claims).toBeUndefined();
+
+    const confirmed = confirmJobsInstructionBody(pending, { body });
+    expect(confirmed.ok).toBe(true);
+    if (confirmed.ok && confirmed.claims.operation === "fetch") {
+      expect(confirmed.claims.appId).toBe(APP_ID);
+      expect(confirmed.claims.jobId).toBe(JOB_ID);
+      expect(confirmed.jti.length).toBeGreaterThan(0);
+    }
+    expect(confirmJobsInstructionBody(pending, { body: utf8.encode("{}") })).toEqual({
+      ok: false,
+      reason: "body",
+    });
+  });
+
+  it("the body phase refuses a pending verdict the header phase did not mint", () => {
+    const forged = Object.freeze({
+      operation: "fetch",
+      env: "prod",
+    }) as unknown as JobsInstructionPendingBody;
+    expect(() => confirmJobsInstructionBody(forged, { body: JOBS_EMPTY_BODY })).toThrow(TypeError);
+    // A structurally complete forgery fails the type check as well as the
+    // runtime one: the brand is a unique symbol this module never exports.
+    // @ts-expect-error -- a plain object is not a pending verdict.
+    const plain: JobsInstructionPendingBody = { operation: "fetch", env: "prod" };
+    expect(() => confirmJobsInstructionBody(plain, { body: JOBS_EMPTY_BODY })).toThrow(TypeError);
+  });
+
+  it("the composed verifier still refuses a submit retry-key mismatch only after the body matches", async () => {
+    const body = utf8.encode(SUBMIT_BODY);
+    const token = await mintJobsInstruction(
+      {
+        operation: "submit",
+        server: SERVER,
+        identity: {
+          appId: APP_ID,
+          env: "prod",
+          ownerKind: "user",
+          ownerOid: OWNER_OID,
+          allowedTypes: [JOBS_FETCH_QUALIFIED_TYPE],
+        },
+        type: JOBS_FETCH_QUALIFIED_TYPE,
+        generation: "7",
+        idempotencyKey: "k-1",
+        body,
+        iatS: 1_800_000_000,
+      },
+      vectorKey("edge-to-jobs.jobs"),
+    );
+    const header = await verifyJobsInstructionHeader(
+      token,
+      vectorKey("edge-to-jobs.jobs"),
+      {
+        server: SERVER,
+        operation: "submit",
+        method: JobsOperations.submit.method,
+        resource: buildJobsInternalResource("submit"),
+      },
+      1_800_000_000,
+    );
+    if (!header.ok) throw new Error(`the header phase refused: ${header.reason}`);
+    expect(header.pending.env).toBe("prod");
+    expect(confirmJobsInstructionBody(header.pending, { body })).toEqual({
+      ok: false,
+      reason: "idempotency_key",
+    });
+    expect(
+      confirmJobsInstructionBody(header.pending, { body, idempotencyKeyHeader: "k-1" }).ok,
+    ).toBe(true);
   });
 });

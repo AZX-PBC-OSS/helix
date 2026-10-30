@@ -37,6 +37,14 @@ import {
  * complemented by the recorded golden tokens at the foot of this file
  * (`JOBS_GOLDEN_TOKEN_VECTORS`): literal wire bytes pinning the derivation
  * info, header profile and claim encoding per direction.
+ *
+ * Every vector judges the composed `verifyJobsInstruction` and the two-phase
+ * path (`verifyJobsInstructionHeader`, then `confirmJobsInstructionBody`)
+ * alike: the verdict and reason must agree, a reason in
+ * `JOBS_INSTRUCTION_BODY_PHASE_REJECT_REASONS` must come from the body phase
+ * after the header phase passed, and every other reason from the header
+ * phase. The body-binding vectors are the ones that pass the header phase
+ * and fail the body phase.
  */
 
 /** A fixed public root per (direction, server) pair — test data, never deployed. */
@@ -1113,6 +1121,72 @@ export const JOBS_SIGNING_VECTORS: readonly JobsSigningVector[] = [
     present: {
       keyId: "jobs-to-edge.jobs",
       expected: fetchExpectation({ body: utf8.encode(OTHER_SUBMIT_BODY) }),
+      nowS: IAT,
+    },
+    expect: { reject: "body" },
+  },
+  {
+    name: "a callback presented with no body is refused on the body binding",
+    why: "the header phase passes on the token alone — an empty body is still not the signed {url}, and only the body phase may say so",
+    sign: { typ: TYP.jobsToEdge, keyId: "jobs-to-edge.jobs", claims: fetchClaims() },
+    present: {
+      keyId: "jobs-to-edge.jobs",
+      expected: fetchExpectation({ body: JOBS_EMPTY_BODY }),
+      nowS: IAT,
+    },
+    expect: { reject: "body" },
+  },
+  {
+    name: "the lifecycle change is bound exactly",
+    why: "the {generation, archived} body is the change — swapping archive for reopen is a different instruction",
+    sign: { typ: TYP.portalToJobs, keyId: "portal-to-jobs.jobs", claims: lifecycleClaims() },
+    present: {
+      keyId: "portal-to-jobs.jobs",
+      expected: lifecycleExpectation({ body: utf8.encode(OPEN_BODY) }),
+      nowS: IAT,
+    },
+    expect: { reject: "body" },
+  },
+  {
+    name: "an expired callback with a swapped body reports the header verdict",
+    why: "the header phase runs first — a token that fails on its own never reaches the body comparison, so the reason is the header's",
+    sign: {
+      typ: TYP.jobsToEdge,
+      keyId: "jobs-to-edge.jobs",
+      claims: fetchClaims({ iat: IAT - 60, exp: IAT - 30 }),
+    },
+    present: {
+      keyId: "jobs-to-edge.jobs",
+      expected: fetchExpectation({ body: utf8.encode(OTHER_SUBMIT_BODY) }),
+      nowS: IAT,
+    },
+    expect: { reject: "expired" },
+  },
+  {
+    name: "a callback for another resource with a swapped body reports the resource",
+    why: "the resource binding is the header phase's last check and the body the body phase's first — the order holds across the split",
+    sign: {
+      typ: TYP.jobsToEdge,
+      keyId: "jobs-to-edge.jobs",
+      claims: fetchClaims({ resource: "/internal/jobs/v1/fetch-other" }),
+    },
+    present: {
+      keyId: "jobs-to-edge.jobs",
+      expected: fetchExpectation({ body: utf8.encode(OTHER_SUBMIT_BODY) }),
+      nowS: IAT,
+    },
+    expect: { reject: "resource" },
+  },
+  {
+    name: "a submit with a swapped body and a swapped retry key reports the body",
+    why: "the body comparison precedes the retry-key comparison inside the body phase",
+    sign: { typ: TYP.edgeToJobs, keyId: "edge-to-jobs.jobs", claims: submitClaims() },
+    present: {
+      keyId: "edge-to-jobs.jobs",
+      expected: submitExpectation({
+        body: utf8.encode(OTHER_SUBMIT_BODY),
+        idempotencyKeyHeader: "retry-key-2",
+      }),
       nowS: IAT,
     },
     expect: { reject: "body" },

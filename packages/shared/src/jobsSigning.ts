@@ -47,6 +47,15 @@ import {
  * fresh instruction carrying the original retry identity. The executable
  * positive/negative vectors for all of this live in `./jobsSigningVectors.ts`.
  *
+ * Verification has two phases because the token travels in a header and
+ * covers the body only through its `bodySha256` claim.
+ * {@link verifyJobsInstructionHeader} checks everything the token alone can
+ * prove, and {@link confirmJobsInstructionBody} checks the body bytes (and the
+ * submit retry key) against it. A receiver reachable by anonymous callers runs
+ * the header phase before it reads any body, so an unauthenticated request
+ * never makes it buffer one. {@link verifyJobsInstruction} is the two phases
+ * composed, for receivers that already hold the body.
+ *
  * Unlike the other internal-token seams — whose mint and verify halves live
  * in each plane (`apps/egress/src/instruction.ts` verifies what
  * `apps/edge/src/gateway/egressProvider.ts` mints; each plane holds an
@@ -590,16 +599,92 @@ export type JobsInstructionVerifyResult =
   | { ok: false; reason: JobsInstructionRejectReason };
 
 /**
+ * The reject reasons only the body phase ({@link confirmJobsInstructionBody})
+ * reports. Every other reason in {@link JOBS_INSTRUCTION_REJECT_REASONS} is
+ * decided by the header phase, so a receiver can tell which phase refused a
+ * presentation without a second vocabulary.
+ */
+export const JOBS_INSTRUCTION_BODY_PHASE_REJECT_REASONS = [
+  "body",
+  "idempotency_key",
+] as const satisfies readonly JobsInstructionRejectReason[];
+
+/**
+ * What the header phase checks: the receiver's server, the operation it
+ * serves, and the exact method and resource. The body bytes and the submit
+ * retry-key header belong to the body phase.
+ */
+export type JobsInstructionHeaderExpectation = Pick<
+  JobsInstructionExpectation,
+  "server" | "operation" | "method" | "resource"
+>;
+
+/** What the body phase checks against a header-verified instruction. */
+export interface JobsInstructionBodyPresentation {
+  /** The exact body bytes received — empty for the bodyless operations. */
+  readonly body: Uint8Array;
+  /** Submit only: the `Idempotency-Key` header as received, `null` when absent. */
+  readonly idempotencyKeyHeader?: string | null;
+}
+
+declare const pendingBodyBrand: unique symbol;
+
+/**
+ * A header-verified instruction whose body binding has not been checked yet.
+ *
+ * The signature, the protected header, the claim schema, the issuer, audience
+ * and server, the timestamps and the method/resource binding all passed. The
+ * body digest and the submit retry key did not run, so the claims are not yet
+ * an authorization: the request body could still be anything. The verdict
+ * therefore exposes only what a receiver may use to **refuse** before it reads
+ * the body — the operation it was verified for and the signed environment
+ * tier — and holds the claims and the `jti` where only
+ * {@link confirmJobsInstructionBody} can reach them. There is no other way to
+ * get usable claims, and no way to burn the nonce, from this value.
+ *
+ * Values are minted only by {@link verifyJobsInstructionHeader}; the body
+ * phase refuses (throws on) any object it did not mint.
+ */
+export interface JobsInstructionPendingBody {
+  readonly [pendingBodyBrand]: true;
+  /** The operation the header phase verified the token for. */
+  readonly operation: JobsOperationName;
+  /**
+   * The signed environment tier, for the operations that carry one (`null`
+   * for lifecycle). A receiver may refuse the wrong tier on it before the body
+   * read; it must not act on it.
+   */
+  readonly env: z.infer<typeof EnvSchema> | null;
+}
+
+/** The claims and nonce behind each pending verdict, reachable only through this module. */
+const PENDING_BODY_STATE = new WeakMap<
+  JobsInstructionPendingBody,
+  { readonly claims: JobsInstructionClaims; readonly jti: string }
+>();
+
+export type JobsInstructionHeaderVerifyResult =
+  | { ok: true; pending: JobsInstructionPendingBody }
+  | { ok: false; reason: JobsInstructionRejectReason };
+
+/**
  * Verify one instruction against what the receiver is serving — fail closed,
- * never throw: a malformed token is a verdict, not a crash. The order is
- * deterministic for the vectors: structure, signature (the one cryptographic
- * gate, via `compactVerify` — every claim rule below is this contract's own),
- * the protected-header profile, the claim shapes, issuer, audience, server,
- * the token's own timestamp discipline, lifetime, the receiver's clock
- * discipline, freshness, then the method/resource/body/idempotency bindings.
- * On success the verdict carries the validated `jti` alongside the claims:
- * the receiver burns it before any side effect, and the strict claim schemas
- * deliberately do not carry it among the job claims.
+ * never throw: a malformed token is a verdict, not a crash. This is the
+ * composition of the two phases, {@link verifyJobsInstructionHeader} and then
+ * {@link confirmJobsInstructionBody}, and its reasons and their order are
+ * exactly theirs: structure, signature (the one cryptographic gate, via
+ * `compactVerify` — every claim rule below is this contract's own), the
+ * protected-header profile, the claim shapes, issuer, audience, server, the
+ * token's own timestamp discipline, lifetime, the receiver's clock
+ * discipline, freshness, the method/resource bindings, then the
+ * body/idempotency bindings. On success the verdict carries the validated
+ * `jti` alongside the claims: the receiver burns it before any side effect,
+ * and the strict claim schemas deliberately do not carry it among the job
+ * claims.
+ *
+ * Use it when the body is already in hand. A receiver that can see the header
+ * before the body (the edge's public callback route) runs the phases itself so
+ * an unauthenticated caller never gets the body read.
  */
 export async function verifyJobsInstruction(
   token: string,
@@ -607,6 +692,33 @@ export async function verifyJobsInstruction(
   expected: JobsInstructionExpectation,
   nowS: number,
 ): Promise<JobsInstructionVerifyResult> {
+  const header = await verifyJobsInstructionHeader(token, key, expected, nowS);
+  if (!header.ok) return header;
+  return confirmJobsInstructionBody(header.pending, {
+    body: expected.body,
+    ...(expected.idempotencyKeyHeader !== undefined
+      ? { idempotencyKeyHeader: expected.idempotencyKeyHeader }
+      : {}),
+  });
+}
+
+/**
+ * The header phase: everything the token alone can prove. It runs the checks
+ * of {@link verifyJobsInstruction} in the same order up to and including the
+ * resource binding, and never reads a body.
+ *
+ * A success is a {@link JobsInstructionPendingBody}, not claims: the token is
+ * authentic and addressed to this receiver, but it authorizes nothing until
+ * {@link confirmJobsInstructionBody} has compared the received body with the
+ * signed digest. Read the body only after this phase passes, bounded, and
+ * burn the `jti` only after the body phase passes.
+ */
+export async function verifyJobsInstructionHeader(
+  token: string,
+  key: Uint8Array,
+  expected: JobsInstructionHeaderExpectation,
+  nowS: number,
+): Promise<JobsInstructionHeaderVerifyResult> {
   const segments = token.split(".");
   if (
     segments.length !== 3 ||
@@ -691,14 +803,44 @@ export async function verifyJobsInstruction(
 
   if (claims.method !== expected.method) return { ok: false, reason: "method" };
   if (claims.resource !== expected.resource) return { ok: false, reason: "resource" };
-  if (claims.bodySha256 !== sha256BodyDigest(expected.body)) {
+
+  const pending = Object.freeze({
+    operation: expected.operation,
+    env: "env" in claims ? claims.env : null,
+  }) as JobsInstructionPendingBody;
+  PENDING_BODY_STATE.set(pending, { claims, jti });
+  return { ok: true, pending };
+}
+
+/**
+ * The body phase: compare the received body with the signed digest and, for
+ * submit, the presented retry-key header with the signed claim. Only this
+ * function turns a {@link JobsInstructionPendingBody} into claims and a `jti`.
+ *
+ * It is synchronous and never throws for a presentation; the time checks
+ * stay with the header phase, so a slow body read cannot turn a verified
+ * header into an expired one. It throws only for a `pending` value that
+ * {@link verifyJobsInstructionHeader} did not mint, which is a programming
+ * error, never a verdict.
+ */
+export function confirmJobsInstructionBody(
+  pending: JobsInstructionPendingBody,
+  presented: JobsInstructionBodyPresentation,
+): JobsInstructionVerifyResult {
+  const state = PENDING_BODY_STATE.get(pending);
+  if (!state) {
+    throw new TypeError(
+      "confirmJobsInstructionBody was handed a pending verdict verifyJobsInstructionHeader did not mint",
+    );
+  }
+  const { claims, jti } = state;
+  if (claims.bodySha256 !== sha256BodyDigest(presented.body)) {
     return { ok: false, reason: "body" };
   }
   if (claims.operation === "submit") {
-    if (claims.idempotencyKey !== (expected.idempotencyKeyHeader ?? null)) {
+    if (claims.idempotencyKey !== (presented.idempotencyKeyHeader ?? null)) {
       return { ok: false, reason: "idempotency_key" };
     }
   }
-
   return { ok: true, claims, jti };
 }
