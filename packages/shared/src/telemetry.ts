@@ -709,8 +709,9 @@ export type JobsSubmissionOutcome = (typeof JOBS_SUBMISSION_OUTCOMES)[number];
  *
  * - `disabled` — the callback is not wired (no configured servers, or the
  *   fetch machinery/ledger/burn store is unconfigured): 503, fail closed.
- * - `rejected` — instruction verification failed (401); the bounded reject
- *   reason rides `helix.reason`, never a dimension.
+ * - `rejected` — instruction verification failed (401), in the header phase
+ *   before the body is read or in the body phase (`helix.reason` = `body`);
+ *   the bounded reject reason rides `helix.reason`, never a dimension.
  * - `replayed` — verified but the nonce was already spent: 401 before any
  *   effect (the burn caught the replay).
  * - `unavailable` — the burn store could not answer: 503, denied without a
@@ -721,7 +722,8 @@ export type JobsSubmissionOutcome = (typeof JOBS_SUBMISSION_OUTCOMES)[number];
  * - `payload_invalid` — the presented body was unreadable, or verified and
  *   turned out not to be a `{url}` fetch input: 400.
  * - `payload_too_large` — the presented body over the platform's input bound:
- *   413, before verification.
+ *   413. The body is read only after the instruction header verifies, so an
+ *   unauthenticated request is `rejected` instead.
  * - `forbidden` — a fetch-policy denial that is not the delegated one
  *   (unknown/archived app, stale lifecycle generation, origin not granted):
  *   403 `outbound_forbidden`; the core's denial reason rides `helix.reason`.

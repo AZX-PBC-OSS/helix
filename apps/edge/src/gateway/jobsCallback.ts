@@ -9,11 +9,12 @@ import {
   type JobRequestError,
 } from "@azx-pbc/shared";
 import {
+  confirmJobsInstructionBody,
   JobsOperations,
-  verifyJobsInstruction,
+  verifyJobsInstructionHeader,
   type JobsFetchCallbackClaims,
+  type JobsInstructionPendingBody,
   type JobsInstructionRejectReason,
-  type JobsInstructionVerifyResult,
 } from "@azx-pbc/shared/jobsSigning";
 import {
   ATTR_APP_ID,
@@ -49,21 +50,31 @@ import { instruments, spanRoute } from "../telemetry.js";
  * permission, credential binding, budget and ledger semantics can never drift
  * between the two callers.
  *
- * The gate order is the contract:
+ * The gate order is the contract. The route is reachable from the internet
+ * (the edge's ingress is per app, not per path), so nothing about an
+ * unauthenticated request is read before the header verifies — not even its
+ * body:
  *
- * 1. **Verification** — the token must verify against SOME configured server's
- *    jobs→edge key with the fetch operation's exact method/resource/body
- *    binding (each candidate verify pins `server` to that key's own server, so
- *    a token minted by one server verifies only against that server's root —
- *    the signature, never an unverified claim, selects the key). Nothing about
- *    the request is trusted before this: no URL, no header, no body meaning.
- * 2. **Tier** — a verified instruction for the opposite environment tier is
- *    refused WITHOUT consuming its nonce: the production edge and the dev
- *    gateway are separate nonce spaces and separate registries, and a
- *    misrouted token must stay usable at its own tier's receiver.
- * 3. **Burn** — the `jti` is consumed before any side effect, so a replay is
+ * 1. **Presentation** — a request target with a query or fragment is not a
+ *    presentation of the signed resource; refused.
+ * 2. **Header verification** — the token must verify against SOME configured
+ *    server's jobs→edge key with the fetch operation's exact method and
+ *    resource (`verifyJobsInstructionHeader`; each candidate pins `server`
+ *    to that key's own server, so a token minted by one server verifies only
+ *    against that server's root — the signature, never an unverified claim,
+ *    selects the key). No URL, header or body is trusted before this, and
+ *    the body is not read.
+ * 3. **Tier** — a header-verified instruction for the opposite environment
+ *    tier is refused WITHOUT reading the body or consuming its nonce: the
+ *    production edge and the dev gateway are separate nonce spaces and
+ *    separate registries, and a misrouted token must stay usable at its own
+ *    tier's receiver.
+ * 4. **Body** — only now the body is read, bounded by the job input bound,
+ *    and compared with the signed digest (`confirmJobsInstructionBody`). A
+ *    mismatch is refused without consuming the nonce.
+ * 5. **Burn** — the `jti` is consumed before any side effect, so a replay is
  *    refused across replicas and restarts (the store's RLS-partitioned table).
- * 4. **Dispatch** — the current registry entry resolved by the SIGNED app id;
+ * 6. **Dispatch** — the current registry entry resolved by the SIGNED app id;
  *    unknown and archived apps refuse; the `{url}` body parse is the first
  *    thing that reads the verified bytes for meaning; then
  *    `runFetchPolicy` fences the signed lifecycle generation against the
@@ -80,6 +91,14 @@ import { instruments, spanRoute } from "../telemetry.js";
  * timeout hang up this request, and the client-gone abort takes the egress
  * forward down with it.
  */
+
+/**
+ * The callback's request-body bound. The signed body is jobs' re-serialized
+ * `{url}` (`apps/jobs/src/fetchJob.ts`) of an input the submission admitted
+ * at no more than the job input bound, and re-serializing never grows it, so
+ * every body a jobs server can sign fits.
+ */
+export const JOBS_CALLBACK_MAX_BODY_BYTES = JOBS_MAX_INPUT_BYTES;
 
 /** Everything the receiver needs, composed once per process (see `app.ts`). */
 export interface JobsCallbackRuntime {
@@ -170,6 +189,14 @@ export function makeJobsFetchCallbackHandler(
       trace.getActiveSpan()?.setAttributes(attrs);
       instruments().jobsCallbacks.add(1, { [ATTR_OUTCOME]: outcome });
     };
+    const rejectVerification = (reason: JobsInstructionRejectReason): void => {
+      setOutcome("rejected", reason);
+      req.log.warn(
+        { event: "edge.jobs_callback.rejected", reason },
+        "the callback instruction failed verification — denied",
+      );
+      sendCallbackError(reply, 401, jobRequestError("unauthorized"));
+    };
 
     // Unwired is a designed answer, not an absence: no configured servers (or
     // no fetch machinery/ledger/burn store) refuses fail-closed, and the
@@ -192,28 +219,16 @@ export function makeJobsFetchCallbackHandler(
       return;
     }
 
-    // The exact body bytes, bounded: the instruction binds their digest, so
-    // nothing may parse or normalize them first — and a body the contract
-    // refuses is never read past the trip, forwarded, or held.
-    const bounded = await readBoundedBody(req.raw, JOBS_MAX_INPUT_BYTES);
-    if (bounded.over) {
-      setOutcome("payload_too_large");
-      sendCallbackError(reply, 413, jobRequestError("payload_too_large"));
-      return;
-    }
-    if (bounded.failed) {
-      setOutcome("payload_invalid");
-      sendCallbackError(reply, 400, jobRequestError("payload_invalid"));
-      return;
-    }
-
-    // Instruction verification. The header must be one string (a repeated
-    // line is an unusable presentation, never a token); the token must verify
-    // against a CONFIGURED server's jobs→edge key with the fetch operation's
-    // own method/resource/body — each attempt pins the expectation to that
-    // key's server, so the signature is what selects the key and an unverified
-    // claim can never supply a URL, key or authority. A wrong-server token
-    // fails every attempt and answers the same refusal.
+    // The header phase of instruction verification, before a single body
+    // byte is read: this route is reachable from the internet, and the token
+    // in the header is all an anonymous caller can be refused on. The header
+    // must be one string (a repeated line is an unusable presentation, never
+    // a token); the token must verify against a CONFIGURED server's jobs→edge
+    // key with the fetch operation's own method and resource — each attempt
+    // pins the expectation to that key's server, so the signature is what
+    // selects the key and an unverified claim can never supply a URL, key or
+    // authority. A wrong-server token fails every attempt and answers the
+    // same refusal.
     const header = req.headers[INSTRUCTION_HEADER];
     if (header === undefined || (typeof header === "string" && header.length === 0)) {
       setOutcome("rejected", "missing");
@@ -229,10 +244,10 @@ export function makeJobsFetchCallbackHandler(
     // timestamps carry; `mintJobsInstruction` refuses a non-finite reading on
     // the minting side, and the verifier refuses one here.
     const nowS = Math.floor(Date.now() / 1_000);
-    let verdict: Extract<JobsInstructionVerifyResult, { ok: true }> | null = null;
+    let pending: JobsInstructionPendingBody | null = null;
     let rejectReason: JobsInstructionRejectReason | null = null;
     for (const [server, key] of rt.verificationKeys) {
-      const attempt = await verifyJobsInstruction(
+      const attempt = await verifyJobsInstructionHeader(
         header,
         key,
         {
@@ -240,23 +255,64 @@ export function makeJobsFetchCallbackHandler(
           operation: "fetch",
           method: JobsOperations.fetch.method,
           resource: JobsOperations.fetch.path,
-          body: bounded.bytes,
         },
         nowS,
       );
       if (attempt.ok) {
-        verdict = attempt;
+        pending = attempt.pending;
         break;
       }
       rejectReason = attempt.reason;
     }
-    if (!verdict) {
-      setOutcome("rejected", rejectReason ?? "signature");
-      req.log.warn(
-        { event: "edge.jobs_callback.rejected", reason: rejectReason ?? "signature" },
-        "the callback instruction failed verification — denied",
-      );
-      sendCallbackError(reply, 401, jobRequestError("unauthorized"));
+    if (!pending) {
+      rejectVerification(rejectReason ?? "signature");
+      return;
+    }
+
+    // Tier refusal, BEFORE the body read and the burn: the two receivers are
+    // separate nonce spaces, so a token presented at the wrong tier must stay
+    // consumable at its own. (The burn store's RLS pin is the durable
+    // backstop — this check is what keeps a misrouted token from being
+    // spent.) The signed tier is the one claim the header phase exposes, and
+    // only for refusing.
+    if (pending.env !== rt.env) {
+      setOutcome("wrong_tier");
+      sendCallbackError(reply, 403, jobRequestError("forbidden"));
+      return;
+    }
+
+    // Only now the body: the exact bytes, bounded, because the instruction
+    // binds their digest and nothing may parse or normalize them first. The
+    // bound is the job input bound — the signed body is jobs' re-serialized
+    // `{url}` of an input the submission admitted at most that size — so a
+    // body the minter could have signed always fits, and a larger one is
+    // refused at the trip without being read further or held. A truthful
+    // oversized content-length is refused without reading at all.
+    const declared = Number(req.headers["content-length"]);
+    if (Number.isFinite(declared) && declared > JOBS_CALLBACK_MAX_BODY_BYTES) {
+      setOutcome("payload_too_large");
+      sendCallbackError(reply, 413, jobRequestError("payload_too_large"));
+      return;
+    }
+    const bounded = await readBoundedBody(req.raw, JOBS_CALLBACK_MAX_BODY_BYTES);
+    if (bounded.over) {
+      setOutcome("payload_too_large");
+      sendCallbackError(reply, 413, jobRequestError("payload_too_large"));
+      return;
+    }
+    if (bounded.failed) {
+      setOutcome("payload_invalid");
+      sendCallbackError(reply, 400, jobRequestError("payload_invalid"));
+      return;
+    }
+
+    // The body phase: the received bytes against the signed digest. Only its
+    // verdict carries the claims and the `jti`, so nothing below can act on
+    // a token whose body was never compared. A mismatch spends no nonce: the
+    // token was never presented with the body it names.
+    const verdict = confirmJobsInstructionBody(pending, { body: bounded.bytes });
+    if (!verdict.ok) {
+      rejectVerification(verdict.reason);
       return;
     }
     // The claims are narrowed at the seam, not cast: the receiver verified
@@ -276,16 +332,6 @@ export function makeJobsFetchCallbackHandler(
       [ATTR_JOBS_GENERATION]: claims.generation,
       [ATTR_JOBS_TYPE]: claims.type,
     });
-
-    // Tier refusal, BEFORE the burn: the two receivers are separate nonce
-    // spaces, so a token presented at the wrong tier must stay consumable at
-    // its own. (The burn store's RLS pin is the durable backstop — this check
-    // is what keeps a misrouted token from being spent.)
-    if (claims.env !== rt.env) {
-      setOutcome("wrong_tier");
-      sendCallbackError(reply, 403, jobRequestError("forbidden"));
-      return;
-    }
 
     // The nonce burn — replay protection before any effect, exactly the jobs
     // receiver's discipline: a store that cannot answer denies without a

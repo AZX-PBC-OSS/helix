@@ -53,9 +53,12 @@ asset path.
 
 Platform hosts also expose the signed jobs→edge fetch callback,
 `POST /internal/jobs/v1/fetch` (background-jobs-plane design §2): an executing
-job presents its signed instruction; the edge verifies it against the calling
-server's jobs→edge root, refuses the opposite environment tier without
-spending its nonce, burns the `jti` in `jobs_callback_jti` (replay protection
+job presents its signed instruction; the edge verifies the instruction header
+against the calling server's jobs→edge root **before reading the body** (the
+route is internet-reachable, so an unauthenticated caller is refused 401 with
+no body read), refuses the opposite environment tier without spending its
+nonce, reads the body bounded by the job input bound and checks it against the
+signed digest, burns the `jti` in `jobs_callback_jti` (replay protection
 across replicas and restarts), then dispatches one outbound GET through the
 same fetch policy the browser `/_api/fetch` route uses — current registry
 entry by the signed app id, generation fence, origin allowlist, delegated

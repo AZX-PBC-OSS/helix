@@ -164,9 +164,10 @@ describe("the callback receiver's input bounds", () => {
     await h.app.close();
   });
 
-  it("refuses one byte past the input bound before verification — no nonce spent, no burn", async () => {
-    // The sharpest off-by-one: one past the bound. The refusal precedes the
-    // burn in the gate order (nothing unverifiable may consume a nonce), so a
+  it("refuses one byte past the input bound after the header verifies — no nonce spent, no burn", async () => {
+    // The sharpest off-by-one: one past the bound, under a token whose header
+    // verifies (only then is the body read at all). The refusal precedes the
+    // body phase and the burn (nothing unverified may consume a nonce), so a
     // regression that reordered the gates — or moved the cap a byte — turns
     // this red either way.
     const payload = bodyOfLength(JOBS_MAX_INPUT_BYTES + 1);

@@ -513,7 +513,8 @@ describe("POST /internal/jobs/v1/fetch — instructions that cannot dispatch", (
     expect(h.egress.calls).toHaveLength(0);
     await h.app.close();
 
-    // Over the input bound: refused before verification (nothing holds it).
+    // Over the input bound: the header verified, so the body is read — and
+    // refused at the bound before the body phase, with no nonce spent.
     const over = buildCallbackEdge();
     const huge = Buffer.from(
       JSON.stringify({ url: `https://api.github.com/${"a".repeat(66_000)}` }),
@@ -524,6 +525,7 @@ describe("POST /internal/jobs/v1/fetch — instructions that cannot dispatch", (
     expect(overAnswer.status).toBe(413);
     expect(isJobsError(overAnswer.json, "payload_too_large")).toBe(true);
     expect(over.egress.calls).toHaveLength(0);
+    expect(over.burns.burned).toHaveLength(0);
     await over.app.close();
   });
 

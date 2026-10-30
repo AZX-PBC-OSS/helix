@@ -300,13 +300,17 @@ looked up:
   seam's verdicts — verification failed, the nonce was spent, the burn store
   could not answer), `wrong_tier` (verified for the opposite environment
   tier — refused before the burn, so the token stays usable at its own
-  receiver), `payload_invalid` / `payload_too_large` (the presented body), and
+  receiver), `payload_invalid` / `payload_too_large` (the presented body —
+  read only after the instruction header verifies, so an unauthenticated
+  request is `rejected`, never `payload_too_large`; a body that fails the
+  signed digest is `rejected` with `helix.reason` = `body`), and
   once the dispatch runs `forbidden` (unknown/archived app, stale lifecycle
   generation, ungranted origin — the core's denial reason rides
   `helix.reason`), `delegated_unattended`, `quota_blocked`, `dispatched`
   (the upstream 2xx streamed), `upstream_refused` / `upstream_failed` (the
   bounded `upstream_error` refusals). The verified app id, job id, generation
-  and type ride the span; the target URL, its path and query, the token, the
+  and type ride the span once the body phase has verified the instruction (a
+  `rejected` or `wrong_tier` span carries none); the target URL, its path and query, the token, the
   claims' owner oid and the upstream body never do (pinned by
   `gateway/jobsCallback.test.ts`'s telemetry scan).
 - The `helix.jobs.execute` span (the worker's attempt) carries `helix.outcome`

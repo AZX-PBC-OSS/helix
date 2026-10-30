@@ -71,9 +71,14 @@ enforces the absolute deadline: 60 minutes, or five for `jobs:fetch`
 
 **The fetch job does not make the call itself.** `fetchJob.ts` mints a
 jobs→edge instruction bound to the job's identity and the `{url}` digest. The
-edge receiver (`apps/edge/src/gateway/jobsCallback.ts`) checks the signed
-lifecycle generation against the registry, then runs the same fetch-policy core
-the browser path uses with unattended authority. That core applies the
+edge receiver (`apps/edge/src/gateway/jobsCallback.ts`) is reachable from the
+internet, so it verifies the instruction header before it reads the body:
+query/fragment refusal, header verification against the configured servers'
+keys, the environment-tier refusal, then the bounded body read and the digest
+check, then the nonce burn. An unauthenticated caller gets 401 without the edge
+reading its body. The receiver then checks the signed lifecycle generation
+against the registry and runs the same fetch-policy core the browser path uses
+with unattended authority. That core applies the
 allowlist, budget, secret injection through egress and SSRF controls. Origins
 that use delegated user credentials are refused with no keyless fallback.
 

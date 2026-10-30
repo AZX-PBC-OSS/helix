@@ -174,7 +174,25 @@ a legitimate HTTP retry uses a fresh token and the same retry key and payload. A
 
 The public edge's jobs callback route always requires signature verification,
 even on a platform host or when dev auth bypass is enabled. Do not trust Host,
-source IP or a caller-supplied trace as proof of service identity. The newer
+source IP or a caller-supplied trace as proof of service identity.
+
+Because the route is reachable from the internet, the edge verifies the
+instruction header before it reads the body. The token binds the body only
+through its `bodySha256` claim, so verification has two phases
+(`verifyJobsInstructionHeader`, then `confirmJobsInstructionBody`). The
+callback's gate order is:
+
+1. Refuse a query string or fragment in the request target.
+2. Require exactly one instruction header.
+3. Run the header phase against each configured server's jobs→edge key.
+4. Refuse the opposite environment tier, without spending the nonce.
+5. Read the body, bounded by the 64 KiB job input bound.
+6. Run the body phase against the signed digest. A mismatch spends no nonce.
+7. Burn the `jti`.
+8. Resolve the registry entry, parse `{url}` and run the fetch policy.
+
+An anonymous request is therefore refused with 401 before any body byte is
+read. The newer
 consent code provides signing and deployment precedents, but its payload-free,
 no-burn JWT contract is not sufficient for these operations.
 
