@@ -10,7 +10,8 @@ an app's code is safe.
 
 ## The services
 
-Three services separate public traffic, administration, and outbound requests:
+Four deployed services separate public traffic, administration, outbound requests, and
+background work (`apps/dev-idp` is local only):
 
 | Service        | Responsibilities                                                                                                 | Restrictions                                                                                          |
 | -------------- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |

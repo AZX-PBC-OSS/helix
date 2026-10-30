@@ -41,8 +41,8 @@ param azxCliClientId = readEnvironmentVariable('HELIX_AZX_CLI_CLIENT_ID', '')
 param azxWebClientId = readEnvironmentVariable('HELIX_AZX_WEB_CLIENT_ID', '')
 
 // Phase gate. Leave false for the first apply (infra only), flip to true once the
-// images are published to GHCR (CI builds edge / portal / egress / certbot; push
-// helix-jobs manually — see README step 3).
+// images are published to GHCR (CI builds edge / portal / egress / certbot /
+// jobs — see README step 3).
 param deployApps = false
 // GHCR registry + owner for the CI-built images. Override for a fork.
 param imageRegistry = readEnvironmentVariable('HELIX_IMAGE_REGISTRY', 'ghcr.io/azx-pbc-oss')
