@@ -7,8 +7,9 @@ the edge gateway (`/_api/*`). The LLM proxy landed in M4; `chatbot` exercises it
 `waitlist` exercises the app-data gateway, `oversell` exercises its write-concurrency
 contract (ADR-0041), `github-stars` exercises the CSP origin-grant approval loop,
 `fetch-proxy` exercises the M4.5 fetch-proxy + secret-backed connections + transparent
-shim, `oauth-demo` exercises the M4.5 delegated OAuth connections (ADR-0031), and
-`offline` exercises the offline capability (ADR-0035).
+shim, `oauth-demo` exercises the M4.5 delegated OAuth connections (ADR-0031),
+`offline` exercises the offline capability (ADR-0035), and `background-fetch`
+exercises background jobs (ADR-0045).
 
 | App                              | What it shows                                                                                         |
 | -------------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -23,6 +24,7 @@ shim, `oauth-demo` exercises the M4.5 delegated OAuth connections (ADR-0031), an
 | [`helix-help`](./helix-help)     | A docs-grounded chatbot: loads the public docs site at runtime through the fetch-proxy and answers over the OpenAI-compatible surface — no key, no RAG. |
 | [`offline`](./offline)           | Cold-boots with no network via the platform's scope-confined service worker, and shows what the app still owns. |
 | [`asana-report`](./asana-report) | Asana project activity → an AI-written report: delegated OAuth consent (`window.helix.connect`), provider-bound proxy calls, the LLM gateway, and shared prefix grants + the list verb. |
+| [`background-fetch`](./background-fetch) | Background jobs (`jobs:fetch`): start a batch, close the tab, come back to results. Retry keys, cancellation, and a failure lab for each error code. |
 
 Each app is a **standalone project** built with [Vite](https://vite.dev) — they
 are deliberately *not* part of the pnpm workspace, since they model the

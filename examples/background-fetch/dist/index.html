@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f766e" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>Background fetch</title>
+    <script type="module" crossorigin src="./assets/index-mf3RBcRq.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-5BarIJ-H.css">
+  </head>
+  <body>
+    <main id="app">
+      <header>
+        <p class="kicker">Helix background jobs</p>
+        <h1>Start it, close the tab, come back.</h1>
+        <p class="tagline">
+          Each button starts a batch of <code>jobs:fetch</code> jobs. The platform makes each
+          request on your behalf after this page's request has ended, so the work keeps going when
+          you close the tab. The page only remembers which jobs it started, in your private data
+          store, so you can come back here or on another device.
+        </p>
+        <p id="whoami" class="muted"></p>
+      </header>
+
+      <div id="banner" aria-live="polite"></div>
+
+      <nav class="tabs" role="tablist">
+        <button id="tab-weather" role="tab" type="button">Weather snapshot</button>
+        <button id="tab-slow" role="tab" type="button">Slow batch</button>
+        <button id="tab-lab" role="tab" type="button">Failure lab</button>
+      </nav>
+
+      <section id="panel-weather" class="card" role="tabpanel">
+        <p>
+          Fetch a three-day forecast for eight cities from Open-Meteo, one job per city. The table
+          fills in as the jobs finish.
+        </p>
+        <button id="start-weather" type="button">Fetch eight forecasts</button>
+      </section>
+
+      <section id="panel-slow" class="card" role="tabpanel" hidden>
+        <p>
+          Eight jobs that each wait ten seconds for an answer. The platform runs at most two jobs at
+          a time for an app, so the batch takes about 40 seconds. Start it, close the tab, and
+          reopen the app after a minute.
+        </p>
+        <button id="start-slow" type="button">Start the slow batch</button>
+      </section>
+
+      <section id="panel-lab" class="card" role="tabpanel" hidden>
+        <p>
+          Seven jobs, each built to end a particular way: a cancellation, an upstream error, a
+          redirect, a non-JSON answer, an oversized answer, and an origin the app has no grant for.
+          Each row shows what the platform promises next to what actually happened.
+        </p>
+        <button id="start-lab" type="button">Run the failure lab</button>
+        <div class="probes">
+          <p class="muted">
+            Submission probes. These answer immediately and don't use the run history.
+          </p>
+          <div class="row">
+            <button id="probe-retry" type="button" class="ghost">Reuse a retry key</button>
+            <button id="probe-throttle" type="button" class="ghost">
+              Hit the submission window
+            </button>
+          </div>
+          <p class="muted small">
+            The window probe fills the app's per-minute submission allowance on purpose, so jobs you
+            start in the next minute wait before they are submitted.
+          </p>
+          <pre id="probe-out" class="probe-out" aria-live="polite"></pre>
+        </div>
+      </section>
+
+      <div id="hint" aria-live="polite"></div>
+
+      <section>
+        <h2>Your runs</h2>
+        <p id="runs-empty" class="muted">No runs yet. Start one above.</p>
+        <div id="runs"></div>
+      </section>
+
+      <details class="card">
+        <summary>
+          Exchange log <span class="muted">— what this page sent, and the answers</span>
+        </summary>
+        <pre id="log" class="log"></pre>
+      </details>
+    </main>
+  </body>
+</html>
