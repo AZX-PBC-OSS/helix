@@ -144,11 +144,13 @@ export class JobsExecutionError extends Error {
 }
 
 /**
- * Thrown when the attempt must not run and the runner row must not complete:
- * the worker-start gate refused (the lifecycle generation is not eligible), or
- * the record was already terminal. The throw settles the runner row through
- * its own retry policy; the wrapper record stays untouched and its outcome —
+ * Thrown when the attempt must not run and the runner row must not complete.
+ * When the gate refused an ineligible lifecycle generation, the throw settles
+ * the runner row through its own retry policy and the record's outcome —
  * cancellation of closed-generation work — belongs to the recovery paths.
+ * When the record is already terminal (or the gate just made it terminal),
+ * the worker cancels the claim's runner row first, so the retry policy never
+ * re-claims work that can only be refused again.
  */
 export class JobsStartRefused extends Error {
   constructor(reason: string) {
@@ -320,12 +322,13 @@ export interface JobsAttemptRecord {
 
 /**
  * What one attempt's begin decided. `started` hands back the record and the
- * attempt number the projection wrote; the refusals leave the record
- * untouched and the claim to the runner's own retry policy — except the
- * deadline refusal and the cancellation refusal, which terminate the record
- * themselves (their outcomes committed in the same transaction that decided
- * them, so recovery never authorizes execution past the deadline and never
- * re-runs cancelled work).
+ * attempt number the projection wrote. The gate refusal leaves the record
+ * untouched and the claim to the runner's own retry policy. The deadline
+ * refusal and the cancellation refusal terminate the record themselves
+ * (their outcomes committed in the same transaction that decided them, so
+ * recovery never authorizes execution past the deadline and never re-runs
+ * cancelled work); for those and for `terminal_fenced`, the worker cancels
+ * the claim's runner row so it is not retried.
  */
 export type BeginAttemptVerdict =
   | { verdict: "started"; record: JobsAttemptRecord; attempt: number }
@@ -554,9 +557,9 @@ export class JobsExecutionStore {
         // the acceptance-to-close bound, so this attempt must not run. The
         // gate terminates the record here — the timeout outcome committed in
         // the same transaction that decided it — rather than leaving it to
-        // the sweeper's next pass, and the claim settles through the runner's
-        // own retry policy (spec criterion 24: recovery never authorizes
-        // execution after the deadline).
+        // the sweeper's next pass, and the worker then cancels the claim's
+        // runner row (spec criterion 24: recovery never authorizes execution
+        // after the deadline).
         if (deadlinePassed(row.created_at, jobsAbsoluteDeadline(row.type, this.typePolicies))) {
           const terminated = await terminatePastDeadline(client, row.server, row.job_id);
           await client.query("COMMIT");
@@ -607,9 +610,8 @@ export class JobsExecutionStore {
           // still non-terminal and carrying the intent gets its terminal
           // `cancelled` outcome committed HERE, in the transaction that
           // discovered the race — the handler never runs, and the claim's
-          // settle through the runner's own retry policy can never leave a
-          // code-less failed row for the recovery path to mislabel as a
-          // platform crash. The intent's projection is conditional like
+          // settle can never leave a code-less failed row for the recovery
+          // path to mislabel as a platform crash. The intent's projection is conditional like
           // every terminal write: a competing outcome committing inside
           // this second gap loses it, and the fence's original answer
           // stands.
@@ -1009,6 +1011,7 @@ export class JobsExecution {
       );
       span.setAttribute(ATTR_OUTCOME, "deadline_exceeded" satisfies JobsExecuteOutcome);
       countExecution("deadline_exceeded");
+      await this.settleRefusedStart(boss, job);
       throw new JobsStartRefused("the job's absolute deadline has passed");
     }
     if (begun.verdict === "terminal_fenced") {
@@ -1018,6 +1021,7 @@ export class JobsExecution {
       );
       span.setAttribute(ATTR_OUTCOME, "terminal_fenced" satisfies JobsExecuteOutcome);
       countExecution("terminal_fenced");
+      await this.settleRefusedStart(boss, job);
       throw new JobsStartRefused(
         "the record was already terminal or carries a durable cancellation",
       );
@@ -1039,6 +1043,7 @@ export class JobsExecution {
       );
       span.setAttribute(ATTR_OUTCOME, "cancelled" satisfies JobsExecuteOutcome);
       countExecution("cancelled");
+      await this.settleRefusedStart(boss, job);
       throw new JobsStartRefused("the job's cancellation was recorded before this attempt");
     }
     const { record, attempt } = begun;
@@ -1297,6 +1302,28 @@ export class JobsExecution {
     span.setAttribute(ATTR_OUTCOME, "failed" satisfies JobsExecuteOutcome);
     span.setAttribute(ATTR_REASON, projectedCode);
     countExecution("failed");
+  }
+
+  /**
+   * Settle the runner row of a start the gate refused because the record is
+   * terminal. A fenced `cancel` is used rather than `fail`: pg-boss's `fail`
+   * re-queues while retries remain, so a type with `retryLimit > 0` would be
+   * re-claimed and refused again. The fence (`{id, retryCount}`) leaves a
+   * newer attempt's claim alone. The record is already terminal, so the
+   * recovery sweeper never reads this row. A failed cancel is logged and
+   * left to the worker loop's own fail, which is the previous behavior.
+   */
+  private async settleRefusedStart(boss: PgBoss, job: JobWithMetadata<unknown>): Promise<void> {
+    try {
+      settledAffected(
+        await boss.cancel(JOBS_QUEUE_NAME, { id: job.id, retryCount: job.retryCount }),
+      );
+    } catch (error) {
+      this.log.warn(
+        { event: "jobs.execution.refused_settle_failed", runnerJobId: job.id, err: error },
+        "the refused claim's runner row could not be cancelled — the retry policy settles it",
+      );
+    }
   }
 }
 

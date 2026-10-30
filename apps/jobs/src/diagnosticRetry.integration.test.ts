@@ -131,6 +131,7 @@ async function seedDiagnostic(options: {
   data: object;
   retryLimit: number;
   retryDelay?: number;
+  startAfterSeconds?: number;
 }): Promise<string> {
   const appId = randomUUID();
   await lifecycle.apply(appId, { generation: "1", archived: false });
@@ -189,6 +190,40 @@ describe("the diagnostic type's retry exhaustion", () => {
       expect(waiting.error_code).toBe("upstream_error");
       expect(waiting.progress).toEqual({ step: 1, of: 2, label: "Diagnostic step" });
       expect(waiting.terminal_at).toBeNull();
+    },
+  );
+
+  test(
+    "a claim whose record is already terminal is refused once and settles its runner row, never re-run by the retry policy",
+    { timeout: 120_000 },
+    async () => {
+      const jobId = await seedDiagnostic({
+        data: { steps: 1 },
+        retryLimit: 2,
+        // Held off-claim while the record is made terminal underneath it.
+        startAfterSeconds: 1,
+      });
+      await direct.query(
+        `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+            SET status = 'cancelled', error_code = 'cancelled', terminal_at = now()
+          WHERE job_id = $1`,
+        [jobId],
+      );
+      await withWorker(() =>
+        waitFor("the runner row to settle terminally", async () => {
+          const state = (await runnerRow(jobId)).state;
+          return state === "cancelled" || state === "failed";
+        }),
+      );
+      const runner = await runnerRow(jobId);
+      // One claim, settled terminally by the refusal itself: a retry would
+      // have re-claimed the row (retry_count 1, then 2) only to be refused
+      // again.
+      expect(runner.state).toBe("cancelled");
+      expect(runner.retry_count).toBe(0);
+      const row = await recordRow(jobId);
+      expect(row.status).toBe("cancelled");
+      expect(row.attempt).toBeNull();
     },
   );
 });

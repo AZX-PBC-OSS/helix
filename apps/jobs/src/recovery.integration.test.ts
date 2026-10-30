@@ -454,6 +454,12 @@ describe("the absolute deadline", () => {
       const row = await recordRow(jobId);
       expect(row.error_code).toBe("timeout");
       expect(handlerRuns).toBe(0);
+      // The refused claim's runner row is cancelled rather than failed, so a
+      // retriable type is not re-claimed only to be refused again.
+      await waitFor("the refused claim's runner row to be cancelled", async () =>
+        Boolean((await runnerRow(jobId)).state === "cancelled"),
+      );
+      expect((await runnerRow(jobId)).retry_count).toBe(0);
     },
   );
 

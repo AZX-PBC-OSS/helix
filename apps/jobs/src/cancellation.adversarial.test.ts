@@ -363,8 +363,8 @@ describe("the cancellation seam under race", () => {
         }
 
         // The gate resumes: its stale read says no intent, its fenced write
-        // refuses, the handler never runs, and the claim settles through
-        // the runner's own retry policy.
+        // refuses, the handler never runs, and the worker cancels the
+        // refused claim's runner row.
         await client.query("COMMIT");
       } finally {
         client.release();
@@ -372,14 +372,14 @@ describe("the cancellation seam under race", () => {
       }
 
       await waitFor("the fence-refused claim to settle", async () => {
-        return (await runnerRow(jobId)).state === "failed";
+        return (await runnerRow(jobId)).state === "cancelled";
       });
       expect(handlerInvocations).toBe(0);
 
       // The pending intent's pass. The work never ran and the owner's
       // cancellation was acknowledged: the only truthful terminal outcome
       // is the intent's `cancelled` — never the crashed disposition a
-      // start-refused claim's settle would otherwise reconcile to.
+      // code-less failed settle would otherwise reconcile to.
       await recovery.runPass();
       const row = await recordRow(jobId);
       expect(row.status).toBe("cancelled");
@@ -449,10 +449,10 @@ describe("the cancellation seam under race", () => {
       // When the fence-refused claim settles, the record must ALREADY be
       // terminal — no sweeper pass has run. This is the gate's own
       // cancellation arm, pinned apart from the recovery path's backstop:
-      // the settle leaves no code-less failed row for the recovery decision
-      // to reconcile at all.
+      // the refused claim's runner row is cancelled, never a code-less
+      // failed row for the recovery decision to reconcile.
       await waitFor("the fence-refused claim to settle", async () => {
-        return (await runnerRow(jobId)).state === "failed";
+        return (await runnerRow(jobId)).state === "cancelled";
       });
       expect(handlerInvocations).toBe(0);
       const row = await recordRow(jobId);
@@ -464,7 +464,7 @@ describe("the cancellation seam under race", () => {
       expect(row.attempt).toBeNull();
 
       // The terminal record is not a candidate: a pass changes nothing —
-      // the gate's outcome stood over the row's failed settle without help.
+      // the gate's outcome stood without help.
       await recovery.runPass();
       expect(await recordRow(jobId)).toMatchObject({
         status: "cancelled",
@@ -669,7 +669,7 @@ describe("the cancellation seam under race", () => {
       }
 
       await waitFor("the fence-refused claim to settle", async () => {
-        return (await runnerRow(jobId)).state === "failed";
+        return (await runnerRow(jobId)).state === "cancelled";
       });
       expect(handlerInvocations).toBe(0);
       const row = await recordRow(jobId);
@@ -677,9 +677,9 @@ describe("the cancellation seam under race", () => {
       expect(JSON.parse(row.result as string)).toEqual({ won: true });
       expect(row.cancellation_requested).toBe(false);
 
-      // The terminal record is not a candidate: the row's own failed settle
-      // — the fence-refused claim's retry policy — never reconciles over the
-      // record's won outcome.
+      // The terminal record is not a candidate: the refused claim's
+      // cancelled runner row never reconciles over the record's won
+      // outcome.
       await recovery.runPass();
       const after = await recordRow(jobId);
       expect(after.status).toBe("succeeded");

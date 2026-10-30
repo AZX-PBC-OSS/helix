@@ -314,7 +314,10 @@ on — the attempt's retry decision reads the runner row's own policy.
   the handler; the deadline and cancellation refusals commit their own
   terminal outcomes, and the closed-generation refusal leaves the wrapper
   record untouched — the durable cancellation of closed-generation work is
-  the recovery path's.
+  the recovery path's. When the record is terminal (already, or by the
+  gate's own deadline or cancellation write), the worker also cancels the
+  claim's runner row with a fenced `cancel`. A `fail` would re-queue a type
+  that permits retries, only for every retry to be refused again.
 - **The attempt projection.** Begin writes `running` at the attempt number
   (`retryCount + 1`), resets the progress and clears the previous attempt's
   error; a handler reports bounded progress (`{step, of, label}`, validated at
