@@ -271,9 +271,15 @@ controls from `JOBS_LIMITS`. Reject zero/negative/unbounded settings. Capacity r
 work until occupancy falls; they do not evict accepted jobs or erase results.
 Execution overlap follows §6; no persisted distributed-slot synchronization is required.
 
-Authenticated submission attempts reaching the submission gate count before
-forwarding, including retries, invalid input and uncertain or rejected outcomes.
-There are no refunds. Fixed windows may allow adjacent-window bursts. Throttles
+Authorized submission attempts count before forwarding, including retries,
+invalid input and uncertain or rejected outcomes. The edge checks the
+configured server (400 `job_server_unknown`) and the caller's type grant
+(403 `forbidden`) before either window, so a caller without a grant charges
+nothing; those refusals' ledger rows are capped per app and environment.
+The per-app window is charged first, and the deployment aggregate only for an
+attempt the per-app window admitted, so an app over its own limit does not
+drain the aggregate. The retry-key and body checks follow the windows, so a
+malformed but authorized attempt still counts. There are no refunds. Fixed windows may allow adjacent-window bursts. Throttles
 return 429 `rate_limited`; clients back off and reuse the same key. Unfinished
 or retained-job saturation returns 429 `jobs_capacity_exceeded` for new work.
 This means the job was not created by that transaction; an earlier ambiguous

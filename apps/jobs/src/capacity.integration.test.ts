@@ -50,7 +50,7 @@ import {
  *
  * The edge's submission throttle defaults to ten attempts per app/environment
  * per 60-second fixed window and one hundred per window deployment-wide, and
- * every authenticated attempt is charged — invalid input, replays, refusals,
+ * every authorized attempt is charged — invalid input, replays, refusals,
  * and the throttled attempts themselves. One scenario retunes it through
  * `EDGE_JOBS_LIMITS` on both gateways and restores the defaults. Each scenario gets
  * its own app, every burst checks the deployment-wide window's room first, and
@@ -487,6 +487,10 @@ describe("the submission throttle", () => {
       const bucketAtTen = must(await readBucket(appBucketKey(appId)), "the app's throttle bucket");
       expect(bucketAtTen.count, "exactly ten authenticated attempts are charged").toBe(10);
       const windowResetAt = bucketAtTen.resetAt;
+      const deploymentAtTen = must(
+        await readBucket(DEPLOYMENT_BUCKET_KEY),
+        "the deployment-wide throttle bucket",
+      );
 
       expect(
         await appRecordCount(appId),
@@ -527,6 +531,17 @@ describe("the submission throttle", () => {
         bucketAtFlood.resetAt.getTime(),
         "refusals extend nothing — the window ends where it started",
       ).toBe(windowResetAt.getTime());
+      // An attempt the app's own window refuses never reaches the
+      // deployment-wide window, so the flood left that row as it was. (The
+      // edge's sweep may delete it once elapsed; a charge would have raised or
+      // restarted it.)
+      const deploymentAfterFlood = await readBucket(DEPLOYMENT_BUCKET_KEY);
+      if (deploymentAfterFlood !== null) {
+        expect(
+          { count: deploymentAfterFlood.count, resetAt: deploymentAfterFlood.resetAt.getTime() },
+          "the over-limit flood charged nothing to the deployment-wide window",
+        ).toEqual({ count: deploymentAtTen.count, resetAt: deploymentAtTen.resetAt.getTime() });
+      }
 
       // Reads are never charged: the keyed job's status and result answer
       // while the submission window is exhausted.

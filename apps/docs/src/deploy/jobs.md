@@ -277,7 +277,7 @@ What a change does:
   window.
 
 Proof: `apps/jobs/src/capacity.integration.test.ts` (caps hold under
-concurrency, lowering evicts nothing, the throttle charges every attempt),
+concurrency, lowering evicts nothing, the throttle charges every authorized attempt),
 `apps/jobs/src/workerOverlap.integration.test.ts` (mixed limits during an
 overlap), and `apps/jobs/src/config.test.ts` and
 `packages/shared/src/jobsDeployment.adversarial.test.ts` (malformed overrides
@@ -430,8 +430,13 @@ what was observed in a test run.
 ### What is enforced
 
 - Submission attempts: 10 per app and environment, and 100 across the
-  deployment, per 60-second fixed window. Every authenticated attempt counts,
-  including retries, invalid input and refusals. There are no refunds.
+  deployment, per 60-second fixed window. Every authorized attempt counts —
+  a configured server and a type the app is granted — including retries,
+  invalid input and refusals. There are no refunds. An attempt the app's own
+  window refuses is not charged to the deployment window, so one app over its
+  limit cannot exhaust it for the others. Unknown-server (`400`) and
+  ungranted-type (`403`) refusals are decided first and charge neither
+  window; their ledger rows are capped per app and environment.
 - Unfinished jobs: 20 per app and environment, 200 per server, checked in the
   same transaction as the enqueue.
 - Retained jobs: 1,000 per app and environment, 10,000 per server, checked

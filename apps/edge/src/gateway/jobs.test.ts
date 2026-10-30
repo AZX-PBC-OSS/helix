@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 import { request as undiciRequest } from "undici";
 import type { FastifyInstance } from "fastify";
 import { SESSION_COOKIE } from "../auth/cookies.js";
-import { jobRequestError, JOBS_CAPACITY_DEFAULTS, JOBS_MAX_INPUT_BYTES } from "@azx-pbc/shared";
+import {
+  jobRequestError,
+  JOBS_CAPACITY_DEFAULTS,
+  JOBS_DIAGNOSTIC_QUALIFIED_TYPE,
+  JOBS_MAX_INPUT_BYTES,
+} from "@azx-pbc/shared";
 import { HttpJobsForwarder } from "../jobs/forwarder.js";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 import { JobsSubmissionThrottle } from "./jobsThrottle.js";
@@ -117,6 +122,7 @@ async function seedSessionFor(
 function devSubmit(
   app: FastifyInstance,
   bearer: string | null,
+  type = "fetch",
 ): Promise<{
   status: number;
   json: unknown;
@@ -125,7 +131,7 @@ function devSubmit(
   return app
     .inject({
       method: "POST",
-      url: "/myapp/_api/jobs/jobs/types/fetch",
+      url: `/myapp/_api/jobs/jobs/types/${type}`,
       headers: {
         host: "dev-api.local.helix.azxlabs.io",
         "content-type": "application/json",
@@ -666,14 +672,9 @@ describe("the submission buckets and the recorded requests", () => {
     const harness = buildJobsEdge();
     const token = await seedSession(harness.sessions, "alice");
     const acceptedVerdict = harness.forwarder.submitVerdict;
-    // Four refusals that never mint an instruction, each still charged: an
-    // unknown server (the bump precedes server resolution), an invalid key,
-    // and an uncertain ending.
-    const unknown = await submit(harness, "/_api/jobs/nosuch/types/fetch", {
-      token,
-      payload: "{}",
-    });
-    expect(unknown.status).toBe(400);
+    // Authorized attempts that end without an acceptance, each still charged:
+    // an invalid key (the bump precedes the key and body checks) and an
+    // uncertain ending.
     const badKey = await submit(harness, "/_api/jobs/jobs/types/fetch", {
       token,
       payload: "{}",
@@ -687,7 +688,7 @@ describe("the submission buckets and the recorded requests", () => {
     });
     expect(uncertain.status).toBe(503);
     harness.forwarder.submitVerdict = acceptedVerdict;
-    for (let i = 0; i < APP_WINDOW - 3; i += 1) {
+    for (let i = 0; i < APP_WINDOW - 2; i += 1) {
       const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
       expect(res.status).toBe(202);
     }
@@ -991,8 +992,7 @@ describe("the submission buckets and the recorded requests", () => {
       model: string;
     }[] = [
       {
-        // The bump precedes server resolution: the row carries what the caller
-        // asked for, valid or not.
+        // The row carries what the caller asked for, valid or not.
         url: "/_api/jobs/nosuch/types/fetch",
         status: 400,
         outcome: "refusal",
@@ -1199,6 +1199,179 @@ describe("the submission buckets and the recorded requests", () => {
   });
 });
 
+/** The in-memory store, recording every key a bump charged. */
+function recordingStore(): CounterStore & { bumps: string[] } {
+  const inner = new InMemoryCounterStore();
+  const bumps: string[] = [];
+  return {
+    bumps,
+    bump: (key, windowMs) => {
+      bumps.push(key);
+      return inner.bump(key, windowMs);
+    },
+    reset: (key) => inner.reset(key),
+    sweep: () => inner.sweep(),
+    close: () => inner.close(),
+  };
+}
+
+const APP_BUCKET = `jobs:submit:app:prod:${APP_ID}`;
+const DEPLOYMENT_BUCKET = "jobs:submit:deployment";
+
+describe("only an authorized attempt reaches the buckets", () => {
+  /** A harness whose throttle runs on a store the test can read. */
+  function edgeWithRecordedBuckets(
+    opts: Parameters<typeof buildJobsEdge>[0] = {},
+    limits = JOBS_CAPACITY_DEFAULTS,
+  ) {
+    const store = recordingStore();
+    const harness = buildJobsEdge({
+      ...opts,
+      jobsSubmissionThrottle: new JobsSubmissionThrottle(store, limits),
+    });
+    return { harness, store };
+  }
+
+  it("an app with no jobs grant is refused 403 and charges neither bucket", async () => {
+    const { harness, store } = edgeWithRecordedBuckets({ jobs: null });
+    const token = await seedSession(harness.sessions, "alice");
+    for (let i = 0; i < 3; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+      expect(res.status).toBe(403);
+      expect(isJobsError(res.json, "forbidden")).toBe(true);
+    }
+    expect(store.bumps).toEqual([]);
+    expect(harness.forwarder.submitSpecs).toHaveLength(0);
+  });
+
+  it("an unknown server, an ungranted type and a malformed type charge neither bucket", async () => {
+    const { harness, store } = edgeWithRecordedBuckets();
+    const token = await seedSession(harness.sessions, "alice");
+    const cases: [string, number, string][] = [
+      ["/_api/jobs/nosuch/types/fetch", 400, "job_server_unknown"],
+      ["/_api/jobs/jobs/types/other", 403, "forbidden"],
+      ["/_api/jobs/jobs/types/Fetch%2Fx", 403, "forbidden"],
+    ];
+    for (const [url, status, code] of cases) {
+      const res = await submit(harness, url, { token, payload: "{}" });
+      expect(res.status, url).toBe(status);
+      expect(isJobsError(res.json, code)).toBe(true);
+    }
+    expect(store.bumps).toEqual([]);
+  });
+
+  it("a production edge's diagnostic-type refusal charges neither bucket", async () => {
+    const { harness, store } = edgeWithRecordedBuckets({
+      refuseDiagnosticTypes: true,
+      jobs: { types: ["jobs:fetch", JOBS_DIAGNOSTIC_QUALIFIED_TYPE] },
+    });
+    const token = await seedSession(harness.sessions, "alice");
+    const [, local] = JOBS_DIAGNOSTIC_QUALIFIED_TYPE.split(":");
+    const res = await submit(harness, `/_api/jobs/jobs/types/${local}`, { token, payload: "{}" });
+    expect(res.status).toBe(403);
+    expect(store.bumps).toEqual([]);
+  });
+
+  it("an ungranted flood past the deployment limit leaves every window open", async () => {
+    // The shared bucket exists to protect the deployment: a caller with no
+    // grant must not be able to spend it and 429 every other app.
+    const limits = {
+      ...JOBS_CAPACITY_DEFAULTS,
+      submissionAttemptsPerAppEnv: 3,
+      submissionAttemptsDeployment: 3,
+    };
+    const { harness } = edgeWithRecordedBuckets({}, limits);
+    const token = await seedSession(harness.sessions, "alice");
+    for (let i = 0; i < 10; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/other", { token, payload: "{}" });
+      expect(res.status).toBe(403);
+    }
+    for (let i = 0; i < 3; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+      expect(res.status).toBe(202);
+    }
+  });
+
+  it("an allowed attempt charges both buckets, per-app first", async () => {
+    const { harness, store } = edgeWithRecordedBuckets();
+    const token = await seedSession(harness.sessions, "alice");
+    const res = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(res.status).toBe(202);
+    expect(store.bumps).toEqual([APP_BUCKET, DEPLOYMENT_BUCKET]);
+  });
+
+  it("an app over its own window is refused 429 without charging the deployment bucket", async () => {
+    const { harness, store } = edgeWithRecordedBuckets();
+    const token = await seedSession(harness.sessions, "alice");
+    const window = JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv;
+    for (let i = 0; i < window + 5; i += 1) {
+      await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    }
+    const refused = await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    expect(refused.status).toBe(429);
+    expect(isJobsError(refused.json, "rate_limited")).toBe(true);
+    expect(store.bumps.filter((k) => k === APP_BUCKET)).toHaveLength(window + 6);
+    expect(store.bumps.filter((k) => k === DEPLOYMENT_BUCKET)).toHaveLength(window);
+  });
+
+  it("malformed but authorized attempts are still charged — the key and body checks follow the buckets", async () => {
+    const { harness, store } = edgeWithRecordedBuckets();
+    const token = await seedSession(harness.sessions, "alice");
+    const badKey = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+      token,
+      payload: "{}",
+      headers: { "idempotency-key": "" },
+    });
+    expect(badKey.status).toBe(400);
+    const tooLarge = await submit(harness, "/_api/jobs/jobs/types/fetch", {
+      token,
+      payload: "{}",
+      headers: { "content-length": String(JOBS_MAX_INPUT_BYTES + 1) },
+    });
+    expect(tooLarge.status).toBe(413);
+    expect(store.bumps).toEqual([APP_BUCKET, DEPLOYMENT_BUCKET, APP_BUCKET, DEPLOYMENT_BUCKET]);
+  });
+
+  it("the server and type refusals' rows are capped — an ungranted flood cannot fill the ledger", async () => {
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    const DENIAL_MAX = 20; // the DenialThrottle default the route composes
+    for (let i = 0; i < DENIAL_MAX + 15; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/other", { token, payload: "{}" });
+      expect(res.status).toBe(403);
+    }
+    for (let i = 0; i < 15; i += 1) {
+      const res = await submit(harness, "/_api/jobs/nosuch/types/fetch", { token, payload: "{}" });
+      expect(res.status).toBe(400);
+    }
+    // One budget covers both refusals: 20 rows for the 50 attempts.
+    expect(usage.records).toHaveLength(DENIAL_MAX);
+    for (const row of usage.records) {
+      expect(row).toMatchObject({ outcome: "forbidden", statusCode: 403, model: "jobs:other" });
+    }
+  });
+
+  it("the grant refusals and the throttle refusals keep separate row budgets", async () => {
+    // A flood of one kind must not spend the other's budget and hide its rows.
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    const DENIAL_MAX = 20;
+    const window = JOBS_CAPACITY_DEFAULTS.submissionAttemptsPerAppEnv;
+    for (let i = 0; i < DENIAL_MAX + 5; i += 1) {
+      await submit(harness, "/_api/jobs/jobs/types/other", { token, payload: "{}" });
+    }
+    for (let i = 0; i < window + DENIAL_MAX + 5; i += 1) {
+      await submit(harness, "/_api/jobs/jobs/types/fetch", { token, payload: "{}" });
+    }
+    const count = (outcome: string) => usage.records.filter((r) => r.outcome === outcome).length;
+    expect(count("forbidden")).toBe(DENIAL_MAX);
+    expect(count("ok")).toBe(window);
+    expect(count("quota_blocked")).toBe(DENIAL_MAX);
+  });
+});
+
 describe("transport-level behavior on a real socket", () => {
   it("aborts the forward when the client uploads fully and then hangs up", async () => {
     // The case the wiring's guard exists for (the same test the fetch route
@@ -1369,6 +1542,45 @@ describe("the dev gateway's submission route", () => {
     const res = await devSubmit(app, DEV_BEARER);
     expect(res.status).toBe(503);
     expect(isJobsError(res.json, "jobs_disabled")).toBe(true);
+    await app.close();
+  });
+
+  it("an ungranted dev submission is refused 403 and spends neither dev window", async () => {
+    // The dev composition builds its throttle with no injection seam, so the
+    // windows are read through their limits: with both at 2, any charge from
+    // the refused flood would leave fewer than two accepts.
+    const forwarder = new FakeJobsForwarder("jobs");
+    const app = await buildDevJobsEdge(forwarder, {
+      submissionLimits: {
+        ...JOBS_CAPACITY_DEFAULTS,
+        submissionAttemptsPerAppEnv: 2,
+        submissionAttemptsDeployment: 2,
+      },
+    });
+    for (let i = 0; i < 5; i += 1) {
+      const res = await devSubmit(app, DEV_BEARER, "other");
+      expect(res.status).toBe(403);
+      expect(isJobsError(res.json, "forbidden")).toBe(true);
+    }
+    for (let i = 0; i < 2; i += 1) {
+      const res = await devSubmit(app, DEV_BEARER);
+      expect(res.status).toBe(202);
+    }
+    expect((await devSubmit(app, DEV_BEARER)).status).toBe(429);
+    await app.close();
+  });
+
+  it("the dev tier caps the grant refusals' rows with its own budget", async () => {
+    const usage = new FakeUsageStore();
+    const app = await buildDevJobsEdge(new FakeJobsForwarder("jobs"), { usage });
+    const DENIAL_MAX = 20;
+    for (let i = 0; i < DENIAL_MAX + 10; i += 1) {
+      expect((await devSubmit(app, DEV_BEARER, "other")).status).toBe(403);
+    }
+    expect(usage.records).toHaveLength(DENIAL_MAX);
+    for (const row of usage.records) {
+      expect(row).toMatchObject({ env: "dev", outcome: "forbidden", statusCode: 403 });
+    }
     await app.close();
   });
 

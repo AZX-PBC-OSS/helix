@@ -1,12 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { JOBS_CAPACITY_DEFAULTS } from "@azx-pbc/shared";
 import { JobsSubmissionThrottle } from "./jobsThrottle.js";
-import { InMemoryCounterStore } from "./counterStore.js";
+import { InMemoryCounterStore, type CounterStore } from "./counterStore.js";
+
+/** The in-memory store, recording every key a bump charged. */
+function recordingStore(): CounterStore & { bumps: string[] } {
+  const inner = new InMemoryCounterStore();
+  const bumps: string[] = [];
+  return {
+    bumps,
+    bump: (key, windowMs) => {
+      bumps.push(key);
+      return inner.bump(key, windowMs);
+    },
+    reset: (key) => inner.reset(key),
+    sweep: () => inner.sweep(),
+    close: () => inner.close(),
+  };
+}
 
 /**
  * The submission throttle buckets (design §4): two fixed windows over the
  * shared counter primitive — per app/environment and one deployment-wide
- * aggregate — every authenticated attempt consumes, with no refund. The route
+ * aggregate — an authorized attempt consumes, per-app first, with no refund.
+ * The route
  * behaviors around them (429s, what counts and what does not, the ledger
  * rows) are pinned in `gateway/jobs.test.ts`; here the bucket arithmetic
  * itself is, against the real in-memory store.
@@ -50,17 +67,40 @@ describe("JobsSubmissionThrottle", () => {
     expect(await t.consume("app-c", "prod")).toBe(false);
   });
 
-  it("an attempt refused by one window is still charged to the other — no refund", async () => {
-    const t = throttle(3);
-    await t.consume("app-a", "prod"); // app 1, deployment 1
-    await t.consume("app-a", "prod"); // app 2, deployment 2
-    // The per-app window is exhausted, but the attempt was still charged:
-    // the deployment aggregate now sits at 3 of 3.
-    expect(await t.consume("app-a", "prod")).toBe(false);
-    // app-b has its whole per-app window ahead of it and is refused anyway —
-    // the deployment window the refusals kept consuming is spent.
-    expect(await t.consume("app-b", "prod")).toBe(false);
+  it("an attempt the per-app window refuses never charges the deployment window", async () => {
+    const store = recordingStore();
+    const t = new JobsSubmissionThrottle(store, limits(3));
+    expect(await t.consume("app-a", "prod")).toBe(true); // app 1, deployment 1
+    expect(await t.consume("app-a", "prod")).toBe(true); // app 2, deployment 2
+    // Over its own window: refused, and the deployment window is untouched.
+    for (let i = 0; i < 5; i += 1) expect(await t.consume("app-a", "prod")).toBe(false);
+    expect(store.bumps.filter((k) => k === "jobs:submit:deployment")).toHaveLength(2);
+    expect(store.bumps.filter((k) => k === "jobs:submit:app:prod:app-a")).toHaveLength(7);
+    // The one deployment slot app-a's refusals did not spend is app-b's.
+    expect(await t.consume("app-b", "prod")).toBe(true);
     expect(await t.consume("app-c", "prod")).toBe(false);
+  });
+
+  it("an attempt the deployment window refuses keeps its per-app charge — no refund", async () => {
+    const store = recordingStore();
+    const t = new JobsSubmissionThrottle(store, limits(1));
+    expect(await t.consume("app-a", "prod")).toBe(true);
+    // app-b's per-app window admits it; the deployment window refuses it, and
+    // the per-app charge stands.
+    expect(await t.consume("app-b", "prod")).toBe(false);
+    expect(await t.consume("app-b", "prod")).toBe(false);
+    // Its per-app window (2) is now spent by the two refused attempts, so the
+    // next one never reaches the deployment window.
+    expect(await t.consume("app-b", "prod")).toBe(false);
+    expect(store.bumps).toEqual([
+      "jobs:submit:app:prod:app-a",
+      "jobs:submit:deployment",
+      "jobs:submit:app:prod:app-b",
+      "jobs:submit:deployment",
+      "jobs:submit:app:prod:app-b",
+      "jobs:submit:deployment",
+      "jobs:submit:app:prod:app-b",
+    ]);
   });
 
   it("restarts both windows when they elapse — the fixed-window counter contract", async () => {

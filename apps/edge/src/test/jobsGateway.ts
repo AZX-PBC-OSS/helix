@@ -300,6 +300,8 @@ export async function buildDevJobsEdge(
     refuseDiagnosticTypes?: boolean;
     jobs?: { types: string[] } | null;
     submissionLimits?: JobsCapacityLimits;
+    /** The gateway request ledger; null (default) = submissions are not recorded. */
+    usage?: UsageStore | null;
   } = {},
 ): Promise<FastifyInstance> {
   return buildDevGateway({
@@ -322,7 +324,7 @@ export async function buildDevJobsEdge(
     ]),
     devTokens: fakeDevTokens(),
     appData: null,
-    usage: null,
+    usage: opts.usage ?? null,
     llmProvider: null,
     egress: null,
     instructionKey: null,

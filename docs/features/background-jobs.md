@@ -28,11 +28,20 @@ This page describes what the code does and where it lives.
 
 **The edge authorizes; the jobs service owns the record.** The edge runs the
 existing serving, session and origin gates, then the jobs authorization check:
-only an authenticated user or a dev-token principal, with a current grant for
-the qualified type. It counts the attempt against two fixed submission windows
-(per app and environment, and deployment-wide), mints a signed edge→jobs
-instruction over the exact request bytes, and forwards it to the server named
-in the path (`apps/edge/src/gateway/jobs.ts`, `apps/edge/src/jobs/forwarder.ts`).
+only an authenticated user or a dev-token principal. It then checks that the
+server is configured (`400 job_server_unknown`) and that the app holds a
+current grant for the qualified type (`403 forbidden`). Only an attempt that
+passes both is counted against the two fixed submission windows: the per-app
+and environment window first, and the deployment-wide window only when the
+per-app window admitted it, so neither an ungranted caller nor an app over its
+own limit can spend the allowance other apps share. After the windows come
+the retry-key and body checks, so a malformed but authorized attempt still
+counts. The edge then mints a signed edge→jobs instruction over the exact
+request bytes and forwards it to the server named in the path
+(`apps/edge/src/gateway/jobs.ts`, `apps/edge/src/gateway/jobsThrottle.ts`,
+`apps/edge/src/jobs/forwarder.ts`). The server and type refusals write ledger
+rows capped per app and environment by their own denial budget
+(`jobs-grant-denial:`), apart from the throttle refusals' (`jobs-denial:`).
 Attribution comes from the trusted caller and the registry projection, never
 from the request.
 

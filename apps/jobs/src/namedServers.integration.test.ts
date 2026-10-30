@@ -730,9 +730,8 @@ describe("named-server isolation through the real stack", () => {
       expect(betaAccepted.server, `beta throttle submission ${i} server`).toBe("beta");
     }
 
-    // The window is spent: every server prefix answers the same 429 —
-    // including a server that is not configured at all (the charge precedes
-    // the server resolution).
+    // The window is spent: every configured server prefix answers the same
+    // 429.
     const betaRefused = await submit("beta", `ns-throttle-x-${randomUUID()}`);
     expect(betaRefused.status, "the 11th attempt, on beta").toBe(429);
     expectNoStore(betaRefused, "the 11th attempt, on beta");
@@ -740,10 +739,12 @@ describe("named-server isolation through the real stack", () => {
     const alphaRefused = await submit("alpha", `ns-throttle-x-${randomUUID()}`);
     expect(alphaRefused.status, "the 12th attempt, on alpha").toBe(429);
     expect(errorCode(alphaRefused), "the 12th attempt, on alpha").toBe("rate_limited");
+    // A server that is not configured is refused before the buckets, so it
+    // answers its own 400 even while the window is spent.
     const gammaRefused = await submit("gamma", `ns-throttle-x-${randomUUID()}`);
-    expect(gammaRefused.status, "the 13th attempt, on the unconfigured gamma").toBe(429);
+    expect(gammaRefused.status, "the 13th attempt, on the unconfigured gamma").toBe(400);
     expect(errorCode(gammaRefused), "the 13th attempt, on the unconfigured gamma").toBe(
-      "rate_limited",
+      "job_server_unknown",
     );
 
     expect(

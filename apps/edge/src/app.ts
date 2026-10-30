@@ -48,6 +48,7 @@ import {
   DENIAL_PREFIX_FETCH_SIZE,
   DENIAL_PREFIX_JOBS_CALLBACK,
   DENIAL_PREFIX_JOBS_SUBMIT,
+  DENIAL_PREFIX_JOBS_SUBMIT_GRANT,
   DenialThrottle,
 } from "./gateway/denialThrottle.js";
 import { JobsSubmissionThrottle } from "./gateway/jobsThrottle.js";
@@ -294,6 +295,9 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   const jobsDenialThrottle = new DenialThrottle(fallbackCounters, {
     keyPrefix: DENIAL_PREFIX_JOBS_SUBMIT,
   });
+  const jobsGrantDenialThrottle = new DenialThrottle(fallbackCounters, {
+    keyPrefix: DENIAL_PREFIX_JOBS_SUBMIT_GRANT,
+  });
   // The submission throttle buckets (design §4): server.ts injects the
   // PG-backed one (fleet-wide limits); the fallback in-memory store keeps
   // single-process dev / tests working, like every other fallback here.
@@ -403,6 +407,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           forwarder: deps.jobsForwarder ?? null,
           submissionThrottle: jobsSubmissionThrottle,
           denialThrottle: jobsDenialThrottle,
+          grantDenialThrottle: jobsGrantDenialThrottle,
           usage: deps.usage ?? null,
           refuseDiagnosticTypes: config.jobs.refuseDiagnosticTypes,
         }

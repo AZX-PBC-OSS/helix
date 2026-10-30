@@ -86,19 +86,31 @@ import { abortOnClientGone } from "./clientGone.js";
  * forwarding unchanged bytes is the submission route's whole job.
  *
  * The submission buckets and the request ledger (design §4, ADR-0003/0004)
- * are the submission route's own: every authenticated attempt that passes the
- * gates — replays, invalid input, refusals and uncertain endings included —
- * consumes the per-app/environment and deployment-wide fixed windows before
- * any later decision, with no refund, and both buckets span every configured
- * server (their keys carry no server or type, so another prefix adds no
- * allowance). An exhausted window answers 429 `rate_limited`. Each counted
- * attempt is one recorded request in the gateway ledger (capability `jobs`,
- * the qualified type in the model field, the existing outcome vocabulary) —
- * an attempt counter that must never be read as an accepted-job count, since
- * a 202 can be a replay and an uncertain ending may have accepted work. The
- * write is best-effort and never awaited: a ledger failure cannot change
- * acceptance, and the throttle refusals' rows are capped per (app, env) so a
- * flood cannot turn into unbounded persistent audit writes. The reference
+ * are the submission route's own. The submission order is: the gates above,
+ * `jobs_disabled`, the configured server (400 `job_server_unknown`), the
+ * type grant (403 `forbidden`), then the buckets, then the retry key and the
+ * body bound, then the forward. Only an authorized attempt — a configured
+ * server and a granted type — reaches the buckets, so a caller with no grant
+ * cannot spend the allowance an app or the deployment shares. From there
+ * every attempt — replays, invalid input, refusals and uncertain endings
+ * included — is charged with no refund: the per-app/environment window
+ * first, and the deployment-wide window only when the per-app window admitted
+ * it, so an app over its own limit does not drain the shared one. Both
+ * buckets span every configured server (their keys carry no server or type,
+ * so another prefix adds no allowance). An exhausted window answers 429
+ * `rate_limited`.
+ *
+ * Every authenticated attempt past `jobs_disabled` is one recorded request in
+ * the gateway ledger (capability `jobs`, the requested type in the model
+ * field, the existing outcome vocabulary) — an attempt counter that must
+ * never be read as an accepted-job count, since a 202 can be a replay and an
+ * uncertain ending may have accepted work. The write is best-effort and never
+ * awaited: a ledger failure cannot change acceptance. Two kinds of row are
+ * written by refusals no bucket bounds, so each is capped per (app, env) by
+ * its own denial budget: the server and type refusals, which precede the
+ * buckets, and the throttle refusals, which consume no window the caller
+ * could run out of. A flood of either cannot turn into unbounded persistent
+ * audit writes, and neither can spend the other's budget. The reference
  * operations are not charged to these buckets and are not ledger rows — they
  * keep their ordinary request controls and their own spans.
  */
@@ -122,20 +134,26 @@ export interface JobsGatewayRuntime {
    */
   forwarder: JobsForwarder | null;
   /**
-   * The submission throttle buckets (design §4): every authenticated attempt
-   * that passes the gates consumes the per-app/environment and the
-   * deployment-wide windows — both spanning every configured server — before
-   * any later decision, and an exhausted window answers 429 `rate_limited`.
-   * Built by the composition (app.ts) from the shared counter primitive; a
-   * composition that wires jobs always wires this.
+   * The submission throttle buckets (design §4): every authorized attempt —
+   * a configured server and a granted type — consumes the per-app/environment
+   * window and, when that admits it, the deployment-wide window, both
+   * spanning every configured server. An exhausted window answers 429
+   * `rate_limited`. Built by the composition (app.ts) from the shared counter
+   * primitive; a composition that wires jobs always wires this.
    */
   submissionThrottle: JobsSubmissionThrottle;
   /**
-   * Caps the throttle-refusal ledger rows per (app, env) — the one write on
-   * this route no other gate bounds, since a refused attempt consumes no
-   * window the caller could run out of. null ⇒ uncapped (tests).
+   * Caps the throttle-refusal ledger rows per (app, env): a refused attempt
+   * consumes no window the caller could run out of. null ⇒ uncapped (tests).
    */
   denialThrottle: DenialThrottle | null;
+  /**
+   * Caps the server and type refusals' ledger rows per (app, env): they are
+   * decided before the buckets, so no window bounds them. A separate budget
+   * from {@link denialThrottle}, so a flood of one kind cannot hide the
+   * other's rows. null ⇒ uncapped (tests).
+   */
+  grantDenialThrottle: DenialThrottle | null;
   /**
    * The gateway request ledger (ADR-0004): each counted submission attempt is
    * one recorded request row, best-effort and never awaited — a ledger write
@@ -275,7 +293,7 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
     // server id cannot be configured (the same 400 an unknown one answers
     // with); a type that is not a type is one no grant can ever have covered.
     // The raw `server:type` pair is what the ledger's model field records for
-    // every counted attempt — the caller's own request, bounded by the
+    // every recorded attempt — the caller's own request, bounded by the
     // ledger's column cap, valid or not.
     const params = req.params as { server?: string; type?: string };
     const server = params.server ?? "";
@@ -341,64 +359,82 @@ export function makeJobsSubmitHandler(rt: JobsGatewayRuntime, surface: JobsSurfa
       recordRow(gatewayCall(outcome, statusCode, errorDetail, durationMs));
     };
 
-    // The submission buckets (design §4): every authenticated attempt that
-    // reaches here is charged — before the server resolution, the key and
-    // body checks, and the forward — and the charge stands whatever the
-    // outcome. An exhausted window refuses here, before any instruction
-    // exists; there is no refund and no midnight settlement.
-    if (!(await rt.submissionThrottle.consume(entry.appId, caller.env))) {
-      setOutcome("rate_limited");
-      // The refused attempt's ledger row is the one write on this route no
-      // bucket bounds — a flood consumes no window it could run out of — so
-      // it is metered per (app, env) like the fetch allowlist denial: the
-      // first N rows per window carry the audit signal, the rest are dropped
-      // with a magnitude summary on the log. The metric is NOT gated on the
-      // throttle's decision; only the row is.
-      const decision = rt.denialThrottle
-        ? await rt.denialThrottle.admit(entry.appId, caller.env)
+    // A refusal row that no bucket bounds: the metric always counts it, and
+    // the row is written only while the (app, env) denial budget allows, with
+    // a magnitude summary on the log once it is spent.
+    const recordCapped = async (
+      throttle: DenialThrottle | null,
+      event: string,
+      outcome: GatewayOutcome,
+      statusCode: number,
+      errorDetail: string,
+    ): Promise<void> => {
+      const decision = throttle
+        ? await throttle.admit(entry.appId, caller.env)
         : { meter: true as const, suppressedAt: undefined };
       if (decision.suppressedAt !== undefined) {
         req.log.warn(
-          {
-            event: "edge.jobs_submit.refusal_ledger_suppressed",
-            appId: entry.appId,
-            env: caller.env,
-            attempts: decision.suppressedAt,
-          },
-          "jobs throttle-refusal metering suppressed — this app is over its denial budget for the window",
+          { event, appId: entry.appId, env: caller.env, attempts: decision.suppressedAt },
+          "jobs submission refusal metering suppressed — this app is over its denial budget for the window",
         );
       }
-      meterGatewayCall({ appId: entry.appId, capability: "jobs", outcome: "quota_blocked" });
-      if (decision.meter) {
-        recordRow(gatewayCall("quota_blocked", 429, "rate_limited"));
-      }
-      sendJobsError(reply, 429, jobRequestError("rate_limited"));
-      return;
-    }
+      meterGatewayCall({ appId: entry.appId, capability: "jobs", outcome });
+      if (decision.meter) recordRow(gatewayCall(outcome, statusCode, errorDetail));
+    };
 
+    // The server and the type grant come before the buckets: both are
+    // in-memory checks, and a caller this app has not granted the type to
+    // must not spend the window the app's real submissions, or every app's,
+    // depend on. Their rows are capped, since no window bounds them.
     if (!rt.forwarder.has(server)) {
       setOutcome("server_unknown");
-      record("refusal", 400, "job_server_unknown");
+      await recordCapped(
+        rt.grantDenialThrottle,
+        "edge.jobs_submit.grant_refusal_ledger_suppressed",
+        "refusal",
+        400,
+        "job_server_unknown",
+      );
       sendJobsError(reply, 400, jobRequestError("job_server_unknown"));
       return;
     }
     const localType = params.type ?? "";
-    if (!isValidJobsLocalType(localType)) {
-      setOutcome("forbidden");
-      record("forbidden", 403, "forbidden");
-      sendJobsError(reply, 403, jobRequestError("forbidden"));
-      return;
-    }
     const qualifiedType = `${server}:${localType}`;
-
     // The current grant for the qualified type — the edge's own type
     // permission (ADR-0003): a revoked grant denies new submissions before any
     // instruction exists. The instruction binds exactly this server's types.
+    // A type that is not a type is one no grant can cover.
     const allowedTypes = forwardableTypes(rt, entry, server);
-    if (!allowedTypes.includes(qualifiedType)) {
+    if (!isValidJobsLocalType(localType) || !allowedTypes.includes(qualifiedType)) {
       setOutcome("forbidden");
-      record("forbidden", 403, "forbidden");
+      await recordCapped(
+        rt.grantDenialThrottle,
+        "edge.jobs_submit.grant_refusal_ledger_suppressed",
+        "forbidden",
+        403,
+        "forbidden",
+      );
       sendJobsError(reply, 403, jobRequestError("forbidden"));
+      return;
+    }
+
+    // The submission buckets (design §4): every authorized attempt that
+    // reaches here is charged — before the key and body checks and the
+    // forward — and the charge stands whatever the outcome. An exhausted
+    // window refuses here, before any instruction exists; there is no refund
+    // and no midnight settlement.
+    if (!(await rt.submissionThrottle.consume(entry.appId, caller.env))) {
+      setOutcome("rate_limited");
+      // A flood consumes no window it could run out of, so the refusal rows
+      // are capped like the fetch allowlist denial's.
+      await recordCapped(
+        rt.denialThrottle,
+        "edge.jobs_submit.refusal_ledger_suppressed",
+        "quota_blocked",
+        429,
+        "rate_limited",
+      );
+      sendJobsError(reply, 429, jobRequestError("rate_limited"));
       return;
     }
     trace.getActiveSpan()?.setAttributes({ [ATTR_APP_ID]: entry.appId });

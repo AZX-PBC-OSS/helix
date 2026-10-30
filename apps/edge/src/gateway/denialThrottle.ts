@@ -3,8 +3,8 @@ import type { CounterStore } from "./counterStore.js";
 /**
  * Limit refusal ledger rows per app and time window, for refusals no other
  * gate bounds: the fetch allowlist denial, the fetch size refusal decided
- * before minting, the jobs callback's policy refusals, and the jobs
- * submission throttle's refusals. Authenticated callers bypass the anonymous
+ * before minting, the jobs callback's policy refusals, the jobs submission
+ * throttle's refusals, and the jobs submission's server and type refusals. Authenticated callers bypass the anonymous
  * limiter, and these refusals either return before the daily request budget
  * or are excluded from it. A retry loop could therefore write rows
  * continuously.
@@ -27,6 +27,12 @@ export const DENIAL_PREFIX_FETCH_SIZE = "fetch-size-denial:";
 export const DENIAL_PREFIX_JOBS_CALLBACK = "jobs-callback-denial:";
 /** The jobs submission throttle's refusal rows (`gateway/jobs.ts`). */
 export const DENIAL_PREFIX_JOBS_SUBMIT = "jobs-denial:";
+/**
+ * The jobs submission's server and type refusals (400 `job_server_unknown`,
+ * 403 `forbidden`), decided before the submission throttle and so bounded by
+ * no window (`gateway/jobs.ts`).
+ */
+export const DENIAL_PREFIX_JOBS_SUBMIT_GRANT = "jobs-grant-denial:";
 
 export interface DenialThrottleOptions {
   /** Denial rows metered per (app, env) within a window. */

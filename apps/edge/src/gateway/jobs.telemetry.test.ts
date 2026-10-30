@@ -498,6 +498,54 @@ describe("the submission route's outcome telemetry", () => {
     expect(dump).not.toContain("PLANTED-BODY-VALUE");
   });
 
+  it("an ungranted flood stays counted on the metrics while its rows and log lines stay bounded", async () => {
+    // The server and type refusals precede the buckets, so their rows have a
+    // denial budget of their own and a summary event of their own.
+    const usage = new FakeUsageStore();
+    const harness = buildJobsEdge({ usage });
+    const token = await seedSession(harness.sessions, "alice");
+    const DENIAL_MAX = 20; // the DenialThrottle default the route composes
+    const REFUSALS = DENIAL_MAX + 10;
+
+    logLines.length = 0;
+    const before = await recording.metrics();
+    for (let i = 0; i < REFUSALS; i += 1) {
+      const res = await submit(harness, "/_api/jobs/jobs/types/other", {
+        token,
+        payload: '{"url":"https://api.vendor.test/PLANTED-BODY-VALUE"}',
+        headers: { "idempotency-key": "PLANTED-RETRY-KEY" },
+      });
+      expect(res.status).toBe(403);
+    }
+    const after = await recording.metrics();
+
+    const forbidden = (points: RecordedMetric[]) =>
+      points
+        .filter(
+          (p) =>
+            p.name === INSTR_GATEWAY_CALLS &&
+            p.attributes["helix.capability"] === "jobs" &&
+            p.attributes["helix.outcome"] === "forbidden",
+        )
+        .reduce((n, p) => n + p.value, 0);
+    expect(forbidden(after) - forbidden(before)).toBe(REFUSALS);
+    expect(usage.records.filter((r) => r.outcome === "forbidden")).toHaveLength(DENIAL_MAX);
+
+    const events = logLines.filter(
+      (line) => line.event === "edge.jobs_submit.grant_refusal_ledger_suppressed",
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      level: 40,
+      appId: APP_ID,
+      env: "prod",
+      attempts: DENIAL_MAX + 1,
+    });
+    const dump = JSON.stringify(logLines);
+    expect(dump).not.toContain("PLANTED-RETRY-KEY");
+    expect(dump).not.toContain("PLANTED-BODY-VALUE");
+  });
+
   it("the two uncertain answers stay distinguishable in the evidence while identical on the wire", async () => {
     // The route's known posture: unreachable and invalid_response both answer
     // the retryable 503 `jobs_unavailable` — never a fabricated 202 or 404 —

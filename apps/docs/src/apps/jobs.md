@@ -303,9 +303,12 @@ Your app cannot change these limits.
 - **Submission rate.** By default, 10 submission attempts per minute for
   each app and environment, shared by all of the app's users, plus a limit
   across the whole deployment for production submissions. The operator can
-  change these numbers. Every attempt counts, including keyed retries,
-  refused input, and attempts that fail, and nothing is refunded. Status,
-  result, and cancel requests do not count. Submissions through the
+  change these numbers. Every attempt for a type your app is granted counts,
+  including keyed retries, refused input, and attempts that fail, and nothing
+  is refunded. A submission to an unknown server (`400 job_server_unknown`)
+  or for a type your app is not granted (`403 forbidden`) is refused before
+  the limit is checked and does not count. Status, result, and cancel
+  requests do not count. Submissions through the
   [dev gateway](#developing-with-the-dev-gateway) are counted separately.
 - **Capacity.** The jobs service limits how many unfinished jobs and how many
   stored jobs each app and environment can have. Finished jobs occupy stored

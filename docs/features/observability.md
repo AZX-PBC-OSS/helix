@@ -269,7 +269,8 @@ looked up:
   authorization check), `unauthorized` / `unavailable` (the caller and
   serving gates' own preserved responses), `key_invalid`,
   `payload_invalid`, `payload_too_large`, and `rate_limited` (a submission
-  bucket was exhausted — 429; the attempt still counted). No `url.path` — the
+  bucket was exhausted — 429; the attempt still counted). `server_unknown`
+  and `forbidden` are decided before the buckets and charge neither. No `url.path` — the
   route's `:server`/`:type` segments are caller-chosen — and never the retry
   key, the input bytes, the instruction token or the owner oid (pinned by
   `gateway/jobs.test.ts`'s attribute scan).
@@ -427,8 +428,9 @@ text. These are **recorded submission requests, not accepted jobs**: a keyed
 replay records a second `ok` row, and an uncertain ending (`unreachable` /
 `invalid_response`) records `error` without proving anything about whether
 work was accepted. Rows may be missing after a ledger failure — the write is
-best-effort and never changes acceptance — and the throttle refusals' rows are
-capped per (app, env) (the `jobs-denial:` budget), so a flood's audit trail is
+best-effort and never changes acceptance — and the throttle refusals' rows and
+the server/type refusals' rows are each capped per (app, env) (the
+`jobs-denial:` and `jobs-grant-denial:` budgets), so a flood's audit trail is
 bounded by design. Status/result/cancel requests are not ledger rows.
 
 ### Things to know before writing an alert on these

@@ -16,6 +16,7 @@ import {
   DENIAL_PREFIX_FETCH_SIZE,
   DENIAL_PREFIX_JOBS_CALLBACK,
   DENIAL_PREFIX_JOBS_SUBMIT,
+  DENIAL_PREFIX_JOBS_SUBMIT_GRANT,
   DenialThrottle,
 } from "../gateway/denialThrottle.js";
 import { JobsSubmissionThrottle } from "../gateway/jobsThrottle.js";
@@ -220,7 +221,7 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
   // dev resolver seams, so a dev submission carries `env: 'dev'` and the dev
   // principal, and never the production tier's. The reference operations
   // (poll, result, cancellation) share the runtime and the forwarding seam.
-  // The throttle buckets and the refusal-denial budget run on the in-memory
+  // The throttle buckets and the refusal-denial budgets run on the in-memory
   // store — single-process by construction, like the fetch denial throttle
   // below — and the ledger is the same `UsageStore` the dev tier's other
   // capabilities write.
@@ -235,6 +236,9 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     ),
     denialThrottle: new DenialThrottle(new InMemoryCounterStore(), {
       keyPrefix: DENIAL_PREFIX_JOBS_SUBMIT,
+    }),
+    grantDenialThrottle: new DenialThrottle(new InMemoryCounterStore(), {
+      keyPrefix: DENIAL_PREFIX_JOBS_SUBMIT_GRANT,
     }),
     usage: deps.usage,
     refuseDiagnosticTypes: config.jobs.refuseDiagnosticTypes,
