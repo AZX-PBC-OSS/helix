@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+import {
+  JobServerIdSchema,
+  JobsInternalUrlSchema,
+  JobsSubmissionOverridesSchema,
+  isValidJobsRootSecret,
+  resolveJobsCapacityLimits,
+  strictWireObject,
+  strictWireRecord,
+  type JobsCapacityLimits,
+} from "@azx-pbc/shared";
+import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./db/pool.js";
 
 /**
@@ -238,6 +249,18 @@ export interface GatewayConfig {
    */
   portalUrl: string | null;
   /**
+   * Background-jobs wiring (ADR-0008's custody matrix): the configured job
+   * servers this process forwards authorized operations to — each with the
+   * edge→jobs signing root for those forwards and the jobs→edge verification
+   * root for the server's signed fetch callbacks. Loaded from
+   * `EDGE_JOBS_CONFIG` by {@link loadEdgeJobsConfig}; an absent variable is a
+   * fully disabled installation (empty map), never a boot failure — ordinary
+   * app hosting must not depend on jobs configuration. Both gateway processes
+   * (edge and dev-gateway) load the same document and forward with their own
+   * trusted environment tier.
+   */
+  jobs: EdgeJobsConfig;
+  /**
    * Scheme for externally built URLs (redirect targets, cookie origins, the
    * dev journey's popup URL). The platform is **HTTPS-only** — always `https`.
    * Dev terminates TLS at the edge (mkcert); prod terminates at ingress and the
@@ -248,6 +271,210 @@ export interface GatewayConfig {
   /** Public port for built URLs; scheme-default ports are omitted. */
   publicPort: number;
 }
+
+/** One configured jobs server, as the edge's forwarding plane consumes it. */
+export interface JobsGatewayServerConfig {
+  /** The validated server id — the map key, restated (the map schema's own rule). */
+  server: string;
+  /** The server's private internal endpoint the signed operations are forwarded to. */
+  endpoint: string;
+  /**
+   * The derived edge→jobs HS256 mint key — HKDF over this server's root at
+   * config-load time, so a malformed root is an explicit startup error rather
+   * than a first-request failure. The portal→jobs root is other components'
+   * custody and never parsed here.
+   */
+  edgeToJobsKey: Uint8Array;
+  /**
+   * The derived jobs→edge HS256 verification key for this server's signed fetch
+   * callbacks (ADR-0008's custody matrix puts both roots here). The callback
+   * receiver verifies with it; it authorizes nothing else.
+   */
+  jobsToEdgeKey: Uint8Array;
+}
+
+/** The edge's jobs forwarding configuration. */
+export interface EdgeJobsConfig {
+  /** The configured servers, keyed by validated server id. Empty = fully disabled. */
+  servers: Record<string, JobsGatewayServerConfig>;
+  /**
+   * Bound for one forwarding round-trip, in ms — the whole mint→answer wait
+   * the edge allows before the request is answered with the retryable 503.
+   * Acceptance is uncertain past it (the client's keyed retry recovers).
+   */
+  timeoutMs: number;
+  /**
+   * True when this process runs in production: the diagnostic job type is
+   * filtered out of every grant the edge forwards, so a production edge can
+   * neither mint a diagnostic submission nor bind the type into a record
+   * instruction's grants — the non-production type never crosses this plane.
+   */
+  refuseDiagnosticTypes: boolean;
+  /**
+   * The resolved submission-throttle limits: the platform defaults with the
+   * optional `EDGE_JOBS_LIMITS` override applied. Only the three controls the
+   * edge's own throttle enforces are representable — the jobs service's
+   * remaining controls are tuned by `JOBS_LIMITS` there. Resolved in both the
+   * enabled and disabled branches of {@link loadEdgeJobsConfig}, so a bad
+   * value fails the boot even with no job servers configured.
+   */
+  submissionLimits: JobsCapacityLimits;
+}
+
+// The entry is a `strictWireObject`, not a bare z.strictObject: zod's strict
+// object skips an own `__proto__` key before its unrecognized-key check, so a
+// credential leaked under that key inside an entry would be SHED — the parse
+// would boot holding a document that quietly does not say what it carries —
+// exactly the side effect the shared screen refuses. Every level of the
+// document (document, server map, entry) parses under the same screen.
+const EdgeJobsServerEntrySchema = strictWireObject({
+  endpoint: JobsInternalUrlSchema,
+  edgeToJobsRoot: z.string().refine(isValidJobsRootSecret, {
+    message: "a signing root must be the canonical base64 encoding of exactly 32 bytes",
+  }),
+  jobsToEdgeRoot: z.string().refine(isValidJobsRootSecret, {
+    message: "a signing root must be the canonical base64 encoding of exactly 32 bytes",
+  }),
+});
+
+/**
+ * The edge's permitted subset of the jobs deployment map, as one environment
+ * document (`EDGE_JOBS_CONFIG`). Deliberately NOT the shared
+ * `JobsDeploymentConfigSchema`: that document carries every server's database
+ * URL and portal→jobs root, and the edge's custody is exactly the two hop keys
+ * it uses — each server's edge→jobs mint root (this process forwards signed
+ * operations to the server) and jobs→edge verification root (it receives the
+ * server's signed fetch callbacks) per ADR-0008. Parsing the subset with
+ * strict fields means handing this process the full map fails the boot naming
+ * the leaked field, instead of silently holding credentials it must never read.
+ */
+const EdgeJobsConfigDocumentSchema = strictWireObject({
+  // The strict record, not a plain z.record: a `__proto__` key in the
+  // server map is shed by zod's record iteration and refused by this one —
+  // the same screen every document of the jobs contract family parses under.
+  servers: strictWireRecord(JobServerIdSchema, EdgeJobsServerEntrySchema),
+});
+
+/**
+ * Resolve the submission-throttle limits: the shared platform defaults, with
+ * this deployment's optional `EDGE_JOBS_LIMITS` override (the JSON form of the
+ * shared submission-override schema) applied through the one shared resolver.
+ * Absent or blank means the defaults unchanged; anything present that does not
+ * parse as a submission override — a jobs-owned control, an unknown key,
+ * zero, negative, non-finite, past the ceiling — is an explicit startup
+ * error, never a silently partial tuning.
+ */
+function loadSubmissionLimits(env: NodeJS.ProcessEnv): JobsCapacityLimits {
+  const raw = env.EDGE_JOBS_LIMITS;
+  if (raw === undefined || raw.trim() === "") {
+    return resolveJobsCapacityLimits();
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    // The cause rides along for whoever inspects it, but never into a
+    // default-rendered message: a parse error quotes fragments of the value,
+    // and the operator needs the key, not the quote.
+    throw new Error("EDGE_JOBS_LIMITS must be a JSON object of submission-limit overrides", {
+      cause: error,
+    });
+  }
+  const verdict = JobsSubmissionOverridesSchema.safeParse(parsed);
+  if (!verdict.success) {
+    throw new Error(
+      `EDGE_JOBS_LIMITS is not a valid submission-limit override — ${z.prettifyError(verdict.error)}`,
+    );
+  }
+  return resolveJobsCapacityLimits(verdict.data);
+}
+
+/**
+ * Parse the jobs forwarding configuration from the environment. Absent or
+ * blank means fully disabled (empty map) — the routes answer 503 and ordinary
+ * hosting needs no jobs configuration. A present document must parse whole:
+ * a malformed endpoint or a root that is not a canonical base64 32-byte
+ * secret is an explicit startup error. Keys derive here, at boot. One root
+ * per server is enforced by the deployment map that produces this document;
+ * this parse keeps the same rule locally (see {@link assertDistinctRoots}).
+ */
+export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
+  const refuseDiagnosticTypes = env.NODE_ENV === "production";
+  // The submission limits resolve in BOTH branches — a bad EDGE_JOBS_LIMITS
+  // must fail the boot even when no job servers are configured, the same
+  // posture as a bad EDGE_JOBS_TIMEOUT_MS.
+  const submissionLimits = loadSubmissionLimits(env);
+  const raw = env.EDGE_JOBS_CONFIG;
+  if (raw === undefined || raw.trim() === "") {
+    return {
+      servers: {},
+      timeoutMs: DEFAULT_JOBS_FORWARD_TIMEOUT_MS,
+      refuseDiagnosticTypes,
+      submissionLimits,
+    };
+  }
+  let document: unknown;
+  try {
+    document = JSON.parse(raw);
+  } catch (error) {
+    throw new Error("EDGE_JOBS_CONFIG must be a JSON object of configured job servers", {
+      cause: error,
+    });
+  }
+  const parsed = EdgeJobsConfigDocumentSchema.parse(document);
+  assertDistinctRoots(parsed.servers);
+  const servers: Record<string, JobsGatewayServerConfig> = {};
+  for (const [serverId, entry] of Object.entries(parsed.servers)) {
+    servers[serverId] = {
+      server: serverId,
+      endpoint: entry.endpoint.replace(/\/+$/, ""),
+      edgeToJobsKey: deriveJobsInstructionKey(entry.edgeToJobsRoot, "edgeToJobs"),
+      jobsToEdgeKey: deriveJobsInstructionKey(entry.jobsToEdgeRoot, "jobsToEdge"),
+    };
+  }
+  return {
+    servers,
+    timeoutMs: requirePositiveMs(
+      env.EDGE_JOBS_TIMEOUT_MS,
+      DEFAULT_JOBS_FORWARD_TIMEOUT_MS,
+      "EDGE_JOBS_TIMEOUT_MS",
+    ),
+    refuseDiagnosticTypes,
+    submissionLimits,
+  };
+}
+
+/**
+ * The last parse that can see two roots side by side: roots shared across
+ * servers — in either direction — collapse the custody that keeps one server's
+ * authority off another (the shared deployment map refuses the same shape;
+ * this holds it for the subset document too). One map sees every root in the
+ * document, so a direction cross-over (a server's edgeToJobs root equal to
+ * another's jobsToEdge root) is refused by the same walk.
+ */
+function assertDistinctRoots(
+  servers: Record<string, { edgeToJobsRoot: string; jobsToEdgeRoot: string }>,
+): void {
+  const seen = new Map<string, string>();
+  for (const [serverId, entry] of Object.entries(servers)) {
+    for (const [direction, root] of [
+      ["edgeToJobs", entry.edgeToJobsRoot],
+      ["jobsToEdge", entry.jobsToEdgeRoot],
+    ] as const) {
+      const first = seen.get(root);
+      if (first !== undefined) {
+        throw new Error(
+          `EDGE_JOBS_CONFIG: the ${direction} root configured for "${serverId}" is the same ` +
+            `secret as ${first}'s — each server holds an independently generated root per direction`,
+        );
+      }
+      seen.set(root, `${serverId}'s ${direction} root`);
+    }
+  }
+}
+
+/** Default bound for one forwarding round-trip — the signed instruction's own validity window. */
+export const DEFAULT_JOBS_FORWARD_TIMEOUT_MS = 30_000;
 
 /**
  * Edge (data/policy plane) config: the gateway base plus everything the edge
@@ -774,6 +1001,7 @@ function loadGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     },
     internalSecret: loadInternalSecret(env),
     portalUrl: env.EDGE_PORTAL_URL || null,
+    jobs: loadEdgeJobsConfig(env),
     publicScheme: "https",
     publicPort: Number(env.EDGE_PUBLIC_PORT ?? env.EDGE_PORT ?? env.PORT ?? 8080),
   };

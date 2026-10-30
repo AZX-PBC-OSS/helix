@@ -4,8 +4,9 @@ import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { type JWTPayload, jwtVerify } from "jose";
 import { hashDevToken, newDevToken } from "@azx-pbc/shared/devToken";
-import { INSTRUCTION_JWT_TYP, type HealthCheck } from "@azx-pbc/shared";
+import { INSTRUCTION_JWT_TYP, type HealthCheck, JOBS_REACHABILITY_CHECK } from "@azx-pbc/shared";
 import { buildDevGateway } from "./app.js";
+import type { JobsReachabilitySnapshot } from "../jobs/reachability.js";
 import type { DevTokenRow, DevTokenStore } from "./devTokenStore.js";
 import { testDevGatewayConfig } from "../test/config.js";
 import { FakeAppDataStore, FakeRegistry, FakeUsageStore, registryEntry } from "../test/fakes.js";
@@ -125,6 +126,8 @@ function build(devTokens: FakeDevTokenStore, store: AppDataStore = new FakeAppDa
     llmProvider: null,
     egress: null,
     instructionKey: null,
+    jobsForwarder: null,
+    jobsCallbackBurns: null,
     portal: null,
   });
   return app;
@@ -164,6 +167,54 @@ describe("dev-gateway /health", () => {
     await app.close();
   });
 
+  it("carries the jobs_reachability check only when jobs servers are configured (ADR-0009)", async () => {
+    // The getter stands in for the probe loop's snapshot (its state machine is
+    // reachability.test.ts's subject); what this leg pins is the composition —
+    // the check appears when the dep is wired, with its own name, and the
+    // disabled build above reports no jobs dependency at all.
+    const observed: JobsReachabilitySnapshot = {
+      started: true,
+      passes: 2,
+      lastPassAt: new Date().toISOString(),
+      lastOkPassAt: new Date().toISOString(),
+      servers: [
+        {
+          server: "jobs",
+          state: "unreachable",
+          reported: null,
+          lastReachableAt: null,
+          unreachableSince: new Date().toISOString(),
+          reason: "no_answer",
+        },
+      ],
+    };
+    const app: FastifyInstance = buildDevGateway({
+      config: testDevGatewayConfig(),
+      registry: new FakeRegistry([registryEntry({ slug: "myapp", appId: APP_A })]),
+      devTokens: new FakeDevTokenStore(),
+      appData: new FakeAppDataStore(),
+      usage: new FakeUsageStore(),
+      llmProvider: null,
+      egress: null,
+      instructionKey: null,
+      jobsForwarder: null,
+      jobsReachability: () => observed,
+      jobsCallbackBurns: null,
+      portal: null,
+    });
+    const res = await app.inject({ url: "/health" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{ status: string; checks?: HealthCheck[] }>();
+    const check = body.checks?.find((c) => c.name === JOBS_REACHABILITY_CHECK);
+    // One configured server, unreachable — the whole configured plane is
+    // down, but the gateway still serves, so the check (and the roll-up)
+    // degrade rather than error.
+    expect(check?.status).toBe("degraded");
+    expect(check?.detail).toMatch(/every configured jobs server is unreachable/);
+    expect(body.status).toBe("degraded");
+    await app.close();
+  });
+
   it("degrades, still 200, when the dev tier's projection goes stale", async () => {
     const registry = new FakeRegistry([registryEntry({ slug: "myapp", appId: APP_A })]);
     registry.freshnessOverride = { staleForMs: 21 * 60_000, consecutiveLoadFailures: 21 };
@@ -176,6 +227,8 @@ describe("dev-gateway /health", () => {
       llmProvider: null,
       egress: null,
       instructionKey: null,
+      jobsForwarder: null,
+      jobsCallbackBurns: null,
       portal: null,
     });
     const res = await app.inject({ url: "/health" });
@@ -194,6 +247,8 @@ describe("dev-gateway /health", () => {
       llmProvider: null,
       egress: null,
       instructionKey: null,
+      jobsForwarder: null,
+      jobsCallbackBurns: null,
       portal: null,
     });
     await app.ready();
@@ -362,6 +417,8 @@ describe("dev-gateway CORS preflight", () => {
       llmProvider: null,
       egress: null,
       instructionKey: null,
+      jobsForwarder: null,
+      jobsCallbackBurns: null,
       portal: null,
     });
 
@@ -491,6 +548,8 @@ describe("dev-gateway delegated fetch minting", () => {
       llmProvider: null,
       egress,
       instructionKey,
+      jobsForwarder: null,
+      jobsCallbackBurns: null,
       portal: null,
     });
     return { app, egress, usage };

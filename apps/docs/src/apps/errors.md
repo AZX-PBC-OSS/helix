@@ -27,3 +27,7 @@ user as they are. A `403` means a grant is missing, and retrying won't fix it.
 | `502` | — | The upstream provider failed |
 
 Neither `412` nor `428` counts against the app's daily write budget.
+
+The `/_api/jobs/*` routes have their own codes, such as `idempotency_conflict`
+and `jobs_unavailable`, and their own retry rules. See
+[Errors from the jobs routes](./jobs#errors-from-the-jobs-routes).

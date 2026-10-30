@@ -40,8 +40,10 @@ A design describes intended behavior and trade-offs. A feature document describe
 what the code does today; a subsystem may need both. A review records findings as
 of a date. Put the date in its filename and record later decisions in an ADR.
 
-The planned [background jobs plane](design/background-jobs-plane.md) is the current
-design behind ADR-0045: named services, initially TypeScript/pg-boss. The
+The [background jobs plane](design/background-jobs-plane.md) is the current
+design behind ADR-0045: named services, initially TypeScript/pg-boss. It is
+implemented in `apps/jobs`; its operator procedures are in the public docs'
+[Operating background jobs](../apps/docs/src/deploy/jobs.md) page. The
 [runner PoC comparison](reviews/jobs-runner-poc-2026-10-08.md) records executed
 candidate evidence. The [TaskQ review](design/background-jobs-taskq-refresh.md)
 is historical source evidence; the earlier background-jobs memo covers the

@@ -90,6 +90,14 @@ catalog:
   "@prisma/client": ^7.9.1
   "@prisma/adapter-pg": ^7.9.1
   pg: ^8.21.0
+  # Jobs runner queue (ADR-0045; background-jobs-plane design §1). EXACT-pinned:
+  # this is the tested baseline from the October 2026 PoC, not the latest
+  # release — an upgrade is a source diff plus adapter acceptance tests (schema
+  # migrations, queue-policy semantics, native-sweep behavior), never a range
+  # bump. Its schema version and queue row shape are read by the jobs
+  # storage-compatibility check, so the tree and the checked assumptions must
+  # move together.
+  pg-boss: 12.37.0
   # Blob storage (Azurite in dev, Azure Blob in prod) — portal only.
   "@azure/storage-blob": ^12.32.0
   # Managed-identity credential for portal blob writes (prod) — portal only,

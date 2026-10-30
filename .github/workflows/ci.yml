@@ -1,7 +1,8 @@
 name: CI
 
 # Basic CI: runs the same checks as ./check-and-lint.sh (typecheck, lint,
-# format:check, docs build, tests), then builds the three app images and
+# format:check, docs build, tests), then builds the runtime app images (edge,
+# portal, egress and the jobs runner) plus the certbot automation image, and
 # publishes them to the GitHub Container Registry (GHCR).
 #
 # The checks are split across two jobs by what they *need*, not by what they
@@ -19,13 +20,19 @@ name: CI
 #   test    76s of checks in a 1m54s job (before sharding)
 #
 # (The docs build joined `static` later: a few seconds, no services needed, so
-# the job floor is unchanged in kind. The `timing:` line is the current truth.)
+# the job floor is unchanged in kind. The `timing:` line is the current truth —
+# and for `test` it now reflects the real-stack suites, not the split-era
+# numbers above: the whole suite runs about 9.5 minutes wall locally, dominated
+# by the retention suite alone.)
 #
 # One job doing all of it was 2m34s. `test` is then sharded three ways, since
-# 76s of vitest on a 2-core runner is mostly lost in-process parallelism — the
-# same suite is ~10s wall in the dev container. Each shard re-pays ~39s of
-# fixed setup (image pulls and install, not our code) to run ~25s of tests,
-# which is why three and not six: the job floor is `static` at 56s.
+# at the split 76s of vitest on a 2-core runner was mostly lost in-process
+# parallelism — the same suite was ~10s wall in the dev container. Each shard
+# re-pays ~39s of fixed setup (image pulls and install, not our code) to run
+# its third of the suite, which is why three and not six: the job floor is
+# `static` at 56s. The real-stack suites have since made the suite itself, not
+# the fixed setup, the dominant cost — the slowest shard is what `test`'s
+# timeout has to clear.
 #
 # This costs runner-seconds to save wall clock, which is the right trade here
 # only because the repo is public — standard GitHub-hosted runners are free and
@@ -35,9 +42,10 @@ name: CI
 #
 # The `test` job reproduces the dev-container environment (.devcontainer/
 # docker-compose.yml): the same least-privilege Postgres role split, an Azurite
-# blob emulator, and the same (dev-only, well-known) env values. `db` and
-# `azurite` are aliased to localhost so the hostnames the tests hardcode resolve
-# exactly as they do in the dev container.
+# blob emulator, and the same (dev-only, well-known) env values. `db`, `azurite`
+# and the stack hostnames are aliased to localhost, and Postgres gets the dev
+# container's 300-connection budget, so the suites see the environment they
+# were written for.
 #
 # `bicep` is an independent lane — it shares no toolchain with the node stack,
 # gates nothing and is gated by nothing.
@@ -104,8 +112,11 @@ jobs:
     name: test (${{ matrix.shard }})
     runs-on: ubuntu-latest
     # A hung Azurite wait or a stuck integration suite would otherwise burn the
-    # 6h runner default. The full pass is single-digit minutes; 20 is slack.
-    timeout-minutes: 20
+    # 6h runner default. The timeout bounds a hung suite, so it must stay above
+    # the slowest shard — the real-stack retention suite dominates at roughly
+    # ten minutes, and locally the whole suite is about 9.5 minutes wall. 30
+    # gives a 4-vCPU shard headroom over that.
+    timeout-minutes: 30
 
     strategy:
       # One shard failing must not cancel its siblings: the point of the script
@@ -123,8 +134,12 @@ jobs:
         shard: ["1/3", "2/3", "3/3"]
 
     services:
-      # Matches .devcontainer/docker-compose.yml's `db`. Least-privilege runtime
-      # roles are created below from the same db-init SQL the container uses.
+      # Matches .devcontainer/docker-compose.yml's `db` in image, credentials and
+      # ports. A service container cannot take a `command:`, so the step above
+      # applies the dev cluster's `max_connections = 300` with ALTER SYSTEM and a
+      # restart: the real-stack suites hold about 35 Postgres connections each,
+      # and a shard can run several at once, so the default 100 is not enough.
+      # The step fails the job if the setting did not take.
       db:
         image: postgres:18
         env:
@@ -189,10 +204,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve db/azurite hostnames to localhost
+      - name: Resolve db/azurite and the stack hostnames to localhost
         # The Postgres service and the Azurite container both publish to
         # localhost; the tests reference them by the dev-container hostnames.
-        run: echo "127.0.0.1 db azurite" | sudo tee -a /etc/hosts
+        # The real-stack suites' child services also reach each other through
+        # the stack hostnames, so those must resolve here too rather than
+        # depending on the public DNS entry that answers 127.0.0.1 for them.
+        run: echo "127.0.0.1 db azurite local.helix.azxlabs.io auth.local.helix.azxlabs.io dev-api.local.helix.azxlabs.io" | sudo tee -a /etc/hosts
+
+      - name: Raise Postgres max_connections to the dev container's 300
+        # A service container cannot take a `command:`, so the dev cluster's
+        # connection budget is applied here instead: ALTER SYSTEM + a restart,
+        # then SHOW to prove the setting took (the step fails the job if it
+        # did not). See the comment on the `db` service above.
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET max_connections = 300"
+          docker restart "${{ job.services.db.id }}"
+          for _ in $(seq 1 30); do
+            if psql "$DATABASE_URL" -tAc "SELECT 1" >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          actual=$(psql "$DATABASE_URL" -tAc "SHOW max_connections")
+          echo "max_connections=$actual"
+          test "$actual" = "300" || { echo "::error::Postgres max_connections is $actual, not 300" >&2; exit 1; }
 
       - name: Pull the Azurite image (backgrounded)
         # `docker run -d` detaches the *container*, not the pull — it still
@@ -206,10 +240,16 @@ jobs:
           disown
 
       - name: Create least-privilege Postgres roles
-        # Same db-init the dev container runs on first boot (helix_portal /
-        # helix_edge / helix_egress / helix_dev). Roles are cluster-global, so
-        # they apply to the helix_test database vitest creates + migrates too.
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f .devcontainer/db-init/01-roles.sql
+        # Same db-init the dev container runs on first boot: the runtime roles
+        # (helix_portal / helix_edge / helix_egress / helix_dev / the jobs
+        # identities), the jobs database and the PUBLIC-CONNECT hardening in
+        # 01, the portal's dev-database bootstrap grants in 02. Roles are
+        # cluster-global, so they apply to the helix_test database vitest
+        # creates + migrates too.
+        run: |
+          for f in .devcontainer/db-init/*.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
 
       - name: Generate dev secret-store KEK
         run: openssl rand -hex 32 > "$DEV_SECRETS_KEK_FILE" && chmod 600 "$DEV_SECRETS_KEK_FILE"
@@ -252,6 +292,12 @@ jobs:
           echo "Azurite did not become ready" >&2; docker logs azurite >&2; exit 1
 
       - name: Run checks (test)
+        # One vitest worker per vCPU of the standard 4-vCPU runner. The dev
+        # container's default of ten (vitest.config.ts) oversubscribed it: each
+        # real-stack suite drives several child services, and the starved
+        # workers pushed timing-bound tests past their limits.
+        env:
+          HELIX_TEST_MAX_WORKERS: "4"
         run: ./check-and-lint.sh test -- --shard=${{ matrix.shard }}
 
   browser-lane:
@@ -307,9 +353,12 @@ jobs:
 
       - name: Create least-privilege Postgres roles
         # Same db-init the dev container runs (helix_edge / helix_egress /
-        # helix_dev) — the lane fails loudly without the runtime roles, by
-        # design: an unprovisioned green run is not evidence.
-        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f .devcontainer/db-init/01-roles.sql
+        # helix_dev / the jobs identities) — the lane fails loudly without the
+        # runtime roles, by design: an unprovisioned green run is not evidence.
+        run: |
+          for f in .devcontainer/db-init/*.sql; do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
 
       - uses: pnpm/action-setup@v4
         with:
@@ -466,9 +515,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # edge/portal/egress are the runtime apps; certbot is the wildcard-TLS
-        # automation image (scheduled ACA Job, not an app) — same build path.
-        app: [edge, portal, egress, certbot]
+        # edge/portal/egress are the runtime apps; jobs is the background-jobs
+        # runner (it also runs the jobs migrate job and the health relay);
+        # certbot is the wildcard-TLS automation image (scheduled ACA Job, not
+        # an app) — same build path.
+        app: [edge, portal, egress, certbot, jobs]
 
     steps:
       - uses: actions/checkout@v4
@@ -509,6 +560,26 @@ jobs:
           else
             echo "args=GEOIP_CACHE_KEY=$(date -u +%Y-%m)" >> "$GITHUB_OUTPUT"
           fi
+
+      # The jobs image is checked before anything is pushed: a failing check
+      # stops the job at the "Check the built jobs image" step, so a broken
+      # jobs image never reaches GHCR. The build-and-push below reuses the
+      # layer cache, so the checked build is not paid twice.
+      - name: Build the jobs image for checking
+        if: matrix.app == 'jobs'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/jobs/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: helix-jobs:smoke
+          cache-from: type=gha,scope=${{ matrix.app }}
+
+      - name: Check the built jobs image
+        if: matrix.app == 'jobs'
+        run: apps/jobs/scripts/image-smoke.sh helix-jobs:smoke
 
       - name: Build and push
         uses: docker/build-push-action@v6

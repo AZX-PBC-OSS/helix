@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
+import { JOBS_CAPACITY_DEFAULTS } from "@azx-pbc/shared";
 import { buildApp } from "../app.js";
 import type { EdgeConfig } from "../config.js";
 import { FakeBlobReader, FakeRegistry, registryEntry } from "../test/fakes.js";
@@ -51,6 +52,12 @@ function testConfig(): EdgeConfig {
     },
     internalSecret: null,
     portalUrl: null,
+    jobs: {
+      servers: {},
+      timeoutMs: 30_000,
+      refuseDiagnosticTypes: false,
+      submissionLimits: JOBS_CAPACITY_DEFAULTS,
+    },
   };
 }
 

@@ -84,6 +84,9 @@ catches a wrongly-off flag before it does damage.
 | `deployApps` | `false` | The two-phase switch: `false` deploys infrastructure only, `true` adds the container apps |
 | `deployFirewall` | `true` | The Azure Firewall that enforces the egress-only network zone. **Keep on for production** — it is the primary outbound control. `false` saves ~$920/month and is for dev/test installs only |
 | `deployDevGateway` | `false` | The opt-in cross-origin dev surface (`dev-api.<appsDomain>`) for building apps locally against a deployed platform |
+| `deployJobs` | `false` | The background-jobs service (internal ingress in the apps environment) and its wiring into the edge, dev gateway and portal. Turning it on is an explicit rollout step, and the apply refuses to run without the jobs passwords and signing roots (see [Operating background jobs](/deploy/jobs#enable-jobs-on-an-existing-installation)). `false` removes the service and every jobs setting from the other apps; the jobs database and its records stay |
+| `jobsServerState` | `serving` | `retiring` withdraws the jobs types from new grants and closes intake: apps that already hold the grant can no longer submit new jobs. The service, its routing and its credentials stay, so existing jobs stay readable and cancellable and their retry keys still recover them. Disable jobs only after the jobs service's `jobs_intake` health check reports the server drained |
+| `jobsIntakeOpen` | `true` | `false` closes intake on a serving server without withdrawing its types — new submissions get 503 `jobs_disabled` while existing jobs keep working. Ignored while retiring |
 | `portalExternal` | `true` | Puts the portal on the public load balancer at `portal.<appsDomain>`, gated by Entra sign-in. Set `false` only if you will reach the portal over a private network path; nobody can deploy without reaching it, and deploys from GitHub-hosted CI runners need it public |
 | `allowPublicApps` | `false` | Permits `public` (anonymous) app visibility on this install |
 | `allowPasswordApps` | `false` | Permits `password` (shared-passphrase) app visibility |
@@ -130,7 +133,7 @@ first-party defaults, or pointed at an existing Foundry account per the
 | Parameter | Default | What it is |
 | --- | --- | --- |
 | `deployTelemetry` | `true` | OTLP collectors + Application Insights. `false` leaves telemetry inert — the platform's documented default state |
-| `deployAlerts` | `true` | Alert rules on the platform's own telemetry (registry staleness) |
+| `deployAlerts` | `true` | Alert rules on the platform's own telemetry (registry staleness). With `deployJobs`, also the jobs alerts: a scheduled relay job reads the jobs service's and the portal's health bodies inside the environment, and rules fire on storage or worker failure, retained-storage saturation, overdue cleanup, lifecycle lag, and missing evidence. See `infra/azure/README.md` for each alert's first diagnostic step |
 | `deployAvailabilityTests` | `true` | Outside HTTP probes on the public hosts — the only monitoring that works when the platform can't see itself. Billed per execution |
 | `deployInfraAlerts` | `true` | Azure platform-metric rules: Postgres availability/storage, restart storms, edge 5xx |
 | `alertEmails` | `[]` | Who alerts notify. **Empty means the rules still deploy and still fire — at nobody.** Always set this, or turn alerts off |
@@ -207,6 +210,23 @@ parameter:
 | --- | --- | --- | --- |
 | `EDGE_FETCH_MAX_BODY_BYTES` | edge, dev-gateway | `fetchMaxBodyMb` × 1 MiB | 10 MiB |
 | `EGRESS_MAX_BODY_BYTES` | egress | `fetchMaxBodyMb` × 1 MiB | 10 MiB |
+
+Background-jobs capacity runs on the platform defaults. The template sets
+neither of these, so tuning one after sizing means adding it to that
+container app in `main.bicep`:
+
+| Variable | App(s) | Tunes | If absent |
+| --- | --- | --- | --- |
+| `EDGE_JOBS_LIMITS` | edge, dev-gateway | Submission attempts per app and environment, across the deployment, and the window length, as JSON: `{"submissionAttemptsPerAppEnv":10,"submissionAttemptsDeployment":100,"submissionWindowSeconds":60}` | Those defaults |
+| `JOBS_LIMITS` | jobs | Unfinished, retained and running jobs, as JSON | The defaults in the jobs service's README |
+
+Each value must be a positive whole number. An unknown key or a bad value
+stops the service at boot with the variable named. The edge counts its
+windows across all edge replicas. The dev gateway counts development
+submissions in each replica's own memory, so each replica allows the full
+limits and development traffic never uses up the production window. What a
+change does to running work, and the measured figures to size against, are in
+[Operating background jobs](/deploy/jobs#tune-capacity-limits).
 
 The portal image also carries one setting for the app owner's Visitors view:
 

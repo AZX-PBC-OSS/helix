@@ -1,9 +1,12 @@
 /**
  * Deployment topology: where this install's apps are served, and which optional
- * surfaces are wired up. One source for the values that differ per deployment
- * but are not secrets — read by `GET /api/v1/config` (so the prebuilt SPA gets
- * them at runtime instead of burning them in at build time), by `toApp()` for
- * the app `url` field, and by the stopgap dashboard's links.
+ * surfaces are wired up. One source for the values that differ per deployment —
+ * mostly not secrets (read by `GET /api/v1/config` so the prebuilt SPA gets
+ * them at runtime instead of burning them in at build time, by `toApp()` for
+ * the app `url` field, and by the stopgap dashboard's links); the one
+ * exception is the jobs lifecycle-delivery config at the bottom, whose
+ * per-server signing roots ARE secrets and never leave this module except as
+ * derived keys handed to the delivery sender.
  *
  * Resolvers take an injectable `env` and are read per call, not frozen at boot —
  * same shape as `policy/visibilityPolicy.ts`, and it keeps the env-override test
@@ -13,7 +16,23 @@
  * dev URLs.
  */
 
-import { CONNECTIONS_CALLBACK_PATH } from "@azx-pbc/shared";
+import { z } from "zod";
+
+import {
+  CONNECTIONS_CALLBACK_PATH,
+  advertisedJobTypes,
+  JobsCatalogueServersSchema,
+  JobServerIdSchema,
+  JobsInternalUrlSchema,
+  JobsNonProductionCatalogueServersSchema,
+  isValidJobsRootSecret,
+  RawInputKeyScreen,
+  strictWireObject,
+  strictWireRecord,
+  type JobTypeCatalogueEntry,
+  type JobsCatalogueServers,
+} from "@azx-pbc/shared";
+import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 
 /** The dev edge, as reachable from the host browser: mkcert TLS on :8080. */
 const DEV_APP_PUBLIC_BASE = "https://local.helix.azxlabs.io:8080";
@@ -124,6 +143,70 @@ export function resolveEgressBaseUrl(env: NodeJS.ProcessEnv = process.env): URL 
 }
 
 /**
+ * The portal's jobs discovery source (`PORTAL_JOBS_CATALOGUE`): the deployment
+ * map's credential-free projection — which servers are configured, their
+ * serving/retiring state, and the types each has installed (`JobsCatalogueServers`
+ * in `@azx-pbc/shared`). The deployment delivers the portal this projection and
+ * never the credentialed map (ADR-0008's custody matrix: the portal holds no
+ * jobs endpoint, database URL or signing root), so every jobs fact the portal
+ * publishes or enforces — the capability catalogue's `jobs` block and the
+ * installed-type addition check — derives from this document alone. Unset or
+ * blank is a fully disabled installation (the empty map), the same convention
+ * as `DEV_API_PUBLIC_BASE`'s absence.
+ *
+ * Production parses under the production catalogue schema only, so a catalogue
+ * naming a non-production type (`jobs:diagnostic`) fails this parse — and the
+ * boot through {@link assertDeploymentConfig}. A non-production stack parses
+ * under the catalogue schema that additionally accepts the diagnostic type,
+ * which is how an opted-in local stack advertises it.
+ */
+export function resolveJobsCatalogueServers(
+  env: NodeJS.ProcessEnv = process.env,
+): JobsCatalogueServers {
+  const raw = env.PORTAL_JOBS_CATALOGUE?.trim();
+  if (!raw) return { servers: {} };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `PORTAL_JOBS_CATALOGUE is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+  // Re-thrown as a plain error on purpose: a misconfigured deployment is a
+  // platform failure (500), never a client validation (a raw ZodError would
+  // answer the catalogue route 400).
+  const verdict =
+    env.NODE_ENV === "production"
+      ? JobsCatalogueServersSchema.safeParse(parsed)
+      : JobsNonProductionCatalogueServersSchema.safeParse(parsed);
+  if (!verdict.success) {
+    throw new Error(
+      `PORTAL_JOBS_CATALOGUE is not a valid jobs catalogue source: ${verdict.error.issues
+        .map((issue) => `${issue.path.join(".") || "(document)"}: ${issue.message}`)
+        .join("; ")}`,
+    );
+  }
+  return verdict.data;
+}
+
+/**
+ * The job types this deployment advertises (`GET /api/v1/capabilities` and the
+ * installed-type addition write-gate): the catalogue projection's installed
+ * types, with the diagnostic type advertised only by a non-production stack —
+ * one decision point, so the catalogue route and the write-gate cannot drift
+ * about which types are grantable.
+ */
+export function resolveAdvertisedJobTypes(
+  env: NodeJS.ProcessEnv = process.env,
+): JobTypeCatalogueEntry[] {
+  return advertisedJobTypes(resolveJobsCatalogueServers(env), {
+    diagnostics: env.NODE_ENV !== "production",
+  });
+}
+
+/**
  * This portal's public origin, the exact `aud` the CI deploy route accepts
  * (ADR-0051 decision 4): `PORTAL_PUBLIC_ORIGIN` when set, otherwise
  * `https://portal.<APP_PUBLIC_BASE host>`, the hostname the Bicep binds for the
@@ -204,4 +287,162 @@ export function assertDeploymentConfig(env: NodeJS.ProcessEnv = process.env): vo
   resolveDevApiBase(env);
   resolveEgressBaseUrl(env);
   resolveRepoDeployConfig(env);
+  resolveJobsCatalogueServers(env);
+  resolvePortalJobsDeliveryConfig(env);
+}
+
+// ── Jobs lifecycle delivery targets ──────────────────────────────────────────
+
+/**
+ * One configured lifecycle-delivery target, as the portal's sender consumes
+ * it: the server's private internal endpoint (appended to by the sender's
+ * routes) and the derived portal→jobs HS256 mint key — HKDF over this
+ * server's root at config-load time, so a malformed root is an explicit
+ * startup error rather than a first-pass failure. No other direction's root
+ * is representable (ADR-0008's custody matrix: the portal holds only
+ * portal→jobs roots), and no database URL is either. The server id is the
+ * map key — the sender reads it from there, so the record carries nothing
+ * twice.
+ */
+export interface PortalJobsDeliveryTarget {
+  /** The server's private internal endpoint, trailing slashes stripped. */
+  endpoint: string;
+  /** The derived portal→jobs mint key for this server. */
+  portalToJobsKey: Uint8Array;
+}
+
+/** The portal's resolved lifecycle-delivery configuration, keyed by server id. */
+export type PortalJobsDeliveryConfig = ReadonlyMap<string, PortalJobsDeliveryTarget>;
+
+const PortalJobsDeliveryServerSchema = strictWireObject({
+  endpoint: JobsInternalUrlSchema,
+  portalToJobsRoot: z.string().refine(isValidJobsRootSecret, {
+    message: "a signing root must be the canonical base64 encoding of exactly 32 bytes",
+  }),
+});
+
+/**
+ * The portal's permitted subset of the jobs deployment map, as one environment
+ * document (`PORTAL_JOBS_CONFIG`) — the shape the edge's `EDGE_JOBS_CONFIG`
+ * subset precedent established. Deliberately NOT the shared
+ * `JobsDeploymentConfigSchema`: that document carries every server's database
+ * URL and every direction's root, and this process's custody is exactly the
+ * portal→jobs root it mints lifecycle deliveries with, per server (ADR-0008).
+ * Strict fields at every level means handing the portal a full map entry fails
+ * the boot naming the leaked field, instead of silently holding credentials it
+ * must never read.
+ */
+const PortalJobsDeliveryDocumentSchema = RawInputKeyScreen.pipe(
+  strictWireObject({
+    // The strict record, not a plain z.record: a `__proto__` key in the server
+    // map is shed by zod's record iteration and refused by this one — the same
+    // screen every document of the jobs contract family parses under.
+    servers: strictWireRecord(JobServerIdSchema, PortalJobsDeliveryServerSchema),
+  }),
+);
+
+/**
+ * The last parse that can see two roots side by side: roots shared across
+ * servers collapse the custody that keeps one server's authority off another
+ * (the shared deployment map refuses the same shape; the edge's subset parse
+ * holds it for its directions). One walk sees every root in the document.
+ */
+function assertDistinctDeliveryRoots(servers: Record<string, { portalToJobsRoot: string }>): void {
+  const seen = new Map<string, string>();
+  for (const [serverId, entry] of Object.entries(servers)) {
+    const first = seen.get(entry.portalToJobsRoot);
+    if (first !== undefined) {
+      throw new Error(
+        `PORTAL_JOBS_CONFIG: the portalToJobs root configured for "${serverId}" is the ` +
+          `same secret as ${first}'s — each server holds an independently generated root per direction`,
+      );
+    }
+    seen.set(entry.portalToJobsRoot, `${serverId}'s portalToJobs root`);
+  }
+}
+
+/**
+ * Parse the portal's lifecycle-delivery configuration from the environment
+ * (`PORTAL_JOBS_CONFIG`). Absent or blank is a fully disabled installation —
+ * the sender is never built and the portal reports liveness only, the same
+ * convention as `PORTAL_JOBS_CATALOGUE`'s absence. A present document must
+ * parse whole: a malformed endpoint, a root that is not a canonical base64
+ * 32-byte secret, or a leaked field from the full deployment map (a database
+ * URL, another direction's root) is an explicit startup error. Keys derive
+ * here, at load — never lazily inside the delivery pass.
+ *
+ * The catalogue projection (`PORTAL_JOBS_CATALOGUE`) and this document are two
+ * halves of one deployment map; {@link assertDeliveryTargetsMatch} is the boot
+ * check that they name the same server set.
+ */
+export function resolvePortalJobsDeliveryConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): PortalJobsDeliveryConfig | null {
+  const raw = env.PORTAL_JOBS_CONFIG?.trim();
+  if (!raw) return null;
+  let document: unknown;
+  try {
+    document = JSON.parse(raw);
+  } catch (err) {
+    throw new Error("PORTAL_JOBS_CONFIG must be a JSON object of configured job servers", {
+      cause: err,
+    });
+  }
+  // Re-thrown as a plain error on purpose (the resolveJobsCatalogueServers
+  // posture): a misconfigured deployment is a platform failure at boot, never
+  // a client validation.
+  const verdict = PortalJobsDeliveryDocumentSchema.safeParse(document);
+  if (!verdict.success) {
+    throw new Error(
+      `PORTAL_JOBS_CONFIG is not a valid jobs delivery config: ${verdict.error.issues
+        .map((issue) => `${issue.path.join(".") || "(document)"}: ${issue.message}`)
+        .join("; ")}`,
+    );
+  }
+  assertDistinctDeliveryRoots(verdict.data.servers);
+  // An empty map is the fully disabled posture in document form — the sender
+  // is never built and nothing depends on jobs, the same as an absent variable.
+  if (Object.keys(verdict.data.servers).length === 0) return null;
+  const servers: Record<string, PortalJobsDeliveryTarget> = {};
+  for (const [serverId, entry] of Object.entries(verdict.data.servers)) {
+    servers[serverId] = {
+      endpoint: entry.endpoint.replace(/\/+$/, ""),
+      portalToJobsKey: deriveJobsInstructionKey(entry.portalToJobsRoot, "portalToJobs"),
+    };
+  }
+  return new Map(Object.entries(servers));
+}
+
+/**
+ * The catalogue projection and the delivery config must name the same server
+ * set: the catalogue decides which targets a lifecycle transition informs,
+ * and a name on one side only is a broken deployment either way — intents
+ * written for a server the portal can never deliver to, or delivery
+ * credentials for a server nothing will ever inform. The boot fails naming
+ * the mismatch, before a backlog that cannot drain can be created. A null
+ * delivery config is a fully disabled installation — valid only while the
+ * catalogue is empty too.
+ */
+export function assertDeliveryTargetsMatch(
+  catalogue: JobsCatalogueServers,
+  delivery: PortalJobsDeliveryConfig | null,
+): void {
+  const wanted = new Set(Object.keys(catalogue.servers));
+  const have = new Set(delivery?.keys() ?? []);
+  for (const server of wanted) {
+    if (!have.has(server)) {
+      throw new Error(
+        `PORTAL_JOBS_CONFIG does not configure the lifecycle target "${server}" that ` +
+          "PORTAL_JOBS_CATALOGUE names — pending intents would have no delivery path",
+      );
+    }
+  }
+  for (const server of have) {
+    if (!wanted.has(server)) {
+      throw new Error(
+        `PORTAL_JOBS_CONFIG configures the lifecycle target "${server}" that ` +
+          "PORTAL_JOBS_CATALOGUE does not name — a credential with no reader",
+      );
+    }
+  }
 }

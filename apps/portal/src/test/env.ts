@@ -4,6 +4,17 @@
  * boot, so a test can change a value around one inject instead of rebuilding
  * the app — this restores whatever was there before, including "unset".
  */
+import { JOBS_FETCH_QUALIFIED_TYPE } from "@azx-pbc/shared";
+
+/**
+ * A valid `PORTAL_JOBS_CATALOGUE` value: one serving `jobs` server installing
+ * the production fetch type — the deployment the jobs catalogue and grant
+ * tests run against. Serialized through the same shape the resolver parses,
+ * so a schema drift fails these tests instead of silently unconfiguring them.
+ */
+export const SERVING_JOBS_CATALOGUE = JSON.stringify({
+  servers: { jobs: { state: "serving", types: [JOBS_FETCH_QUALIFIED_TYPE] } },
+});
 
 /** Run `fn` with env overrides applied, restoring the prior values after. */
 export async function withEnv(

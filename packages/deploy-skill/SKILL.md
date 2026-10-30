@@ -25,8 +25,8 @@ deployment's addresses, and where to look up everything else.
 
 - **What this deployment offers right now**: the models you can use, the budgets
   that apply without approval, the stored connections and OAuth providers you can
-  bind, the visibility modes allowed, the deploy size limits, and whether the dev
-  gateway is on. Run:
+  bind, the visibility modes allowed, the deploy size limits, the background job
+  types you can grant, and whether the dev gateway is on. Run:
 
   ```bash
   npx -y @azx-pbc/helix-cli@latest capabilities
@@ -41,6 +41,7 @@ deployment's addresses, and where to look up everything else.
   - The `/_api` gateway (LLM, app data, fetch proxy, identity): https://azx-pbc-oss.github.io/helix/apps/gateway.md
   - CSP, serving rules, offline: https://azx-pbc-oss.github.io/helix/apps/serving-and-csp.md
   - Connected accounts (OAuth providers): https://azx-pbc-oss.github.io/helix/apps/connected-accounts.md
+  - Background jobs (work that outlives the page): https://azx-pbc-oss.github.io/helix/apps/jobs.md
   - Error codes: https://azx-pbc-oss.github.io/helix/apps/errors.md
   - The CLI: https://azx-pbc-oss.github.io/helix/apps/cli.md
   - Everything in one file: https://azx-pbc-oss.github.io/helix/llms-full.txt
@@ -75,6 +76,12 @@ deployment's addresses, and where to look up everything else.
   the key. On `412`, re-read and retry a bounded number of times. Never keep your
   own "index" key over a growing set of records; use the prefix list call.
   Per-user state goes in `/_api/data/user/*`, never in `shared`.
+- **A job submit keeps its key.** Work that must outlive the page is a
+  background job (`/_api/jobs/*`), granted by the exact type `capabilities`
+  lists. Save the `Idempotency-Key` and the exact body string **before** the
+  first send. On no reply, `429` or `503`, resend the same key and bytes with
+  backoff; a new key is new work. On `401`, never resubmit: let the user sign in
+  again, then resume the saved job. Stopping polling never cancels a job.
 - **No service workers of your own.** Registering one is refused. If the app must
   work offline, request the `offline` capability and the platform supplies the
   worker.
@@ -140,6 +147,8 @@ correct for CI. Never add a Helix token to the repository's secrets.
 - [ ] Gateway errors (`403`, `429`, `connection_required`) are shown to the user.
 - [ ] Shared writes use `If-Match` / `If-None-Match: *` and retry a bounded number of times on `412`.
 - [ ] Nothing user-specific or sensitive is in a `shared` key or the console.
+- [ ] Job submits save the key and body before sending, reuse both on every retry,
+      and never resubmit on `401`.
 - [ ] The build has a root `index.html` and deploys without CSP warnings.
 
 The full checklist, with links: https://azx-pbc-oss.github.io/helix/apps/quickstart.md#before-you-call-it-done

@@ -1,6 +1,6 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import multipart from "@fastify/multipart";
-import { HealthStatusSchema } from "@azx-pbc/shared";
+import { HealthStatusSchema, worstHealthState } from "@azx-pbc/shared";
 import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
 import type { PrismaClient } from "./db/client.js";
@@ -17,6 +17,7 @@ import { visitorsPlugin } from "./plugins/visitors.js";
 import type { GeoResolver } from "./geo/resolver.js";
 import { assertBundleLimits, resolveMaxTotalBytes } from "./deploy/limits.js";
 import { assertInternalJwtSecrets } from "./internalJwt.js";
+import { jobsLifecycleDeliveryCheck, type JobsDeliverySnapshot } from "./jobs/delivery.js";
 import { appRoutes } from "./routes/apps.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { providerRoutes } from "./routes/providers.js";
@@ -73,6 +74,18 @@ export interface BuildAppOptions {
    * undefined auto-detects ($PORTAL_WEB_DIST or apps/portal-web/dist).
    */
   spaDist?: string | null;
+  /**
+   * The jobs lifecycle-delivery sender's supervision snapshot, looked up per
+   * `/health` request (never a live probe) — the same shape the jobs app's
+   * composition reads its loops' state through. Null — jobs fully disabled on
+   * this install — leaves `/health` liveness-only. The lookup is deferred (a
+   * holder, not the snapshot itself) because the sender is constructed after
+   * the app: its Prisma client is the boot's, created beside it. Boot owns the
+   * sender's start/stop (ADR-0009: supervision belongs to the service boot,
+   * construction to the routes); the lookup keeps the health body honest
+   * about which loops are actually running on THIS process.
+   */
+  jobsDelivery?: () => JobsDeliverySnapshot | null;
 }
 
 export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
@@ -109,10 +122,17 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   app.register(multipart, { limits: { files: 1, fileSize: resolveMaxTotalBytes() } });
 
   app.get("/health", async () => {
+    // The delivery sender's supervision, when jobs is configured: the
+    // platform's always-200 contract carries the backlog and loop-freshness
+    // degradation in the body (ADR-0009). Absent — fully disabled jobs — the
+    // portal reports liveness only, and no jobs dependency is implied.
+    const deliverySnapshot = opts.jobsDelivery?.() ?? null;
+    const checks = deliverySnapshot ? [jobsLifecycleDeliveryCheck(deliverySnapshot)] : [];
     return HealthStatusSchema.parse({
-      status: "ok",
+      status: worstHealthState(checks.map((c) => c.status)),
       service: SERVICE_NAME,
       uptime: process.uptime(),
+      ...(checks.length > 0 ? { checks } : {}),
     });
   });
 

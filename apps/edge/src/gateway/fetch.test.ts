@@ -4,7 +4,7 @@ import { request as undiciRequest } from "undici";
 import { describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { type JWTPayload, jwtVerify } from "jose";
-import { INSTRUCTION_AUDIENCE, INSTRUCTION_JWT_TYP } from "@azx-pbc/shared";
+import { INSTRUCTION_AUDIENCE, INSTRUCTION_JWT_TYP, OUTCOME_HEADER } from "@azx-pbc/shared";
 import { buildApp } from "../app.js";
 import type { ProxiedOriginCredential } from "../registry/projection.js";
 import { testAuthConfig, testEdgeConfig } from "../test/config.js";
@@ -17,9 +17,15 @@ import {
   FakeUsageStore,
   registryEntry,
 } from "../test/fakes.js";
+import { RESPONSE_CACHE_HEADERS } from "./fetch.js";
 import { deriveInstructionKey } from "./instruction.js";
 import { MODEL_MAX, PATH_MAX } from "./usage.js";
-import type { EgressProvider, EgressRequest, EgressResponse } from "./egressProvider.js";
+import {
+  EgressProviderError,
+  type EgressProvider,
+  type EgressRequest,
+  type EgressResponse,
+} from "./egressProvider.js";
 
 /**
  * The `/_api/fetch` policy plane (fetch-proxy design §7): gate + CSRF, the
@@ -61,6 +67,10 @@ class FakeEgress implements EgressProvider {
   delayMs = 0;
   /** Set when the edge's signal fired while this call was still in flight. */
   abortedDuringCall = false;
+  /** Extra response headers egress "returns", on top of the content type. */
+  responseHeaders: Record<string, string | string[]> = {};
+  /** When set, the forward rejects with it after recording the call. */
+  failure: Error | null = null;
 
   async proxy(req: EgressRequest): Promise<EgressResponse> {
     this.calls.push(req);
@@ -85,9 +95,10 @@ class FakeEgress implements EgressProvider {
     }
     if (this.delayMs > 0) await this.#holdOpen(req.signal);
     settled = true;
+    if (this.failure) throw this.failure;
     return {
       status: this.status,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...this.responseHeaders },
       body: this.responseBody ?? Readable.from([Buffer.from(JSON.stringify({ ok: true }))]),
       outcome: this.outcome,
     };
@@ -132,10 +143,13 @@ function buildFetchEdge(
     requestsPerDay?: number | null;
     withEgress?: boolean;
     maxBodyBytes?: number;
+    usage?: FakeUsageStore;
+    /** Overrides the derived instruction key (a broken key makes the mint throw). */
+    instructionKey?: Buffer;
   } = {},
 ): FetchEdge {
   const egress = new FakeEgress();
-  const usage = new FakeUsageStore();
+  const usage = opts.usage ?? new FakeUsageStore();
   const connections =
     opts.connections ??
     new Map<string, ProxiedOriginCredential>([
@@ -167,7 +181,7 @@ function buildFetchEdge(
     oidc: new FakeOidcClient(),
     usage,
     egress: opts.withEgress === false ? null : egress,
-    instructionKey: opts.withEgress === false ? null : key,
+    instructionKey: opts.withEgress === false ? null : (opts.instructionKey ?? key),
   });
   return { app, egress, usage };
 }
@@ -745,6 +759,192 @@ describe("/_api/fetch", () => {
   });
 });
 
+describe("/_api/fetch — what crosses each hop", () => {
+  it("forwards only safelisted request headers to egress", async () => {
+    // The app must not smuggle the session cookie outbound or override the
+    // credential egress injects, so anything off REQUEST_HEADER_SAFELIST stays
+    // behind — including the platform's own auth headers.
+    const { app, egress } = buildFetchEdge();
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/users/octocat",
+      headers: {
+        ...HOST,
+        origin: ORIGIN,
+        accept: "application/vnd.github+json",
+        "user-agent": "demo-app",
+        cookie: "__Host-session=live-session",
+        authorization: "Bearer app-supplied",
+        "x-api-key": "app-supplied",
+        "proxy-authorization": "Basic Zm9vOmJhcg==",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(egress.calls[0]?.headers).toEqual({
+      accept: "application/vnd.github+json",
+      "user-agent": "demo-app",
+    });
+    await app.close();
+  });
+
+  it("strips blocklisted, platform and framing headers from the upstream response", async () => {
+    const { app, egress } = buildFetchEdge();
+    egress.responseHeaders = {
+      "set-cookie": "upstream=1; Path=/",
+      [OUTCOME_HEADER]: "ok",
+      "content-length": "999",
+      location: "https://elsewhere.example/",
+      etag: '"v1"',
+      "x-ratelimit-remaining": "41",
+    };
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/users/octocat",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["set-cookie"]).toBeUndefined();
+    expect(res.headers[OUTCOME_HEADER]).toBeUndefined();
+    expect(res.headers.location).toBeUndefined();
+    // Upstream's content-length is dropped: the edge re-streams and frames the
+    // body itself, so the length on the wire is the real one, not upstream's.
+    expect(res.headers["content-length"]).not.toBe("999");
+    expect(res.json()).toEqual({ ok: true });
+    // Ordinary upstream headers pass through.
+    expect(res.headers.etag).toBe('"v1"');
+    expect(res.headers["x-ratelimit-remaining"]).toBe("41");
+    expect(res.headers["cache-control"]).toBe("no-store");
+    await app.close();
+  });
+
+  // The upstream call may carry an injected credential, so the response must
+  // never be stored by the browser or an intermediary. Each header that could
+  // authorize storage is stripped, and the edge's own no-store is what the app
+  // sees.
+  const cacheDirectives: Record<string, string | string[]> = {
+    "cache-control": "public, max-age=600",
+    expires: "Wed, 21 Oct 2099 07:28:00 GMT",
+    "surrogate-control": "max-age=600",
+    "cdn-cache-control": "public, max-age=600",
+    "cloudflare-cdn-cache-control": "max-age=600",
+  };
+
+  it("strips exactly the documented cache headers", () => {
+    expect([...RESPONSE_CACHE_HEADERS].sort()).toEqual(Object.keys(cacheDirectives).sort());
+  });
+
+  for (const [name, value] of Object.entries(cacheDirectives)) {
+    it(`keeps the edge's no-store over an upstream \`${name}\``, async () => {
+      const { app, egress } = buildFetchEdge();
+      egress.responseHeaders = { [name]: value };
+      const res = await app.inject({
+        method: "GET",
+        url: "/_api/fetch/https://api.github.com/users/octocat",
+        headers: { ...HOST, origin: ORIGIN },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      if (name !== "cache-control") expect(res.headers[name]).toBeUndefined();
+      await app.close();
+    });
+  }
+
+  it("keeps no-store when upstream sends every cache header at once, repeated", async () => {
+    const { app, egress } = buildFetchEdge();
+    egress.responseHeaders = {
+      ...cacheDirectives,
+      "cache-control": ["public", "max-age=600"],
+    };
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/users/octocat",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    for (const name of RESPONSE_CACHE_HEADERS) {
+      if (name !== "cache-control") expect(res.headers[name]).toBeUndefined();
+    }
+    await app.close();
+  });
+
+  it("answers 502 `egress request failed` when egress itself fails", async () => {
+    const { app, egress, usage } = buildFetchEdge();
+    egress.failure = new EgressProviderError("egress answered 500");
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/x",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.headers["cache-control"]).toBe("no-store");
+    expect(res.json()).toEqual({ code: "upstream_error", message: "egress request failed" });
+    expect(usage.records).toEqual([
+      expect.objectContaining({ capability: "fetch", outcome: "error", statusCode: null }),
+    ]);
+    await app.close();
+  });
+
+  it("answers 502 `fetch failed` for any other forward failure, with no error text", async () => {
+    const { app, egress, usage } = buildFetchEdge();
+    egress.failure = new Error("connect ECONNREFUSED 10.0.0.7:8081");
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/x",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json()).toEqual({ code: "upstream_error", message: "fetch failed" });
+    expect(res.body).not.toContain("ECONNREFUSED");
+    expect(usage.records).toEqual([
+      expect.objectContaining({ capability: "fetch", outcome: "error" }),
+    ]);
+    await app.close();
+  });
+});
+
+describe("/_api/fetch — a policy dependency that throws", () => {
+  // The core lets a failure inside the budget read or the mint propagate
+  // (`runFetchPolicy`'s docblock); the browser route does not catch it, so
+  // Fastify's error handling answers. Nothing was dialled and no row is
+  // written — the call is neither a denial nor a forward.
+  class ThrowingBudgetStore extends FakeUsageStore {
+    override async fetchRequestsToday(): Promise<number> {
+      throw new Error("budget read failed");
+    }
+  }
+
+  it("answers 500 with no ledger row when the budget read throws", async () => {
+    const usage = new ThrowingBudgetStore();
+    const { app, egress } = buildFetchEdge({ requestsPerDay: 10, usage });
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/x",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(500);
+    expect(res.body).not.toContain("budget read failed");
+    expect(egress.calls).toHaveLength(0);
+    expect(usage.records).toHaveLength(0);
+    await app.close();
+  });
+
+  it("answers 500 with no ledger row when the mint throws", async () => {
+    // A zero-length HMAC key is refused by the signer, standing in for any
+    // mint failure.
+    const { app, egress, usage } = buildFetchEdge({ instructionKey: Buffer.alloc(0) });
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/x",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(500);
+    expect(egress.calls).toHaveLength(0);
+    expect(usage.records).toHaveLength(0);
+    await app.close();
+  });
+});
+
 /**
  * Everything below runs over a real socket. `app.inject()` cannot reach this
  * class of bug: light-my-request never emits `'close'` on `req.raw` when the
@@ -910,5 +1110,63 @@ describe("/_api/fetch over a real socket", () => {
       expect(((await res?.body.json()) as { code: string }).code).toBe("too_large");
     });
     expect(usage.records).toContainEqual(expect.objectContaining({ statusCode: 413 }));
+  });
+
+  /**
+   * A budget read the test parks mid-flight — standing in for the pre-forward
+   * policy phase (the budget check, the mint) that runs between the route's
+   * abort wiring and the egress dial.
+   */
+  class GatedBudgetStore extends FakeUsageStore {
+    entered = false;
+    #release: (() => void) | null = null;
+
+    override async fetchRequestsToday(): Promise<number> {
+      this.entered = true;
+      await new Promise<void>((resolve) => {
+        this.#release = resolve;
+      });
+      return super.fetchRequestsToday();
+    }
+
+    release(): void {
+      this.#release?.();
+    }
+  }
+
+  it("aborts the egress call when the client hangs up during the policy phase, before egress is dialed", async () => {
+    // The abort listener registers before the policy run, so a hang-up during
+    // the budget check — or the mint — aborts the forward too, instead of
+    // completing a call nobody is waiting for. The budget read is parked
+    // mid-flight, the client hangs up inside it, and only then does the
+    // policy proceed: egress must observe the abort, and the abandoned
+    // forward must ledger as the failed call it was.
+    const gated = new GatedBudgetStore();
+    const { app, egress, usage } = buildFetchEdge({ requestsPerDay: 5, usage: gated });
+    egress.delayMs = 5_000; // held open — nothing may answer a caller who left
+    await withServer(app, async (base) => {
+      const ac = new AbortController();
+      const pending = undiciRequest(`${base}${URL_PATH}`, {
+        method: "GET",
+        headers: { ...HOST, origin: ORIGIN },
+        signal: ac.signal,
+      }).catch(() => undefined);
+      await until(() => gated.entered, "the budget check to be in flight");
+      try {
+        ac.abort();
+        await pending;
+        gated.release();
+        await until(() => egress.abortedDuringCall, "the egress call to be aborted");
+        await until(
+          () => usage.records.some((r) => r.capability === "fetch" && r.outcome === "error"),
+          "the failed forward's ledger row",
+        );
+      } finally {
+        gated.release(); // the gate must open on every exit, or close() hangs
+      }
+    });
+    expect(usage.records).toContainEqual(
+      expect.objectContaining({ capability: "fetch", outcome: "error", statusCode: null }),
+    );
   });
 });

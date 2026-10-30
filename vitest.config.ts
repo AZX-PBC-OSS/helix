@@ -1,10 +1,30 @@
 import { defineConfig } from "vitest/config";
 
+// HELIX_TEST_MAX_WORKERS lowers the worker count on a smaller host. CI sets it
+// for GitHub's 4-vCPU runners, where ten workers each driving real-stack
+// suites oversubscribed the CPU and pushed timing-bound tests past their
+// limits. Unset, the dev container keeps its ten.
+function maxWorkers(): number {
+  const raw = process.env.HELIX_TEST_MAX_WORKERS;
+  if (raw === undefined || raw === "") return 10;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`HELIX_TEST_MAX_WORKERS must be a positive integer, got "${raw}"`);
+  }
+  return n;
+}
+
 // Two projects: the node suite covering every backend package, and the
 // portal-web jsdom suite (defined in the package's own vite config, which
 // carries the React plugin + setup files). https://vitest.dev/guide/projects
 export default defineConfig({
   test: {
+    // The real-stack integration suites each hold ~35 Postgres connections for
+    // their whole run, and the dev cluster allows 300. With one worker per core
+    // on a 14-core machine the local peak passed 300 and suites failed on
+    // "remaining connection slots are reserved"; ten workers peaked at 280 in
+    // the same wall time, because those suites, not CPU, bound the run.
+    maxWorkers: maxWorkers(),
     projects: [
       {
         test: {

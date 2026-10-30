@@ -50,11 +50,12 @@ describe("usage schemas", () => {
     expect("tokens14d" in platform).toBe(false);
   });
 
-  it("widens the ledger outcomes with connection_required — and nothing else", () => {
-    // Pinned whole: the delegated-call label joins (criterion 50), and every
-    // pre-existing label keeps its place. `provider_unavailable` and
-    // `provider_misconfigured` deliberately do NOT appear here — they meter as
-    // `refusal` (design.md decision 13).
+  it("pins the ledger outcomes whole", () => {
+    // Every label keeps its place. `connection_required` is the delegated-call
+    // label (criterion 50) and `too_large` the fetch-proxy's pre-egress size
+    // refusal. `provider_unavailable` and `provider_misconfigured`
+    // deliberately do NOT appear here — they meter as `refusal` (design.md
+    // decision 13).
     expect(GATEWAY_OUTCOMES).toEqual([
       "ok",
       "error",
@@ -63,6 +64,7 @@ describe("usage schemas", () => {
       "conflict",
       "forbidden",
       "connection_required",
+      "too_large",
     ]);
     expect(GatewayOutcomeSchema.parse("connection_required")).toBe("connection_required");
     expect(GatewayOutcomeSchema.safeParse("provider_unavailable").success).toBe(false);
@@ -78,6 +80,7 @@ describe("usage schemas", () => {
       userEmail: null,
       userKind: "anon",
       capability: "fetch",
+      env: "prod",
       model: "api.asana.com",
       inputTokens: 0,
       outputTokens: 0,
@@ -94,5 +97,42 @@ describe("usage schemas", () => {
       createdAt: "2026-09-25T00:00:00.000Z",
     };
     expect(GatewayCallSchema.parse(row).outcome).toBe("connection_required");
+  });
+
+  it("requires the environment tier on an audit row and rejects an unknown one", () => {
+    // `env` is a recorded platform value (the caller's resolved partition), not
+    // a request choice — the jobs views read it to separate the dev partition's
+    // submissions from the app's live workload. A row without it is a row the
+    // writer did not fully populate; parse refuses rather than guessing.
+    const row = {
+      id: "22222222-2222-4222-8222-222222222222",
+      appId: "11111111-1111-4111-8111-111111111111",
+      slug: "demo",
+      userOid: "oid-1",
+      userName: null,
+      userEmail: null,
+      userKind: "user",
+      capability: "jobs",
+      env: "prod",
+      model: "jobs:fetch",
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      costUsd: 0,
+      durationMs: 0,
+      statusCode: 202,
+      stopReason: null,
+      errorDetail: null,
+      path: null,
+      method: null,
+      outcome: "ok",
+      createdAt: "2026-10-13T00:00:00.000Z",
+    };
+    expect(GatewayCallSchema.parse(row).env).toBe("prod");
+    const withoutEnv: Record<string, unknown> = { ...row };
+    delete withoutEnv.env;
+    expect(GatewayCallSchema.safeParse(withoutEnv).success).toBe(false);
+    expect(GatewayCallSchema.safeParse({ ...row, env: "staging" }).success).toBe(false);
   });
 });

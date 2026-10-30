@@ -192,6 +192,18 @@ const ENTRIES: Record<string, CapabilityHelp> = {
     riskWhy:
       "Medium, not high: the exposure is stale rendering after deauthorization — the browser's storage already persists without any grant.",
   },
+
+  "jobs.types": {
+    title: "Background jobs",
+    grants:
+      "Lets the app start the named platform-authored background job and later read its progress and result — the work runs platform-side under the app's existing permissions, with no user present.",
+    risks: [
+      "Accepted work runs unattended and is not stopped by revoking this grant afterwards — revocation blocks new submissions and reads, not already-accepted execution.",
+      "The initial type is an outbound fetch: each submission makes a server-side call under the app's existing fetch permissions, so anything already granted there is spendable while the app holds this type.",
+    ],
+    riskWhy:
+      "Medium, not high: the type list is the platform's own catalogue and the work inherits the app's existing fetch permissions — unattended execution, but no new destination or budget is granted here. (Removing a type is the routine reduction every removal is.)",
+  },
 };
 
 /**
@@ -215,6 +227,7 @@ export function deltaHelp(d: Delta): CapabilityHelp {
   if (path.startsWith("data.sharedRead") || path.startsWith("data.sharedWrite"))
     return ENTRIES["data.shared"]!;
   if (path.startsWith("llm.models")) return ENTRIES["llm.models"]!;
+  if (path.startsWith("jobs.types")) return ENTRIES["jobs.types"]!;
 
   // `fetch.origins[+<key>]` — the key form is fetchOriginKey's (approval.ts),
   // so the credential variant is recoverable from the path alone.

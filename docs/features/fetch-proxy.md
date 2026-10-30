@@ -75,7 +75,14 @@ plaintext secrets or the public internet:
    friends stripped off the response). The response blocklist has tracked gaps
    today — it omits `authorization`/`www-authenticate` (#7), the body caps read
    only `content-length` (#8), and the injection path still accepts cleartext
-   `http://` (#11). (ADR-0005.)
+   `http://` (#11). (ADR-0005.) On the browser route the edge also strips
+   every upstream header that could let a cache store the response —
+   `cache-control`, `expires`, `surrogate-control`, `cdn-cache-control` and
+   `cloudflare-cdn-cache-control` (`RESPONSE_CACHE_HEADERS` in
+   `apps/edge/src/gateway/fetch.ts`) — and sets its own
+   `cache-control: no-store` after copying the rest, so the response to a call
+   that may have carried an injected credential is never cached. The jobs
+   callback (`/internal/jobs/v1/fetch`) copies no upstream headers at all.
 5. **Stream** the upstream response straight back through the edge to the
    browser; never buffered.
 
@@ -101,6 +108,23 @@ the egress boundary, and a denial mints no instruction and dials nothing, exactl
 like `quota_blocked`. (Counting denials would not bound the ledger either — the
 allowlist check returns *before* the quota gate, so a denial loop never reaches
 it; counting would only starve the app's legitimate traffic.)
+
+A **request body over the size cap** is refused `413 too_large` at one of two
+points, and the ledger row says which:
+
+- **Known before minting** — a declared `content-length` over the cap, or a
+  materialized body over it. The row is `outcome = "too_large"`, status 413.
+  Nothing is dialled, so it does not count against `requestsPerDay`. It is
+  rate-capped like the allowlist denial, under its own per-(app, env) budget,
+  so a run of oversized uploads cannot hide the allowlist-denial rows.
+- **Found while streaming** — a chunked upload, or one whose `content-length`
+  understated it, trips the edge's byte counter after the instruction has
+  reached egress. The row is `outcome = "refusal"`, status 413, and it counts
+  against `requestsPerDay`: egress has burned the instruction and may have
+  started the upstream call.
+
+Both rows carry the same `errorDetail`. The only difference is whether egress
+was reached.
 
 `path` is the target's **pathname only — the query string is not recorded**,
 matching the line `redactFetchTarget` in `@azx-pbc/shared/logging` draws for
@@ -409,7 +433,9 @@ build well:
 
 ## Key files
 
-- `apps/edge/src/gateway/fetch.ts` — `makeFetchHandler`, the policy plane.
+- `apps/edge/src/gateway/fetchPolicy.ts` — the shared fetch-policy/execution core: allowlist, credential source, budget, instruction minting, the egress forward, and ledger/metering, behind an explicit browser-vs-unattended caller authority (ADR-0006).
+- `apps/edge/src/gateway/fetch.ts` — `makeFetchHandler`, the browser route adapter around the core: serving/caller gates, CSRF, target parse, and reply delivery.
+- `apps/edge/src/gateway/jobsCallback.ts` — `makeJobsFetchCallbackHandler`, the signed jobs callback's unattended adapter around the same core: instruction verification + nonce burn, the tier refusal, and the `JobRequestError` response vocabulary (background-jobs-plane design §2).
 - `apps/edge/src/routing/connectionStatus.ts` — the app-facing connection-status read.
 - `apps/edge/src/serving/shim.ts` + `assets.ts` — the shim script + serve-time injection.
 - `apps/edge/src/serving/connectHelper.ts` — the `window.helix.connect` helper script.

@@ -37,9 +37,11 @@ enforce platform policy. See [project plan §5](platform-project-plan.md) and
 
 ## 3. Architecture at a glance
 
-Three services separate app traffic, administration, and outbound requests.
-The edge handles untrusted traffic; the portal manages privileged changes;
-egress holds connection credentials and makes third-party API calls.
+Four services separate app traffic, administration, outbound requests, and
+background work. The edge handles untrusted traffic; the portal manages
+privileged changes; egress holds connection credentials and makes third-party
+API calls; jobs runs durable background work for hosted apps. The diagram below
+shows the first three.
 
 ```
  app users ── HTTPS ─▶ *.azx.helix.azxlabs.io
@@ -82,6 +84,12 @@ egress holds connection credentials and makes third-party API calls.
   Owns schema migrations and is not routed through app subdomains.
 - **Egress:** verifies signed edge instructions, injects credentials, applies
   SSRF controls, and streams outbound responses. It is internal-only.
+- **Jobs:** runs platform-owned background job types for hosted apps on pg-boss
+  in its own private `helix_jobs` database. It is internal-only, its job routes
+  accept only signed edge and portal instructions, and it holds no connection
+  secrets: a job's outbound calls go back through the edge's fetch policy
+  ([ADR-0045](adr/0045-app-triggered-durable-jobs-plane.md),
+  [background jobs](features/background-jobs.md)).
 - **Storage:** Postgres for registry, app data, sessions, and audit; Blob for
   immutable bundles; Key Vault for production credentials.
 

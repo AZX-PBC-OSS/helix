@@ -459,3 +459,67 @@ describe("egress /proxy — connection pooling (ADR-0005 perf note)", () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
 });
+
+describe("egress /proxy — the caller hanging up", () => {
+  it("aborts an upstream request that has not answered when the caller closes", async () => {
+    // An upstream that accepts the request and never sends headers.
+    let arrived: () => void = () => {};
+    const requestArrived = new Promise<void>((resolve) => {
+      arrived = resolve;
+    });
+    let upstreamClosed: () => void = () => {};
+    const upstreamSocketClosed = new Promise<void>((resolve) => {
+      upstreamClosed = resolve;
+    });
+    const hung = createServer((req) => {
+      req.socket.once("close", () => upstreamClosed());
+      arrived();
+    });
+    await new Promise<void>((resolve) => hung.listen(0, "127.0.0.1", resolve));
+    const hungOrigin = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`;
+
+    // A long dispatcher timeout: only the caller's hang-up can end this request
+    // inside the test's bound.
+    const app = buildApp({
+      config: {
+        limits: { maxBodyBytes: 1024 * 1024, timeoutMs: 120_000 },
+        allowPrivate: true,
+        allowInsecureConnection: true,
+      } as EgressConfig,
+      resolver: null,
+      instructionKey: key,
+      burnStore: null,
+    });
+    const address = await app.listen({ port: 0, host: "127.0.0.1" });
+
+    const caller = new AbortController();
+    const pending = fetch(`${address}/proxy`, {
+      method: "POST",
+      headers: {
+        [INSTRUCTION_HEADER]: await mint({ origin: hungOrigin }),
+        [TARGET_HEADER]: `${hungOrigin}/hang`,
+        [METHOD_HEADER]: "GET",
+      },
+      signal: caller.signal,
+    }).catch(() => null);
+    await requestArrived;
+    caller.abort();
+    expect(await pending).toBeNull();
+
+    const closedInTime = await Promise.race([
+      upstreamSocketClosed.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
+    ]);
+    expect(closedInTime, "the upstream socket closed after the caller hung up").toBe(true);
+
+    // The span names the hang-up rather than an upstream failure or a 200.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    const span = recording.spans().find((s) => s.attributes["helix.outcome"] !== undefined);
+    expect(span?.attributes["helix.outcome"]).toBe("caller_gone");
+    expect(span?.attributes["helix.client_disconnected"]).toBe(true);
+    expect(span?.status.code).toBe(0); // UNSET
+
+    await app.close();
+    await new Promise<void>((resolve) => hung.close(() => resolve()));
+  });
+});

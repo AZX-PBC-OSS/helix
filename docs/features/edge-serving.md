@@ -33,8 +33,11 @@ loaded with hand-written SQL from `apps` + `versions`, and refreshes it on Postg
 don't herd the DB on one tick) as a safety net.
 
 - `apps/edge/src/registry/projection.ts` — the map + loader. Parses `capabilities` JSONB
-  fail-closed (`llm`/`data` → null on bad data). Serves the previous copy on a load error
-  (fail-static, never fail-open), and tracks load freshness (`freshness()`).
+  fail-closed (`llm`/`data`/`jobs` → null on bad data; a malformed jobs grant denies rather than
+  opens), and carries the jobs lifecycle generation (`apps.jobsGeneration`) as its canonical
+  decimal string — the one shared wire form the signed jobs claims compare ("1", never "01"; a
+  drifted row projects to "0", which matches nothing and fences closed). Serves the previous copy
+  on a load error (fail-static, never fail-open), and tracks load freshness (`freshness()`).
 - `apps/edge/src/registry/listener.ts` — the LISTEN connection with exponential-backoff
   reconnect, the jittered reconcile chain, and the load-failure log escalation.
 - `apps/edge/src/registry/health.ts` — the staleness thresholds that turn `freshness()` into the

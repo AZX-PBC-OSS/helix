@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
-import { installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
+import {
+  developerLocalOverridesSkipped,
+  installGracefulShutdown,
+  resolveServicePort,
+} from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
 import { buildApp, SERVICE_NAME } from "./app.js";
 import { loadConfig, publicOrigin } from "./config.js";
@@ -18,8 +22,12 @@ import { PgAppDataStore, type AppDataStore } from "./gateway/data.js";
 import { IpRateLimiter } from "./gateway/ipRateLimiter.js";
 import { LoginThrottle } from "./auth/loginThrottle.js";
 import { PgCounterStore } from "./gateway/counterStore.js";
+import { JobsSubmissionThrottle } from "./gateway/jobsThrottle.js";
 import { PgCspReportStore } from "./serving/cspReport.js";
 import { PgVisitStore } from "./serving/visits.js";
+import { PgJobsCallbackBurnStore } from "./jobs/burns.js";
+import { HttpJobsForwarder, type JobsForwarder } from "./jobs/forwarder.js";
+import { JobsReachability, probeJobsHealth } from "./jobs/reachability.js";
 import type { PoolClientErrorPhase } from "./db/pool.js";
 
 /**
@@ -32,6 +40,12 @@ import type { PoolClientErrorPhase } from "./db/pool.js";
  * dependency-minimal (project plan §6).
  */
 function loadDotEnvLocal(): void {
+  // A resolved stack boots with the stack env authoritative: the
+  // developer-local override file is the dev-stack convention, and a resolved
+  // stack obeying it would boot cross-wired — silently pointing this
+  // service's credentials at the developer's own (the isolation the port
+  // offset exists to provide). One home for the flag and its spellings.
+  if (developerLocalOverridesSkipped(process.env)) return;
   let text: string;
   try {
     text = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
@@ -64,7 +78,7 @@ const telemetry = startTelemetry(SERVICE_NAME);
 
 // Bind 0.0.0.0 — inside the container the port is reached across the Docker
 // network / forwarded to the host.
-const port = Number(process.env.EDGE_PORT ?? process.env.PORT ?? 8080);
+const port = resolveServicePort(process.env, ["EDGE_PORT", "PORT"], 8080);
 const host = process.env.HOST ?? "0.0.0.0";
 
 const config = loadConfig();
@@ -178,6 +192,30 @@ const counterStore = new PgCounterStore(config.databaseUrl, {
 });
 const anonRateLimiter = new IpRateLimiter(config.anonRateLimit, counterStore);
 const loginThrottle = new LoginThrottle(counterStore);
+// The jobs submission throttle buckets (design §4) ride the same shared PG
+// counter store — namespaced keys, one store, so the per-app/environment and
+// deployment-wide windows hold across the horizontally-scaled edge fleet, and
+// the one sweep below GCs these rows too.
+const jobsSubmissionThrottle = new JobsSubmissionThrottle(
+  counterStore,
+  config.jobs.submissionLimits,
+);
+
+// The jobs-callback nonce burn store (background-jobs-plane design §3): this
+// edge's replay memory for signed jobs→edge callback instructions, in its own
+// RLS-prod-scoped table (`jobs_callback_jti` — the egress burn set is a
+// different table this role has no grant on). The sweep is always on; the
+// callback receiver that consumes burns is the callback route's own seam
+// (registration and dispatch), not this file's.
+const jobsCallbackBurns = new PgJobsCallbackBurnStore({
+  databaseUrl: config.databaseUrl,
+  env: "prod",
+  statementTimeoutMs: config.statementTimeoutMs,
+  onClientError,
+  log: {
+    warn: (obj, msg) => logRef.current.warn(obj, msg),
+  },
+});
 
 // Fetch-proxy + LLM (M4.5): the edge is the policy plane and forwards authorized
 // calls to helix-egress over the EgressProvider seam. The capability is enabled
@@ -189,6 +227,39 @@ const egress: EgressProvider | null = config.fetch.egressUrl
 const instructionKey = config.fetch.instructionSecret
   ? deriveInstructionKey(config.fetch.instructionSecret)
   : null;
+
+// The jobs forwarding seam (background-jobs-plane design §3): one signed
+// forwarder over the configured servers from EDGE_JOBS_CONFIG. An empty map
+// (the variable absent) is a fully disabled installation — null forwarder, the
+// jobs routes answer 503 jobs_disabled, and ordinary hosting needs no jobs
+// configuration at all.
+const jobsForwarder: JobsForwarder | null =
+  Object.keys(config.jobs.servers).length > 0
+    ? new HttpJobsForwarder(Object.values(config.jobs.servers), {
+        timeoutMs: config.jobs.timeoutMs,
+      })
+    : null;
+
+// The jobs reachability observation (ADR-0009): a bounded probe loop over the
+// same configured servers, on its own cadence and independent of user
+// requests — `/health`'s `jobs_reachability` check grades its snapshot. Only
+// configured with the forwarder: a fully disabled install adds no jobs
+// dependency to the health body. Same late-bound logger as the registry.
+const jobsReachability =
+  jobsForwarder === null
+    ? null
+    : new JobsReachability({
+        servers: Object.values(config.jobs.servers).map(({ server, endpoint }) => ({
+          server,
+          endpoint,
+        })),
+        probe: probeJobsHealth,
+        log: {
+          info: (obj, msg) => logRef.current.info(obj, msg),
+          warn: (obj, msg) => logRef.current.warn(obj, msg),
+          error: (obj, msg) => logRef.current.error(obj, msg),
+        },
+      });
 
 // The auth-host `/connections/*` reverse proxy: the
 // consent surface is portal-rendered but auth-host-terminated, so the edge
@@ -242,6 +313,10 @@ const app = buildApp({
   appData,
   egress,
   instructionKey,
+  jobsForwarder,
+  jobsReachability: jobsReachability ? () => jobsReachability.snapshot() : null,
+  jobsSubmissionThrottle,
+  jobsCallbackBurns,
   portal,
   cspReports,
   visits,
@@ -263,9 +338,10 @@ const sweeper = sessions
     })
   : null;
 // GC elapsed rate_counters rows so the table can't grow under a flood of
-// distinct source IPs. Covers BOTH the anon limiter and the login throttle
-// (shared store), so it runs regardless of whether the anon limiter is enabled —
-// the login throttle always is. `unref` so it never holds the process open.
+// distinct source IPs. Covers the anon limiter, the login throttle and the
+// jobs submission buckets (shared store), so it runs regardless of whether
+// the anon limiter is enabled — the login throttle always is. `unref` so it
+// never holds the process open.
 const counterSweepMs = config.anonRateLimit.windowMs > 0 ? config.anonRateLimit.windowMs : 60_000;
 const counterSweep = setInterval(() => {
   void counterStore
@@ -276,12 +352,15 @@ counterSweep.unref();
 app.addHook("onClose", async () => {
   sweeper?.stop();
   clearInterval(counterSweep);
+  await jobsReachability?.stop();
+  await jobsCallbackBurns.stop();
   oidc?.stop();
   await registry.stop();
   await sessions?.close();
   await usage?.close();
   await appData?.close();
   await egress?.close();
+  await jobsForwarder?.close();
   await portal?.close();
   await cspReports.close();
   await visits.close();
@@ -306,6 +385,8 @@ try {
   // neither does OIDC discovery — auth routes 503 until it lands).
   await registry.start();
   await oidc?.start();
+  jobsCallbackBurns.start();
+  jobsReachability?.start();
   await app.listen({ port, host });
   app.log.info(
     {
@@ -329,5 +410,10 @@ try {
   }
 } catch (err) {
   app.log.error(err);
+  // The listener never came up — the failed-partial-initialization exit.
+  // Release what boot acquired (the probe loop's timer, the burn store's pool
+  // and sweep timer) here, not only on the shutdown path; stop() is safe twice.
+  await jobsReachability?.stop();
+  await jobsCallbackBurns.stop();
   process.exit(1);
 }
