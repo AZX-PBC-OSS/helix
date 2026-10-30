@@ -151,10 +151,17 @@ export interface FetchPolicyDeps {
   usage: UsageStore;
   instructionKey: Buffer;
   /**
-   * Caps metered policy denials per (app, env) — the one write on the policy
-   * path no other gate bounds. null ⇒ uncapped (tests).
+   * Caps metered policy denials per (app, env) — the allowlist denial, and
+   * the unattended refusals. null ⇒ uncapped (tests).
    */
   denialThrottle: DenialThrottle | null;
+  /**
+   * Caps metered pre-egress size refusals (`too_large`) per (app, env). A
+   * separate budget from `denialThrottle`, so a run of oversized uploads
+   * cannot use up the window and hide the allowlist-denial rows. null ⇒
+   * uncapped (tests).
+   */
+  sizeRefusalThrottle: DenialThrottle | null;
   /** The edge's own request-body cap, independent of egress's. */
   maxBodyBytes: number;
 }
@@ -224,12 +231,26 @@ function toOutcome(egressOutcome: string): GatewayOutcome {
 const TOO_LARGE_DETAIL = "request body exceeds the size cap";
 
 /**
+ * The suppression summaries, one per denial budget. The allowlist text is the
+ * one the browser route has always logged; existing log queries match on it.
+ */
+const SUPPRESSED_ALLOWLIST =
+  "allowlist-denial metering suppressed — this app is over its denial budget for the window";
+const SUPPRESSED_SIZE =
+  "fetch size-refusal metering suppressed — this app is over its size-refusal budget for the window";
+const SUPPRESSED_UNATTENDED =
+  "jobs callback fetch-denial metering suppressed — this app is over its callback denial budget for the window";
+
+/**
  * Ledger one pre-egress policy denial — the shape the browser route's
  * allowlist denial always had, now shared by every denial the core can reach.
  * The row's `outcome`/`statusCode` mirror the answer the caller actually gets,
  * so the audit trail never describes a different refusal than the one served.
  *
- * Capped per (app, env). This is the one write on the policy path no other
+ * Capped per (app, env), against one of two budgets: size refusals use
+ * `sizeRefusalThrottle`, every other denial `denialThrottle`. An adapter gives
+ * each caller kind its own `denialThrottle` instance. This is the one write on
+ * the policy path no other
  * gate bounds — the per-IP limiter only sees browser callers, every denial
  * here returns before the egress dial, and `forbidden` and `too_large` are
  * excluded from `fetchRequestsToday`, so they consume no budget either —
@@ -255,8 +276,10 @@ async function meterPolicyDenial(
   errorDetail: string,
 ): Promise<void> {
   const { entry, env, method, target, authority, log } = call;
-  const decision = deps.denialThrottle
-    ? await deps.denialThrottle.admit(entry.appId, env)
+  const sizeRefusal = outcome === "too_large";
+  const throttle = sizeRefusal ? deps.sizeRefusalThrottle : deps.denialThrottle;
+  const decision = throttle
+    ? await throttle.admit(entry.appId, env)
     : { meter: true as const, suppressedAt: undefined };
   if (decision.suppressedAt !== undefined) {
     log.warn(
@@ -266,7 +289,11 @@ async function meterPolicyDenial(
         origin,
         attempts: decision.suppressedAt,
       },
-      "fetch policy-denial metering suppressed — this app is over its denial budget for the window",
+      sizeRefusal
+        ? SUPPRESSED_SIZE
+        : authority.kind === "unattended"
+          ? SUPPRESSED_UNATTENDED
+          : SUPPRESSED_ALLOWLIST,
     );
   }
   meterGatewayCall({

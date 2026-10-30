@@ -11,7 +11,13 @@ import { openAiCodec } from "../gateway/openaiCodec.js";
 import { makeOpenAiModelsHandler } from "../gateway/openaiModels.js";
 import { makeDataHandlers } from "../gateway/data-handler.js";
 import { makeFetchHandler } from "../gateway/fetch.js";
-import { DenialThrottle } from "../gateway/denialThrottle.js";
+import {
+  DENIAL_PREFIX_FETCH_ALLOWLIST,
+  DENIAL_PREFIX_FETCH_SIZE,
+  DENIAL_PREFIX_JOBS_CALLBACK,
+  DENIAL_PREFIX_JOBS_SUBMIT,
+  DenialThrottle,
+} from "../gateway/denialThrottle.js";
 import { JobsSubmissionThrottle } from "../gateway/jobsThrottle.js";
 import { InMemoryCounterStore } from "../gateway/counterStore.js";
 import type { LlmProvider } from "../gateway/provider.js";
@@ -199,8 +205,13 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
     checkOrigin,
     anonLimiter: null,
     // Single-process by construction, but the dev gateway writes to the same
-    // ledger as the edge, so the same denial cap applies.
-    denialThrottle: new DenialThrottle(new InMemoryCounterStore()),
+    // ledger as the edge, so the same denial caps apply, one per category.
+    denialThrottle: new DenialThrottle(new InMemoryCounterStore(), {
+      keyPrefix: DENIAL_PREFIX_FETCH_ALLOWLIST,
+    }),
+    sizeRefusalThrottle: new DenialThrottle(new InMemoryCounterStore(), {
+      keyPrefix: DENIAL_PREFIX_FETCH_SIZE,
+    }),
     egress: deps.egress,
     usage: deps.usage,
     instructionKey: deps.instructionKey,
@@ -223,7 +234,7 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
       config.jobs.submissionLimits,
     ),
     denialThrottle: new DenialThrottle(new InMemoryCounterStore(), {
-      keyPrefix: "jobs-denial:",
+      keyPrefix: DENIAL_PREFIX_JOBS_SUBMIT,
     }),
     usage: deps.usage,
     refuseDiagnosticTypes: config.jobs.refuseDiagnosticTypes,
@@ -268,8 +279,11 @@ export function buildDevGateway(deps: DevGatewayDeps): FastifyInstance {
           egress: deps.egress,
           usage: deps.usage,
           instructionKey: deps.instructionKey,
-          // Single-process by construction, like the fetch denial throttle.
-          denialThrottle: new DenialThrottle(new InMemoryCounterStore()),
+          // Single-process by construction, like the fetch denial throttles,
+          // and its own budget apart from theirs.
+          denialThrottle: new DenialThrottle(new InMemoryCounterStore(), {
+            keyPrefix: DENIAL_PREFIX_JOBS_CALLBACK,
+          }),
           maxBodyBytes: config.fetch.maxBodyBytes,
         }
       : null;

@@ -1,13 +1,17 @@
 import type { CounterStore } from "./counterStore.js";
 
 /**
- * Limit pre-egress fetch-policy denial ledger rows per app and time window —
- * the allowlist refusal, the unattended-only refusals (delegated origin,
- * stale generation) and the oversized-body fast path, every denial
- * `meterPolicyDenial` can reach. Authenticated callers bypass the anonymous
- * limiter; denied origins return before the daily request budget, which also
- * excludes forbidden outcomes. A retry loop could therefore write denial rows
+ * Limit refusal ledger rows per app and time window, for refusals no other
+ * gate bounds: the fetch allowlist denial, the fetch size refusal decided
+ * before minting, the jobs callback's policy refusals, and the jobs
+ * submission throttle's refusals. Authenticated callers bypass the anonymous
+ * limiter, and these refusals either return before the daily request budget
+ * or are excluded from it. A retry loop could therefore write rows
  * continuously.
+ *
+ * Each category gets its own instance under its own key prefix (below), so a
+ * flood in one category cannot use up another's budget and hide its audit
+ * rows.
  *
  * Use memory to avoid a database round-trip for each dropped row. The bound is
  * per replica, unlike the shared counters used for security rate limits.
@@ -15,16 +19,24 @@ import type { CounterStore } from "./counterStore.js";
  * (ADR-0021 and TODO.md).
  */
 
+/** Browser fetch allowlist denials (`forbidden`). The class default. */
+export const DENIAL_PREFIX_FETCH_ALLOWLIST = "denial:";
+/** Browser fetch size refusals decided before minting (`too_large`). */
+export const DENIAL_PREFIX_FETCH_SIZE = "fetch-size-denial:";
+/** The jobs callback's fetch-policy refusals (unattended authority). */
+export const DENIAL_PREFIX_JOBS_CALLBACK = "jobs-callback-denial:";
+/** The jobs submission throttle's refusal rows (`gateway/jobs.ts`). */
+export const DENIAL_PREFIX_JOBS_SUBMIT = "jobs-denial:";
+
 export interface DenialThrottleOptions {
   /** Denial rows metered per (app, env) within a window. */
   max?: number;
   /** Window length in ms; the bucket resets after it elapses. */
   windowMs?: number;
   /**
-   * The key namespace inside the shared counter store. Distinct ledgers'
-   * denial budgets must not share a window — a flood on one surface would
-   * otherwise blind the other's audit rows. Defaults to the fetch-allowlist
-   * prefix the class was built for.
+   * The key namespace inside the shared counter store. Distinct denial
+   * categories must not share a window — a flood in one would otherwise blind
+   * the other's audit rows. Defaults to {@link DENIAL_PREFIX_FETCH_ALLOWLIST}.
    */
   keyPrefix?: string;
 }
@@ -53,7 +65,7 @@ export class DenialThrottle {
   constructor(store: CounterStore, opts: DenialThrottleOptions = {}) {
     this.#max = opts.max ?? 20;
     this.#windowMs = opts.windowMs ?? 60 * 1000;
-    this.#keyPrefix = opts.keyPrefix ?? "denial:";
+    this.#keyPrefix = opts.keyPrefix ?? DENIAL_PREFIX_FETCH_ALLOWLIST;
     this.#store = store;
   }
 

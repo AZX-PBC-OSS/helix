@@ -92,7 +92,11 @@ export interface JobsCallbackRuntime {
   egress: EgressProvider;
   usage: UsageStore;
   instructionKey: Buffer;
-  /** Caps metered policy denials per (app, env); null ⇒ uncapped (tests). */
+  /**
+   * Caps metered policy denials per (app, env); null ⇒ uncapped (tests). Its
+   * own instance, apart from the browser route's budgets, so neither caller
+   * can hide the other's denial rows.
+   */
   denialThrottle: DenialThrottle | null;
   /** The edge's own request-body cap for the policy's request path. */
   maxBodyBytes: number;
@@ -345,6 +349,9 @@ export function makeJobsFetchCallbackHandler(
           usage: rt.usage,
           instructionKey: rt.instructionKey,
           denialThrottle: rt.denialThrottle,
+          // The callback only ever sends a bodyless GET, so it never reaches
+          // the size check; its own budget covers the slot regardless.
+          sizeRefusalThrottle: rt.denialThrottle,
           maxBodyBytes: rt.maxBodyBytes,
         },
         {

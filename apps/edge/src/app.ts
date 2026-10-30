@@ -43,7 +43,13 @@ import { makeFetchHandler } from "./gateway/fetch.js";
 import { makeJobsSubmitHandler, makeJobsRecordHandler } from "./gateway/jobs.js";
 import { makeJobsFetchCallbackHandler, type JobsCallbackRuntime } from "./gateway/jobsCallback.js";
 import type { JobsCallbackBurnStore } from "./jobs/burns.js";
-import { DenialThrottle } from "./gateway/denialThrottle.js";
+import {
+  DENIAL_PREFIX_FETCH_ALLOWLIST,
+  DENIAL_PREFIX_FETCH_SIZE,
+  DENIAL_PREFIX_JOBS_CALLBACK,
+  DENIAL_PREFIX_JOBS_SUBMIT,
+  DenialThrottle,
+} from "./gateway/denialThrottle.js";
 import { JobsSubmissionThrottle } from "./gateway/jobsThrottle.js";
 import type { EgressProvider } from "./gateway/egressProvider.js";
 import { makeConnectionsProxyHandler } from "./routing/connectionsProxy.js";
@@ -274,11 +280,20 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // Always in-memory, including in prod (see the class docblock): this damps
   // ledger write amplification, it is not a security budget, so a per-replica
   // count is fine and a DB round-trip on the abusive path would be self-defeating.
-  const denialThrottle = new DenialThrottle(fallbackCounters);
-  // The jobs refusal rows' own denial budget — a distinct key namespace, so a
-  // fetch-allowlist flood cannot spend this ledger's denial window (or vice
-  // versa). In-memory for the same reason as the fetch one above.
-  const jobsDenialThrottle = new DenialThrottle(fallbackCounters, { keyPrefix: "jobs-denial:" });
+  // One budget per denial category, each under its own key prefix, so a flood
+  // in one category cannot hide another's audit rows.
+  const denialThrottle = new DenialThrottle(fallbackCounters, {
+    keyPrefix: DENIAL_PREFIX_FETCH_ALLOWLIST,
+  });
+  const sizeRefusalThrottle = new DenialThrottle(fallbackCounters, {
+    keyPrefix: DENIAL_PREFIX_FETCH_SIZE,
+  });
+  const jobsCallbackDenialThrottle = new DenialThrottle(fallbackCounters, {
+    keyPrefix: DENIAL_PREFIX_JOBS_CALLBACK,
+  });
+  const jobsDenialThrottle = new DenialThrottle(fallbackCounters, {
+    keyPrefix: DENIAL_PREFIX_JOBS_SUBMIT,
+  });
   // The submission throttle buckets (design §4): server.ts injects the
   // PG-backed one (fleet-wide limits); the fallback in-memory store keeps
   // single-process dev / tests working, like every other fallback here.
@@ -368,6 +383,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           checkOrigin,
           anonLimiter: anonRateLimiter,
           denialThrottle,
+          sizeRefusalThrottle,
           egress: deps.egress ?? null,
           usage: deps.usage ?? null,
           instructionKey: deps.instructionKey ?? null,
@@ -453,7 +469,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           egress: deps.egress,
           usage: deps.usage,
           instructionKey: deps.instructionKey,
-          denialThrottle,
+          denialThrottle: jobsCallbackDenialThrottle,
           maxBodyBytes: config.fetch.maxBodyBytes,
         }
       : null;

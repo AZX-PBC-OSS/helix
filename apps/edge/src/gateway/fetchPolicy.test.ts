@@ -128,6 +128,7 @@ function build(
     usage,
     instructionKey: key,
     denialThrottle: null,
+    sizeRefusalThrottle: null,
     maxBodyBytes: 10 * 1024 * 1024,
   };
   const base: FetchPolicyCall = {
@@ -434,6 +435,55 @@ describe("runFetchPolicy — the shared denial metering", () => {
       obj: { appId: APP_ID, env: "prod", origin: "https://api.stripe.com", attempts: 2 },
       msg: expect.stringContaining("suppressed"),
     });
+  });
+
+  it("gives size refusals their own budget and each category its own summary line", async () => {
+    // The allowlist line keeps the text the browser route has always logged,
+    // so existing log queries still match; the other two are distinct.
+    const connections = new Map<string, ProxiedOriginCredential>([
+      ["https://api.github.com", { kind: "keyless" }],
+    ]);
+    const { deps, base, usage, log } = build(connections);
+    const throttled: FetchPolicyDeps = {
+      ...deps,
+      denialThrottle: new DenialThrottle(new InMemoryCounterStore(), { max: 1 }),
+      sizeRefusalThrottle: new DenialThrottle(new InMemoryCounterStore(), {
+        max: 1,
+        keyPrefix: "fetch-size-denial:",
+      }),
+    };
+    const browser: FetchPolicyCall = {
+      ...base,
+      authority: { kind: "browser", identity: TRIGGERING_IDENTITY },
+    };
+    const oversized: FetchPolicyCall = {
+      ...browser,
+      method: "POST",
+      body: Readable.from([Buffer.alloc(8)]),
+      declaredRequestBytes: deps.maxBodyBytes + 1,
+    };
+    const ungranted: FetchPolicyCall = { ...browser, target: new URL("https://api.evil.com/x") };
+
+    // Spend the size budget, and one past it.
+    await runFetchPolicy(throttled, oversized);
+    await runFetchPolicy(throttled, oversized);
+    // The allowlist budget is untouched: its first denial still writes a row.
+    await runFetchPolicy(throttled, ungranted);
+    await runFetchPolicy(throttled, ungranted);
+    // An unattended caller brings its own budget, and logs its own line.
+    const callbackBudget = new DenialThrottle(new InMemoryCounterStore(), { max: 0 });
+    await runFetchPolicy(
+      { ...deps, denialThrottle: callbackBudget, sizeRefusalThrottle: callbackBudget },
+      { ...base, target: new URL("https://api.evil.com/x") },
+    );
+
+    await until(() => usage.records.length >= 2, "the two metered rows");
+    expect(usage.records.map((r) => r.outcome).sort()).toEqual(["forbidden", "too_large"]);
+    expect(log.warnings.map((w) => w.msg)).toEqual([
+      "fetch size-refusal metering suppressed — this app is over its size-refusal budget for the window",
+      "allowlist-denial metering suppressed — this app is over its denial budget for the window",
+      "jobs callback fetch-denial metering suppressed — this app is over its callback denial budget for the window",
+    ]);
   });
 
   function forbiddenDelta(points: RecordedMetric[]): number {

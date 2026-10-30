@@ -488,8 +488,13 @@ bounded by design. Status/result/cancel requests are not ledger rows.
   the sole authority for metering, budgets and audit; `helix.gateway.calls` is
   an operational counter that happens to count the same events and is never
   reconciled against it. The two provably differ — the ledger throttles fetch
-  policy-denial rows (allowlist, unattended refusals, oversized-body) and the
-  counter does not.
+  denial rows and the counter does not. Each category has its own per-(app,
+  env) budget and its own summary log line when the budget runs out:
+  allowlist denials (`denial:`, "allowlist-denial metering suppressed"),
+  pre-egress size refusals (`fetch-size-denial:`, "fetch size-refusal metering
+  suppressed"), and the jobs callback's policy refusals
+  (`jobs-callback-denial:`, "jobs callback fetch-denial metering
+  suppressed").
 
 An ESLint rule enforces the SDK boundary and the forbidden attribute keys; the
 adversarial suites (`spanRedaction.test.ts`, `traceBoundary.test.ts`,

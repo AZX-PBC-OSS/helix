@@ -59,8 +59,13 @@ export interface FetchGatewayRuntime {
   /** CSRF seam (dev-mode §5.4): edge = exact same-origin; dev-gateway = allowlist. */
   checkOrigin: OriginCheck;
   anonLimiter: IpRateLimiter | null;
-  /** Caps metered fetch-policy denials per (app, env). null ⇒ uncapped (tests). */
+  /** Caps metered allowlist denials per (app, env). null ⇒ uncapped (tests). */
   denialThrottle: DenialThrottle | null;
+  /**
+   * Caps metered pre-egress size refusals per (app, env), apart from the
+   * allowlist budget. null ⇒ uncapped (tests).
+   */
+  sizeRefusalThrottle: DenialThrottle | null;
   /** null ⇒ EDGE_EGRESS_URL unset; the capability 503s. */
   egress: EgressProvider | null;
   usage: UsageStore | null;
@@ -173,6 +178,7 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
         usage: rt.usage,
         instructionKey: rt.instructionKey,
         denialThrottle: rt.denialThrottle,
+        sizeRefusalThrottle: rt.sizeRefusalThrottle,
         maxBodyBytes: rt.config.fetch.maxBodyBytes,
       },
       {

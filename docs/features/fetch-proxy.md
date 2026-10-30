@@ -108,7 +108,8 @@ points, and the ledger row says which:
 - **Known before minting** — a declared `content-length` over the cap, or a
   materialized body over it. The row is `outcome = "too_large"`, status 413.
   Nothing is dialled, so it does not count against `requestsPerDay`. It is
-  rate-capped like the allowlist denial.
+  rate-capped like the allowlist denial, under its own per-(app, env) budget,
+  so a run of oversized uploads cannot hide the allowlist-denial rows.
 - **Found while streaming** — a chunked upload, or one whose `content-length`
   understated it, trips the edge's byte counter after the instruction has
   reached egress. The row is `outcome = "refusal"`, status 413, and it counts
