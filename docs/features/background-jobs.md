@@ -78,7 +78,9 @@ keys, the environment-tier refusal, then the bounded body read and the digest
 check, then the nonce burn. An unauthenticated caller gets 401 without the edge
 reading its body. The receiver then checks the signed lifecycle generation
 against the registry and runs the same fetch-policy core the browser path uses
-with unattended authority. That core applies the
+with unattended authority. It caps the 2xx stream back to jobs one byte past
+the 64 KiB result bound, so an oversized upstream body still fails the job
+with `result_too_large`. That core applies the
 allowlist, budget, secret injection through egress and SSRF controls. Origins
 that use delegated user credentials are refused with no keyless fallback.
 

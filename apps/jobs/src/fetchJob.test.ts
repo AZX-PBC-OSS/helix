@@ -308,6 +308,20 @@ describe("the bounded result interpretation", () => {
     expect(reads).toBeLessThan(JOBS_MAX_RESULT_BYTES / 4096 + 4);
   });
 
+  test("a body the edge ended cleanly one byte past the allowance fails oversized, never invalid", async () => {
+    // The edge caps the callback's stream at JOBS_MAX_RESULT_BYTES + 1 and
+    // ends it normally there (`apps/edge/src/jobs/resultCap.ts`). The bytes
+    // before the cut are a complete JSON value; the classification must still
+    // be the size, not a parse of a short body.
+    const text = `${JSON.stringify("x".repeat(JOBS_MAX_RESULT_BYTES - 2))} `;
+    expect(Buffer.byteLength(text)).toBe(JOBS_MAX_RESULT_BYTES + 1);
+    const calls: FetchCall[] = [];
+    const opts = handlerOptions({
+      fetchImpl: answeringFetch(new Response(text, { status: 200 }), calls),
+    });
+    expect(await failureOf(() => makeFetchJobHandler(opts)(context()))).toBe("result_too_large");
+  });
+
   test("a body exactly at the allowance is accepted — the bound is inclusive", async () => {
     // 65,536 bytes of valid JSON text (a quoted string of the exact size).
     const text = JSON.stringify("x".repeat(JOBS_MAX_RESULT_BYTES - 2));

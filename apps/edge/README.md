@@ -63,7 +63,8 @@ across replicas and restarts), then dispatches one outbound GET through the
 same fetch policy the browser `/_api/fetch` route uses — current registry
 entry by the signed app id, generation fence, origin allowlist, delegated
 prohibition, budget — and streams an upstream 2xx back to jobs as the bytes
-jobs validates. Never reachable from an app host, never session-gated (an
+jobs validates, capped one byte past the job result bound so an oversized
+body still ends as `result_too_large`. Never reachable from an app host, never session-gated (an
 unattended caller has no session), and the dev auth bypass does not touch it.
 
 ## Configuration

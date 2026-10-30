@@ -5,6 +5,7 @@ import {
   FetchJobInputSchema,
   INSTRUCTION_HEADER,
   JOBS_MAX_INPUT_BYTES,
+  JOBS_MAX_RESULT_BYTES,
   jobRequestError,
   type JobRequestError,
 } from "@azx-pbc/shared";
@@ -32,6 +33,7 @@ import type { RegistryReader } from "../registry/projection.js";
 import type { MeterIdentity } from "../auth/gate.js";
 import type { JobsCallbackBurnStore } from "../jobs/burns.js";
 import { readBoundedBody } from "../jobs/boundedBody.js";
+import { capResultBody } from "../jobs/resultCap.js";
 import type { DenialThrottle } from "./denialThrottle.js";
 import type { EgressProvider } from "./egressProvider.js";
 import { abortOnClientGone } from "./clientGone.js";
@@ -84,8 +86,9 @@ import { instruments, spanRoute } from "../telemetry.js";
  *    merely transports the signed request.
  *
  * The responses are exactly the protocol's: an upstream 2xx streams its bytes
- * to jobs (which owns JSON validation and the 64-KiB result bound and aborts
- * the stream past it); every refusal and failure answers a bounded
+ * to jobs (which owns JSON validation and the 64-KiB result bound), capped
+ * here one byte past that bound so an oversized body ends as jobs'
+ * `result_too_large`; every refusal and failure answers a bounded
  * `JobRequestError` before any body — never the upstream's own body, status
  * text, or any secret or user token. Jobs' cancellation and its outbound
  * timeout hang up this request, and the client-gone abort takes the egress
@@ -99,6 +102,12 @@ import { instruments, spanRoute } from "../telemetry.js";
  * every body a jobs server can sign fits.
  */
 export const JOBS_CALLBACK_MAX_BODY_BYTES = JOBS_MAX_INPUT_BYTES;
+
+/**
+ * The most upstream bytes the callback streams back to jobs: one past jobs'
+ * result allowance, so a capped body is still over it (see `capResultBody`).
+ */
+export const JOBS_CALLBACK_RESPONSE_CAP_BYTES = JOBS_MAX_RESULT_BYTES + 1;
 
 /** Everything the receiver needs, composed once per process (see `app.ts`). */
 export interface JobsCallbackRuntime {
@@ -471,8 +480,25 @@ export function makeJobsFetchCallbackHandler(
     // a bare `reply.send` leaves Fastify's own wrapper free to `end` the
     // response behind the pipe (ERR_STREAM_WRITE_AFTER_END — an empty 200).
     // The client-gone abort covers the stream itself.
+    //
+    // The edge caps the stream itself rather than trusting egress's cap or
+    // jobs' read: the hops do not trust each other. The cap is one byte past
+    // jobs' result allowance and ends the body cleanly there, so an oversized
+    // upstream reaches jobs as a body jobs refuses as `result_too_large`,
+    // never as a broken stream or a short prefix it might accept.
     setOutcome("dispatched");
-    return reply.status(200).header("cache-control", "no-store").send(res.body);
+    const appId = claims.appId;
+    const capped = capResultBody(res.body, JOBS_CALLBACK_RESPONSE_CAP_BYTES, () => {
+      req.log.warn(
+        {
+          event: "edge.jobs_callback.response_capped",
+          appId,
+          limit: JOBS_CALLBACK_RESPONSE_CAP_BYTES,
+        },
+        "the upstream response passed the job result allowance — ended at the cap",
+      );
+    });
+    return reply.status(200).header("cache-control", "no-store").send(capped);
   }
 
   // The route wrapper: a fresh ROOT span (jobs extracts only verified service

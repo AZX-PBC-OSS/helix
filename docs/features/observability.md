@@ -307,7 +307,8 @@ looked up:
   once the dispatch runs `forbidden` (unknown/archived app, stale lifecycle
   generation, ungranted origin — the core's denial reason rides
   `helix.reason`), `delegated_unattended`, `quota_blocked`, `dispatched`
-  (the upstream 2xx streamed), `upstream_refused` / `upstream_failed` (the
+  (the upstream 2xx streamed, capped one byte past the job result bound;
+  a trip logs `edge.jobs_callback.response_capped`), `upstream_refused` / `upstream_failed` (the
   bounded `upstream_error` refusals). The verified app id, job id, generation
   and type ride the span once the body phase has verified the instruction (a
   `rejected` or `wrong_tier` span carries none); the target URL, its path and query, the token, the

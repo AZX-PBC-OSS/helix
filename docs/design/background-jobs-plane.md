@@ -192,7 +192,9 @@ callback's gate order is:
 8. Resolve the registry entry, parse `{url}` and run the fetch policy.
 
 An anonymous request is therefore refused with 401 before any body byte is
-read. The newer
+read. The 2xx stream back to jobs is capped at the edge one byte past the
+64 KiB result bound and ended cleanly there, so an oversized upstream body
+reaches jobs as one it refuses with `result_too_large`. The newer
 consent code provides signing and deployment precedents, but its payload-free,
 no-burn JWT contract is not sufficient for these operations.
 
