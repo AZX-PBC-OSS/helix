@@ -220,6 +220,9 @@ job, before the first send, and keep it with the exact body bytes:
   is byte for byte, so the same JSON with different spacing or key order is
   different input. Keep the exact string you sent, not an object you
   serialize again.
+- **Same key, same bytes, grant removed:** `403 forbidden`, the same answer
+  a status or result read gets. If the app's grant for the job type is
+  removed after the first send, a resend no longer returns the job.
 - **No key:** every `POST` creates a new job, even with identical input.
 
 Use a fresh key only when the user deliberately starts new work. Generating

@@ -229,6 +229,9 @@ const SUBMIT_REFUSALS: Record<
   invalid_input: { status: 400, code: "payload_invalid" },
   type_unknown: { status: 403, code: "forbidden" },
   closed: { status: 403, code: "forbidden" },
+  // An identical-bytes keyed replay whose record type the caller's signed
+  // grants no longer cover: the 403 a status or result read answers.
+  forbidden: { status: 403, code: "forbidden" },
   unseen: { status: 503, code: "jobs_unavailable" },
   // A definitive refusal of new work — but 503, not 403: a closed intake may
   // reopen on the same store, and a client's earlier uncertain submission is

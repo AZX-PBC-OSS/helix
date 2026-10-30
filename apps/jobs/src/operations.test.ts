@@ -122,6 +122,13 @@ describe("the signed operation routes", () => {
           },
         },
         {
+          // An identical-bytes keyed replay whose type the signed grants no
+          // longer cover: the 403 a status or result read answers.
+          outcome: { outcome: "forbidden" },
+          status: 403,
+          body: { code: "forbidden", message: JobErrorMessages.forbidden },
+        },
+        {
           outcome: { outcome: "invalid_input" },
           status: 400,
           body: { code: "payload_invalid", message: JobErrorMessages.payload_invalid },

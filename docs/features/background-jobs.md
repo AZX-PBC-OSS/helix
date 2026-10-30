@@ -43,6 +43,11 @@ retained capacity, and commits the job record, the retry mapping and the
 pg-boss enqueue together (`acceptance.ts`, `intake.ts`). A retry key is scoped
 to server, app, environment, principal kind, owner and qualified type.
 Identical bytes recover the original job, and different bytes answer `409`.
+A recovery also rechecks the type grant: when the signed `allowedTypes` no
+longer cover the record's type, the replay answers `403 forbidden`, like the
+status, result and cancel reads. The order is the read paths' own: the key and
+its bytes (so a conflict answers first), then the record horizon (`404`), then
+the grant.
 
 **Execution is fenced.** pg-boss workers run at most two jobs per app and
 environment and eight per process (`runner.ts`, `execution.ts`). A start gate

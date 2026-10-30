@@ -649,6 +649,7 @@ describe("instruction telemetry", () => {
         { canned: { outcome: "accepted", jobId: TEST_JOB_ID, status: "queued" } },
         { canned: { outcome: "recovered", jobId: TEST_JOB_ID, status: "queued" } },
         { canned: { outcome: "conflict", status: "queued", error: null } },
+        { canned: { outcome: "forbidden" } },
         { canned: { outcome: "invalid_input" } },
         { canned: { outcome: "type_unknown" } },
         { canned: { outcome: "closed" } },
@@ -676,7 +677,7 @@ describe("instruction telemetry", () => {
       // a run of these is visible), the closed-intake refusal, and the
       // acceptance store failing to decide. The 429 capacity refusal is an
       // ordinary busy answer — UNSET with the rest.
-      expect(spans.map((s) => s.status.code)).toEqual([0, 0, 0, 0, 0, 0, 2, 2, 0, 2]);
+      expect(spans.map((s) => s.status.code)).toEqual([0, 0, 0, 0, 0, 0, 0, 2, 2, 0, 2]);
     } finally {
       await app.close();
       await storage.stop();

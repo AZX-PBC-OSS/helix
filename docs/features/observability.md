@@ -219,7 +219,9 @@ looked up:
   `JOBS_SUBMIT_OUTCOMES`: `accepted` (new work committed),
   `recovered` (a keyed resubmission's identical bytes recovered the original
   job — deliberately not `replayed`, which stays the nonce's word),
-  `conflict` (different bytes for a retained key), `invalid_input`
+  `conflict` (different bytes for a retained key), `forbidden` (an
+  identical-bytes replay of a readable job whose type the signed
+  `allowedTypes` no longer cover — the read paths' 403), `invalid_input`
   (new work refused at validation), `type_unknown` (no installed policy for
   the claimed type), `closed`/`unseen` (the lifecycle gate's final refusal
   and its retryable wait for the portal's delivery), `capacity_exceeded`

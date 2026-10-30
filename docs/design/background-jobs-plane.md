@@ -198,6 +198,9 @@ first. Jobs then looks up a retained key before new-work validation, intake
 closure or queue/storage capacity checks. Identical bytes recover the original
 job even after validation rules change. Different bytes return 409
 `idempotency_conflict`; equivalent JSON serialized differently still conflicts.
+Jobs also rechecks the signed `allowedTypes` before an identical replay
+recovers: a record whose type they no longer cover answers 403 `forbidden`,
+after the conflict and record-horizon verdicts, as the read paths order it.
 Ordinary edge submission throttles apply to retries too.
 
 A key stays attached while the live job record physically exists, including active

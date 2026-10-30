@@ -40,7 +40,10 @@ import {
  *    Identical original bytes recover the original job even when validation
  *    rules have since changed; different bytes conflict even when they are
  *    invalid for new work; and a replay never queues behind the admission
- *    lock, because it never takes it;
+ *    lock, because it never takes it. A recovery is also refused 403 when
+ *    the signed `allowedTypes` no longer cover the record's type, checked
+ *    after the conflict and record-horizon verdicts, the same
+ *    identity → horizon → grant order the read paths use;
  * 2. new-work validation (the type's installed policy and its input
  *    contract) — refusing here creates no job and no key claim, and the
  *    answer is about the payload even while intake is closed;
@@ -86,6 +89,7 @@ export type JobsAdmissionResult =
   | { outcome: "accepted"; jobId: string; status: JobStatus }
   | { outcome: "recovered"; jobId: string; status: JobStatus }
   | { outcome: "conflict"; status: JobStatus; error: JobError | null }
+  | { outcome: "forbidden" }
   | { outcome: "invalid_input" }
   | { outcome: "type_unknown" }
   | { outcome: "closed" }
@@ -163,6 +167,7 @@ export function createPgbossEnqueuer(boss: PgBoss): JobsEnqueuer {
 /** The durable mapping one keyed submission resolves against, as the row stores it. */
 interface KeyMappingRow {
   job_id: string;
+  type: string;
   status: string;
   body_sha256: string;
   error_code: string | null;
@@ -427,7 +432,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
     if (claims.idempotencyKey !== null) {
       const existing = await this.findKeyMapping(client, claims, claims.idempotencyKey);
       if (existing) {
-        return this.compareKeyMapping(existing, digest, new Date());
+        return this.compareKeyMapping(existing, digest, claims.allowedTypes, new Date());
       }
     }
 
@@ -552,7 +557,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
     key: string,
   ): Promise<KeyMappingRow | null> {
     const result = await client.query<KeyMappingRow>(
-      `SELECT job_id, status, body_sha256, error_code, terminal_at
+      `SELECT job_id, type, status, body_sha256, error_code, terminal_at
          FROM ${JOBS_JOB_RECORD_QUALIFIED}
         WHERE ${KEY_SCOPE_PREDICATE}`,
       keyScopeParams(claims, key),
@@ -604,8 +609,19 @@ export class JobsAcceptanceStore implements JobsAdmission {
    * still stands. Neither answer validates the input and neither creates
    * work — the comparison precedes new-work validation by contract, so a
    * job accepted under older validation rules still recovers.
+   *
+   * A readable identical replay recovers only while the caller's signed
+   * `allowedTypes` still cover the record's type; otherwise it is refused
+   * 403 `forbidden`, as a status or result read of the same record would
+   * be. The order matches the read paths: identity (the key and its bytes),
+   * then the record horizon, then the grant.
    */
-  private compareKeyMapping(row: KeyMappingRow, digest: string, now: Date): JobsAdmissionResult {
+  private compareKeyMapping(
+    row: KeyMappingRow,
+    digest: string,
+    allowedTypes: readonly string[],
+    now: Date,
+  ): JobsAdmissionResult {
     const status = projectedPublicStatus(row, now);
     if (row.body_sha256 !== digest) {
       // The conflict's error is the job's stored execution error — the code
@@ -615,6 +631,9 @@ export class JobsAcceptanceStore implements JobsAdmission {
     }
     if (recordHorizonPassed(row, now)) {
       return { outcome: "not_found" };
+    }
+    if (!allowedTypes.includes(row.type)) {
+      return { outcome: "forbidden" };
     }
     return { outcome: "recovered", jobId: row.job_id, status };
   }
@@ -638,7 +657,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
       throw new Error("a key claim race cannot arise for an unkeyed submission");
     }
     const result = await pool.query<KeyMappingRow>(
-      `SELECT job_id, status, body_sha256, error_code, terminal_at
+      `SELECT job_id, type, status, body_sha256, error_code, terminal_at
          FROM ${JOBS_JOB_RECORD_QUALIFIED}
         WHERE ${KEY_SCOPE_PREDICATE}`,
       keyScopeParams(claims, claims.idempotencyKey),
@@ -649,7 +668,7 @@ export class JobsAcceptanceStore implements JobsAdmission {
         `the retry key's scoped claim vanished between the constraint and its resolution`,
       );
     }
-    return this.compareKeyMapping(row, digest, new Date());
+    return this.compareKeyMapping(row, digest, claims.allowedTypes, new Date());
   }
 }
 

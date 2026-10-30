@@ -597,6 +597,9 @@ export type JobsLifecycleDeliveryOutcome = (typeof JOBS_LIFECYCLE_DELIVERY_OUTCO
  *   no new work created.
  * - `conflict` — a keyed resubmission whose bytes differ from the retained
  *   key's original (409 `idempotency_conflict`); no work created.
+ * - `forbidden` — an identical-bytes keyed resubmission of a readable job
+ *   whose type the signed `allowedTypes` no longer cover (403 `forbidden`,
+ *   as a status or result read answers); nothing recovered, no work created.
  * - `invalid_input` — new work whose input failed the type's validation
  *   (400 `payload_invalid`); no job, no key claim.
  * - `type_unknown` — the instruction named a qualified type this server has
@@ -629,6 +632,7 @@ export const JOBS_SUBMIT_OUTCOMES = [
   "accepted",
   "recovered",
   "conflict",
+  "forbidden",
   "invalid_input",
   "type_unknown",
   "closed",

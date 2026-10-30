@@ -1933,3 +1933,102 @@ describe("the retained-key replay across the read horizons", () => {
     });
   });
 });
+
+describe("the retained-key replay rechecks the caller's type grant", () => {
+  /**
+   * The edge drops a revoked type from the signed `allowedTypes`, and the
+   * read paths refuse a record whose type those grants no longer cover. A
+   * keyed replay is held to the same rule on the jobs side: an identical
+   * replay of a readable record recovers only while the grant covers its
+   * type, and is otherwise the read paths' 403. The order matches theirs:
+   * identity (the key and its bytes, so a conflict answers first), then the
+   * record horizon, then the grant.
+   */
+  /** The caller's identity with a grant list that no longer covers `jobs:fetch`. */
+  const grantedOnly = (appId: string, allowedTypes: string[]) => ({
+    ...TEST_IDENTITY,
+    appId,
+    allowedTypes,
+  });
+
+  test("an identical replay after the type's grant is revoked is refused forbidden and creates no job", async () => {
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    const first = await admit(appId, BODY, { idempotencyKey: "grant-revoked" });
+    expect(first.outcome).toBe("accepted");
+
+    await expect(
+      admit(appId, BODY, { idempotencyKey: "grant-revoked", identity: grantedOnly(appId, []) }),
+    ).resolves.toEqual({ outcome: "forbidden" });
+    expect(await records(appId)).toHaveLength(1);
+    expect(await runnerRows(appId)).toHaveLength(1);
+  });
+
+  test("a grant that covers other types but not the record's is still refused", async () => {
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    await admit(appId, BODY, { idempotencyKey: "grant-other" });
+
+    await expect(
+      admit(appId, BODY, {
+        idempotencyKey: "grant-other",
+        identity: grantedOnly(appId, ["jobs:diagnostic"]),
+      }),
+    ).resolves.toEqual({ outcome: "forbidden" });
+    expect(await records(appId)).toHaveLength(1);
+    expect(await runnerRows(appId)).toHaveLength(1);
+  });
+
+  test("a replay under a current grant still recovers the original job", async () => {
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    const first = await admit(appId, BODY, { idempotencyKey: "grant-held" });
+    if (first.outcome !== "accepted") throw new Error(`expected accepted, got ${first.outcome}`);
+
+    await expect(admit(appId, BODY, { idempotencyKey: "grant-held" })).resolves.toEqual({
+      outcome: "recovered",
+      jobId: first.jobId,
+      status: "queued",
+    });
+    expect(await records(appId)).toHaveLength(1);
+  });
+
+  test("changed bytes still conflict 409, granted or not, and create nothing", async () => {
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    await admit(appId, BODY, { idempotencyKey: "grant-conflict" });
+
+    await expect(admit(appId, OTHER_BODY, { idempotencyKey: "grant-conflict" })).resolves.toEqual({
+      outcome: "conflict",
+      status: "queued",
+      error: null,
+    });
+    // Identity answers before the grant, as in the read paths.
+    await expect(
+      admit(appId, OTHER_BODY, {
+        idempotencyKey: "grant-conflict",
+        identity: grantedOnly(appId, []),
+      }),
+    ).resolves.toEqual({ outcome: "conflict", status: "queued", error: null });
+    expect(await records(appId)).toHaveLength(1);
+    expect(await runnerRows(appId)).toHaveLength(1);
+  });
+
+  test("past the record horizon a revoked replay is the unknown-job not_found, not forbidden", async () => {
+    const appId = anApp();
+    await deliverGeneration(appId, "1", false);
+    const first = await admit(appId, BODY, { idempotencyKey: "grant-horizon" });
+    if (first.outcome !== "accepted") throw new Error(`expected accepted, got ${first.outcome}`);
+    await direct.query(
+      `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
+          SET status = 'succeeded', result = '{"kept":true}', terminal_at = now() - ($2 * interval '1 second')
+        WHERE server = 'jobs' AND job_id = $1`,
+      [first.jobId, 30 * 24 * 3_600 + 3_600],
+    );
+
+    await expect(
+      admit(appId, BODY, { idempotencyKey: "grant-horizon", identity: grantedOnly(appId, []) }),
+    ).resolves.toEqual({ outcome: "not_found" });
+    expect(await records(appId)).toHaveLength(1);
+  });
+});
