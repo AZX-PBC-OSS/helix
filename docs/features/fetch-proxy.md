@@ -75,7 +75,14 @@ plaintext secrets or the public internet:
    friends stripped off the response). The response blocklist has tracked gaps
    today — it omits `authorization`/`www-authenticate` (#7), the body caps read
    only `content-length` (#8), and the injection path still accepts cleartext
-   `http://` (#11). (ADR-0005.)
+   `http://` (#11). (ADR-0005.) On the browser route the edge also strips
+   every upstream header that could let a cache store the response —
+   `cache-control`, `expires`, `surrogate-control`, `cdn-cache-control` and
+   `cloudflare-cdn-cache-control` (`RESPONSE_CACHE_HEADERS` in
+   `apps/edge/src/gateway/fetch.ts`) — and sets its own
+   `cache-control: no-store` after copying the rest, so the response to a call
+   that may have carried an injected credential is never cached. The jobs
+   callback (`/internal/jobs/v1/fetch`) copies no upstream headers at all.
 5. **Stream** the upstream response straight back through the edge to the
    browser; never buffered.
 

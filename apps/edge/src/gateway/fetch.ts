@@ -73,8 +73,31 @@ export interface FetchGatewayRuntime {
   instructionKey: Buffer | null;
 }
 
+/**
+ * Upstream headers that could tell a cache to store the response. The edge
+ * answers every proxied response with `cache-control: no-store`, because the
+ * upstream call may have carried an injected credential and the body is then
+ * private to the caller. `expires` is honored by HTTP/1.0 caches that ignore
+ * `cache-control`. The CDN-targeted fields (RFC 9213, and `surrogate-control`)
+ * take precedence over `cache-control` at the CDN they target, so a `no-store`
+ * alone would not hold there. `pragma` is not listed: on a response it has no
+ * defined meaning and cannot authorize storage.
+ */
+export const RESPONSE_CACHE_HEADERS: readonly string[] = [
+  "cache-control",
+  "expires",
+  "surrogate-control",
+  "cdn-cache-control",
+  "cloudflare-cdn-cache-control",
+];
+
 const REQUEST_SAFE = new Set(REQUEST_HEADER_SAFELIST);
-const RESPONSE_BLOCKED = new Set([...RESPONSE_HEADER_BLOCKLIST, OUTCOME_HEADER, "content-length"]);
+const RESPONSE_BLOCKED = new Set([
+  ...RESPONSE_HEADER_BLOCKLIST,
+  ...RESPONSE_CACHE_HEADERS,
+  OUTCOME_HEADER,
+  "content-length",
+]);
 
 function sendFetchError(
   reply: FastifyReply,
@@ -210,10 +233,13 @@ export function makeFetchHandler(rt: FetchGatewayRuntime) {
     }
 
     const res = result.response;
-    reply.status(res.status).header("cache-control", "no-store");
+    reply.status(res.status);
     for (const [k, v] of Object.entries(res.headers)) {
       if (!RESPONSE_BLOCKED.has(k) && v !== undefined) reply.header(k, v);
     }
+    // Set after the copy as well as blocked in it, so neither the blocklist
+    // nor the ordering alone keeps an upstream cache directive off the reply.
+    reply.header("cache-control", "no-store");
     // Count the response bytes on the way to the app: egress already caps, but
     // the edge caps independently (defense-in-depth — the two hops don't trust
     // each other). Status + headers are committed, so a trip truncates the

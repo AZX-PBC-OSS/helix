@@ -17,6 +17,7 @@ import {
   FakeUsageStore,
   registryEntry,
 } from "../test/fakes.js";
+import { RESPONSE_CACHE_HEADERS } from "./fetch.js";
 import { deriveInstructionKey } from "./instruction.js";
 import { MODEL_MAX, PATH_MAX } from "./usage.js";
 import {
@@ -816,19 +817,54 @@ describe("/_api/fetch — what crosses each hop", () => {
     await app.close();
   });
 
-  it("currently lets an upstream cache-control replace the edge's no-store", async () => {
-    // `cache-control` is on neither blocklist, and the route sets no-store
-    // before copying upstream headers, so upstream's value is what the app
-    // gets. Pinned as the current behavior so a change to it is deliberate.
+  // The upstream call may carry an injected credential, so the response must
+  // never be stored by the browser or an intermediary. Each header that could
+  // authorize storage is stripped, and the edge's own no-store is what the app
+  // sees.
+  const cacheDirectives: Record<string, string | string[]> = {
+    "cache-control": "public, max-age=600",
+    expires: "Wed, 21 Oct 2099 07:28:00 GMT",
+    "surrogate-control": "max-age=600",
+    "cdn-cache-control": "public, max-age=600",
+    "cloudflare-cdn-cache-control": "max-age=600",
+  };
+
+  it("strips exactly the documented cache headers", () => {
+    expect([...RESPONSE_CACHE_HEADERS].sort()).toEqual(Object.keys(cacheDirectives).sort());
+  });
+
+  for (const [name, value] of Object.entries(cacheDirectives)) {
+    it(`keeps the edge's no-store over an upstream \`${name}\``, async () => {
+      const { app, egress } = buildFetchEdge();
+      egress.responseHeaders = { [name]: value };
+      const res = await app.inject({
+        method: "GET",
+        url: "/_api/fetch/https://api.github.com/users/octocat",
+        headers: { ...HOST, origin: ORIGIN },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["cache-control"]).toBe("no-store");
+      if (name !== "cache-control") expect(res.headers[name]).toBeUndefined();
+      await app.close();
+    });
+  }
+
+  it("keeps no-store when upstream sends every cache header at once, repeated", async () => {
     const { app, egress } = buildFetchEdge();
-    egress.responseHeaders = { "cache-control": "public, max-age=600" };
+    egress.responseHeaders = {
+      ...cacheDirectives,
+      "cache-control": ["public", "max-age=600"],
+    };
     const res = await app.inject({
       method: "GET",
       url: "/_api/fetch/https://api.github.com/users/octocat",
       headers: { ...HOST, origin: ORIGIN },
     });
     expect(res.statusCode).toBe(200);
-    expect(res.headers["cache-control"]).toBe("public, max-age=600");
+    expect(res.headers["cache-control"]).toBe("no-store");
+    for (const name of RESPONSE_CACHE_HEADERS) {
+      if (name !== "cache-control") expect(res.headers[name]).toBeUndefined();
+    }
     await app.close();
   });
 

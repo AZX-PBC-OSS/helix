@@ -290,7 +290,9 @@ both need a manifest grant:
     [Connected accounts](./connected-accounts));
   - blocks private, loopback, and cloud-metadata addresses;
   - refuses redirects;
-  - streams the response back.
+  - streams the response back with `Cache-Control: no-store`, dropping the
+    upstream's own cache headers (`Cache-Control`, `Expires`, and the
+    CDN-targeted ones).
 
   The app's own `cookie` and `authorization` headers are never forwarded. Calls
   are audited and counted against `fetch.requestsPerDay`.
