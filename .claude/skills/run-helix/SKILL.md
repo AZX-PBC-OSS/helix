@@ -11,7 +11,7 @@ node .claude/skills/run-helix/smoke.mjs
 
 That boots every service, waits for health, runs the check set against the running system (including a real Chromium render of the SPA), cleans up, and exits non-zero on any failure. Paths below are relative to the repo root.
 
-**It boots its own stack and never touches yours.** By default everything runs at a `+1000` port offset (edge `9080`, egress `9081`, dev-gateway `9082`, portal `4001`, dev-idp `4002`, jobs `4003`, SPA `6173`) against its own `helix_smoke` database, `helix_jobs_smoke` jobs database and `app-bundles-smoke` blob container. Run it with `pnpm dev:*` up and your servers keep running and your dev database stays clean. The whole stack — including the jobs plane's credentials — is resolved by `scripts/stack-env.mjs`; `--offset 0` opts back into the shared dev ports and database, and `--no-jobs` runs the composition fully disabled (no jobs service, no jobs credentials anywhere). `HELIX_JOBS_DIAGNOSTICS=1` opts the stack's non-production jobs plane into the diagnostic job type (`jobs:diagnostic`), off by default.
+**It boots its own stack and never touches yours.** By default everything runs at a `+1000` port offset (edge `9080`, egress `9081`, dev-gateway `9082`, portal `4001`, dev-idp `4002`, jobs `4004`, SPA `6173`) against its own `helix_smoke` database, `helix_jobs_smoke` jobs database and `app-bundles-smoke` blob container. Run it with `pnpm dev:*` up and your servers keep running and your dev database stays clean. The whole stack — including the jobs plane's credentials — is resolved by `scripts/stack-env.mjs`; `--offset 0` opts back into the shared dev ports and database, and `--no-jobs` runs the composition fully disabled (no jobs service, no jobs credentials anywhere). `HELIX_JOBS_DIAGNOSTICS=1` opts the stack's non-production jobs plane into the diagnostic job type (`jobs:diagnostic`), off by default.
 
 ## Prerequisites
 
@@ -59,7 +59,7 @@ Each service separately, in its own terminal:
 pnpm dev:idp      # :3002   pnpm dev:portal   # :3001
 pnpm dev:egress   # :8081   pnpm dev:edge     # :8080 (https)
 pnpm dev:web      # :5173   Vite dev server, proxies /api to :3001
-pnpm dev:jobs     # :3003   needs the jobs env — see apps/jobs/README.md
+pnpm dev:jobs     # :3004   needs the jobs env — the VS Code dev:jobs task sets it
 ```
 
 For an isolated second stack, prefix every terminal with the resolved env — `env $(node scripts/stack-env.mjs --env --offset 1000) pnpm dev:portal` — which also mints the jobs plane for that stack (each terminal resolves the same roots, so the services agree). A fresh suffix's databases don't exist yet: either run the smoke once (its prep creates and migrates them), or run the same prep by hand — `node scripts/ensure-db.mjs <owner-dsn> <jobs-dsn>` with the resolved DSNs. On the shared dev stack, jobs credentials come from your own settings (`apps/jobs/.env.local`); without them the rest of the stack runs fully disabled.

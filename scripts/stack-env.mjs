@@ -39,11 +39,10 @@ export const BASE_PORTS = {
   web: 5173,
   vendor: 3003,
   vendorTls: 3443,
-  // The jobs service's documented dev port (AGENTS.md, apps/jobs). It shares
-  // the number with `vendor`'s standalone default by pre-existing coincidence;
-  // the vendor is not part of any stack composition, so no resolved stack
-  // ever boots both.
-  jobs: 3003,
+  // The jobs service's dev port (AGENTS.md, apps/jobs). Not 3003: the dev
+  // container's `dev: all` task runs the fixture vendor there. The container
+  // image still listens on 3003 (apps/jobs/src/server.ts, infra/azure).
+  jobs: 3004,
 };
 
 /**
@@ -350,8 +349,8 @@ export function resolveStack(opts = {}) {
     );
   }
 
-  // Offset 0 IS the developer stack: override nothing. The developer's own
-  // settings (their .env.local files) are the jobs configuration there.
+  // Offset 0 IS the developer stack: override nothing. Its jobs configuration
+  // comes from the VS Code dev tasks (.vscode/tasks.json) or .env.local files.
   if (offset === 0) {
     return {
       offset,

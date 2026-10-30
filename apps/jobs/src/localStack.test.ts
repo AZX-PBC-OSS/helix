@@ -101,12 +101,12 @@ describe("the local stack's jobs plane (scripts/stack-env.mjs)", () => {
     // endpoint shape, both roots canonical, keys derived at load.
     const edge = loadEdgeJobsConfig(minted);
     expect(Object.keys(edge.servers)).toEqual(["jobs"]);
-    expect(edge.servers.jobs?.endpoint).toBe(`http://localhost:${3003 + OFFSET}`);
+    expect(edge.servers.jobs?.endpoint).toBe(`http://localhost:${3004 + OFFSET}`);
 
     // The portal's delivery config parses whole and matches its catalogue.
     const delivery = resolvePortalJobsDeliveryConfig(minted);
     const catalogue = resolveJobsCatalogueServers(minted);
-    expect(delivery?.get("jobs")?.endpoint).toBe(`http://localhost:${3003 + OFFSET}`);
+    expect(delivery?.get("jobs")?.endpoint).toBe(`http://localhost:${3004 + OFFSET}`);
     assertDeliveryTargetsMatch(catalogue, delivery ?? null);
 
     // The portal's full deployment boot check passes on the minted stack env —
@@ -215,7 +215,7 @@ describe("the local stack's jobs plane (scripts/stack-env.mjs)", () => {
   });
 
   it("moves the jobs port and private database with the stack — and the stack-level env is complete", () => {
-    expect(minted.JOBS_PORT).toBe(String(3003 + OFFSET));
+    expect(minted.JOBS_PORT).toBe(String(3004 + OFFSET));
     // The runtime DSN is the least-privilege runtime role — never the owner,
     // never the migration identity.
     const dsn = new URL(minted.JOBS_DATABASE_URL ?? "");

@@ -771,7 +771,7 @@ unreachable target is a reported `no_answer` outcome and the script still exits
 Run it locally against a running stack:
 
 ```bash
-JOBS_HEALTH_RELAY_TARGETS='[{"kind":"jobs","target":"jobs","url":"http://localhost:3003/health"}]' \
+JOBS_HEALTH_RELAY_TARGETS='[{"kind":"jobs","target":"jobs","url":"http://localhost:3004/health"}]' \
   node --import tsx scripts/health-relay.ts
 ```
 
@@ -851,9 +851,14 @@ run-helix composition with every credential already agreed. A resolved stack
 also sets `HELIX_STACK_ENV`, under which the services skip their
 `.env.local` files — the stack env is authoritative, and a second stack
 obeying the developer's files would boot cross-wired into their credentials.
-On the shared dev stack (offset 0) the developer's own settings are
-authoritative — this manual form, typically via `apps/jobs/.env.local`; without
-them the rest of the stack runs fully disabled. A `JOBS_DATABASE_URL` override
+On the shared dev stack (offset 0) the VS Code tasks carry the jobs
+configuration: `dev:jobs` sets this service's env on :3004 with fixed dev
+roots, and `dev:edge`, `dev:devgw` and `dev:portal` set the matching
+`EDGE_JOBS_CONFIG` and `PORTAL_JOBS_CONFIG`. It is task env rather than
+container env because the stack resolver reads an inherited `JOBS_*` value as
+an override. The dev container's post-create migrates `helix_jobs`. A service
+started from a plain terminal without that env runs with jobs disabled;
+`apps/<service>/.env.local` still overrides any value. A `JOBS_DATABASE_URL` override
 on an offset stack must name a database on the SAME Postgres server as
 `DATABASE_URL` — the prep provisions through that connection — and it must not
 name a jobs-store database (`helix_jobs`, `helix_jobs_<suffix>`), which both

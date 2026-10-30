@@ -8,6 +8,7 @@
         "dev:portal",
         "dev:edge",
         "dev:egress",
+        "dev:jobs",
         "dev:vendor",
         "dev:vendor-tls",
         "dev:devgw",
@@ -37,6 +38,12 @@
       "command": "pnpm dev:portal",
       "isBackground": true,
       "problemMatcher": [],
+      "options": {
+        "env": {
+          "PORTAL_JOBS_CONFIG": "{\"servers\":{\"jobs\":{\"endpoint\":\"http://localhost:3004\",\"portalToJobsRoot\":\"aGVsaXgtZGV2LWpvYnMtcG9ydGFsLXRvLWpvYnMtMzI=\"}}}",
+          "PORTAL_JOBS_CATALOGUE": "{\"servers\":{\"jobs\":{\"state\":\"serving\",\"types\":[\"jobs:fetch\"]}}}"
+        }
+      },
       "presentation": {
         "group": "portal",
         "panel": "dedicated",
@@ -52,7 +59,8 @@
       "problemMatcher": [],
       "options": {
         "env": {
-          "EDGE_PORTAL_URL": "http://localhost:3001"
+          "EDGE_PORTAL_URL": "http://localhost:3001",
+          "EDGE_JOBS_CONFIG": "{\"servers\":{\"jobs\":{\"endpoint\":\"http://localhost:3004\",\"edgeToJobsRoot\":\"aGVsaXgtZGV2LWpvYnMtZWRnZS10by1qb2JzLTMyYiE=\",\"jobsToEdgeRoot\":\"aGVsaXgtZGV2LWpvYnMtam9icy10by1lZGdlLTMyYiE=\"}}}"
         }
       },
       "presentation": {
@@ -72,6 +80,37 @@
         "env": {
           "EGRESS_ALLOW_PRIVATE": "true",
           "EGRESS_ALLOW_INSECURE_CONNECTION": "true"
+        }
+      },
+      "presentation": {
+        "group": "dev",
+        "panel": "dedicated",
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "dev:jobs",
+      "detail": "helix-jobs (:3004, background-jobs service — runs jobs:fetch for hosted apps)",
+      "type": "shell",
+      "command": "pnpm dev:jobs",
+      "isBackground": true,
+      "problemMatcher": [],
+      "options": {
+        // The dev stack's jobs plane: one server, `jobs`, on :3004. The three
+        // signing roots are fixed dev values and must match EDGE_JOBS_CONFIG
+        // (dev:edge, dev:devgw) and PORTAL_JOBS_CONFIG (dev:portal). They live
+        // here, not in the container env, because scripts/stack-env.mjs reads
+        // an inherited JOBS_* value as an override for offset stacks.
+        "env": {
+          "JOBS_PORT": "3004",
+          "JOBS_SERVER_ID": "jobs",
+          "JOBS_ACCEPTING": "true",
+          "JOBS_DATABASE_URL": "postgresql://helix_jobs:helix_jobs@db:5432/helix_jobs",
+          "JOBS_EDGE_TO_JOBS_SECRET": "aGVsaXgtZGV2LWpvYnMtZWRnZS10by1qb2JzLTMyYiE=",
+          "JOBS_JOBS_TO_EDGE_SECRET": "aGVsaXgtZGV2LWpvYnMtam9icy10by1lZGdlLTMyYiE=",
+          "JOBS_PORTAL_TO_JOBS_SECRET": "aGVsaXgtZGV2LWpvYnMtcG9ydGFsLXRvLWpvYnMtMzI=",
+          "JOBS_EDGE_PROD_URL": "https://local.helix.azxlabs.io:8080",
+          "JOBS_EDGE_DEV_URL": "https://local.helix.azxlabs.io:8082"
         }
       },
       "presentation": {
@@ -113,6 +152,11 @@
       "command": "pnpm dev:devgw",
       "isBackground": true,
       "problemMatcher": [],
+      "options": {
+        "env": {
+          "EDGE_JOBS_CONFIG": "{\"servers\":{\"jobs\":{\"endpoint\":\"http://localhost:3004\",\"edgeToJobsRoot\":\"aGVsaXgtZGV2LWpvYnMtZWRnZS10by1qb2JzLTMyYiE=\",\"jobsToEdgeRoot\":\"aGVsaXgtZGV2LWpvYnMtam9icy10by1lZGdlLTMyYiE=\"}}}"
+        }
+      },
       "presentation": {
         "group": "dev",
         "panel": "dedicated",
