@@ -376,17 +376,20 @@ describe("the edge's boot path serves the jobs_reachability check", () => {
         expect(degraded.check?.detail).toContain("jobs-eu");
         expect(degraded.body.status).toBe("degraded");
 
-        // The last one too: the whole configured plane is refusing this edge,
-        // and the check the boot wiring serves reads error.
+        // The last one too: the whole configured plane is down, and the check
+        // the boot wiring serves stays degraded, naming every server.
         await jobs.stop();
         await eventually(
-          async () => (await servedCheck(port)).check?.status === "error",
+          async () =>
+            /every configured jobs server is unreachable/.test(
+              (await servedCheck(port)).check?.detail ?? "",
+            ),
           90_000, // three cadences of slack: a loaded machine delays a pass
         );
         const down = await servedCheck(port);
         expect(down.statusCode).toBe(200); // always-200, in every state
-        expect(down.check?.detail).toMatch(/every configured jobs server is unreachable/);
-        expect(down.body.status).toBe("error");
+        expect(down.check?.status).toBe("degraded");
+        expect(down.body.status).toBe("degraded");
 
         // Normal shutdown releases what startup acquired — the probe loop's
         // timer among them (server.ts's onClose hook) — promptly.
@@ -579,10 +582,10 @@ describe("the dev-gateway's boot path serves the jobs_reachability check", () =>
         expect(healthy.check?.status).toBe("ok");
 
         // Its only configured server dies: the next pass observes it, and one
-        // all-down server is the whole configured plane — error, still 200.
+        // all-down server is the whole configured plane — degraded, still 200.
         await jobs.stop();
         await eventually(
-          async () => (await servedCheck(port)).check?.status === "error",
+          async () => (await servedCheck(port)).check?.status === "degraded",
           90_000, // three cadences of slack: a loaded machine delays a pass
         );
         const down = await servedCheck(port);

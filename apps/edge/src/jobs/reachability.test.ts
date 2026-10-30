@@ -12,6 +12,7 @@ import {
   type JobsProbeAnswer,
   type JobsReachabilityLogger,
   type JobsReachabilitySnapshot,
+  type JobsReachabilityServerState,
 } from "./reachability.js";
 
 /**
@@ -388,13 +389,13 @@ describe("jobsReachabilityCheck", () => {
     expect(check.detail).toBeUndefined();
   });
 
-  test("a loop that is not running reads error — unobserved servers are not health", () => {
+  test("a loop that is not running degrades — unobserved servers are not health", () => {
     const check = jobsReachabilityCheck(snapshot({ started: false }), { nowMs: NOW });
-    expect(check.status).toBe("error");
+    expect(check.status).toBe("degraded");
     expect(check.detail).toMatch(/not running/);
   });
 
-  test("a loop with no completed pass reads error", () => {
+  test("a loop with no completed pass degrades", () => {
     const check = jobsReachabilityCheck(
       snapshot({
         lastOkPassAt: null,
@@ -407,11 +408,11 @@ describe("jobsReachabilityCheck", () => {
       }),
       { nowMs: NOW },
     );
-    expect(check.status).toBe("error");
+    expect(check.status).toBe("degraded");
     expect(check.detail).toMatch(/no successful pass/);
   });
 
-  test("a running loop that has settled no pass at all reads error, with no age to show", () => {
+  test("a running loop that has settled no pass at all degrades, with no age to show", () => {
     // started, first pass still in flight: lastPassAt is null too, so the
     // detail cannot name an age — the never-ran reading stays distinct from
     // "ran but the pass failed" (which renders its last pass's age).
@@ -419,7 +420,7 @@ describe("jobsReachabilityCheck", () => {
       snapshot({ passes: 1, lastPassAt: null, lastOkPassAt: null }),
       { nowMs: NOW },
     );
-    expect(check.status).toBe("error");
+    expect(check.status).toBe("degraded");
     expect(check.detail).toMatch(/no successful pass/);
     expect(check.detail).not.toMatch(/last pass was/);
   });
@@ -453,7 +454,7 @@ describe("jobsReachabilityCheck", () => {
     expect(check.status).toBe("ok");
   });
 
-  test("a server still pending after a fresh pass is refused as error", () => {
+  test("a server still pending after a fresh pass degrades, never reads ok", () => {
     const check = jobsReachabilityCheck(
       snapshot({
         servers: snapshot({}).servers.map((s, i) =>
@@ -462,7 +463,7 @@ describe("jobsReachabilityCheck", () => {
       }),
       { nowMs: NOW },
     );
-    expect(check.status).toBe("error");
+    expect(check.status).toBe("degraded");
     expect(check.detail).toMatch(/never answered/);
   });
 
@@ -480,7 +481,7 @@ describe("jobsReachabilityCheck", () => {
       }),
       { nowMs: NOW },
     );
-    expect(check.status).toBe("error");
+    expect(check.status).toBe("degraded");
     expect(check.detail).toContain("jobs, jobs-eu have never answered");
   });
 
@@ -618,7 +619,10 @@ describe("jobsReachabilityCheck", () => {
     expect(futureSince.detail).toContain("jobs-eu (no_answer, 0s, last answered");
   });
 
-  test("every server unreachable errors — the whole configured jobs plane refuses this edge", () => {
+  test("every server unreachable degrades, naming each server and its reason", () => {
+    // Capped at degraded: the edge still serves apps with the jobs plane
+    // down, and an error here would roll its /health to error and page a
+    // jobs outage as an edge outage.
     const check = jobsReachabilityCheck(
       snapshot({
         servers: snapshot({}).servers.map((s) => ({
@@ -630,8 +634,10 @@ describe("jobsReachabilityCheck", () => {
       }),
       { nowMs: NOW },
     );
-    expect(check.status).toBe("error");
+    expect(check.status).toBe("degraded");
     expect(check.detail).toMatch(/every configured jobs server is unreachable/);
+    expect(check.detail).toContain("jobs (off_protocol, 90s");
+    expect(check.detail).toContain("jobs-eu (off_protocol, 90s");
   });
 
   test("a reachable server's self-reported degradation is evidence in the detail, not the grade", () => {
@@ -649,10 +655,62 @@ describe("jobsReachabilityCheck", () => {
     expect(check.detail).toContain("jobs-eu reports degraded");
   });
 
-  test("a wired check with no servers is a wiring defect, refused as error", () => {
+  test("a wired check with no servers is a wiring defect, degraded rather than ok", () => {
     const check = jobsReachabilityCheck(snapshot({ servers: [] }), { nowMs: NOW });
-    expect(check.status).toBe("error");
+    expect(check.status).toBe("degraded");
     expect(check.detail).toMatch(/no jobs servers/);
+  });
+});
+
+describe("jobsReachabilityCheck never grades error", () => {
+  test("every boot and outage state is capped at degraded", () => {
+    const NOW = Date.parse("2026-10-18T12:00:00.000Z");
+    const at = (ms: number) => new Date(NOW - ms).toISOString();
+    const server = (state: JobsReachabilityServerState["state"]): JobsReachabilityServerState => ({
+      server: "jobs",
+      state,
+      reported: null,
+      lastReachableAt: null,
+      unreachableSince: state === "unreachable" ? at(10_000) : null,
+      reason: state === "unreachable" ? "no_answer" : null,
+    });
+    const snapshots: JobsReachabilitySnapshot[] = [
+      { started: false, passes: 0, lastPassAt: null, lastOkPassAt: null, servers: [] },
+      {
+        started: true,
+        passes: 0,
+        lastPassAt: null,
+        lastOkPassAt: null,
+        servers: [server("pending")],
+      },
+      {
+        started: true,
+        passes: 3,
+        lastPassAt: at(1_000),
+        lastOkPassAt: null,
+        servers: [server("unreachable")],
+      },
+      { started: true, passes: 3, lastPassAt: at(1_000), lastOkPassAt: at(1_000), servers: [] },
+      {
+        started: true,
+        passes: 3,
+        lastPassAt: at(1_000),
+        lastOkPassAt: at(1_000),
+        servers: [server("pending")],
+      },
+      {
+        started: true,
+        passes: 3,
+        lastPassAt: at(1_000),
+        lastOkPassAt: at(1_000),
+        servers: [server("unreachable")],
+      },
+    ];
+    for (const snap of snapshots) {
+      const check = jobsReachabilityCheck(snap, { nowMs: NOW });
+      expect(check.status, JSON.stringify(snap)).toBe("degraded");
+      expect(check.detail, JSON.stringify(snap)).toBeTruthy();
+    }
   });
 });
 

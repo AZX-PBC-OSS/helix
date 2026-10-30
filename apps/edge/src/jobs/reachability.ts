@@ -394,16 +394,21 @@ export class JobsReachability {
 /**
  * Grade the reachability observation into the `jobs_reachability` health
  * check (ADR-0009) — a pure function on the loop's snapshot, so `/health`
- * stays a lookup and the grading is table-testable without a server. The
- * shared pass-freshness skeleton first (a stopped or never-passed loop
- * errors, a stale one degrades — missing or stale evidence never reads ok),
- * then the per-server evidence the check exists for: every configured server
- * reachable reads `ok`; some unreachable degrades, naming each one and since
- * when; all of them unreachable errors — the entire configured jobs plane is
- * refusing this edge's forwards. A server still `pending` after a fresh pass
- * is refused as error, never read as healthy. The server's own reported
- * status rides the detail as evidence; the jobs service's body stays
- * authoritative for its own state.
+ * stays a lookup and the grading is table-testable without a server.
+ *
+ * The check never grades worse than `degraded`. It reports a dependency, and
+ * the edge keeps serving apps while every jobs server is down; an `error`
+ * here would roll the edge's whole `/health` to `error` and page a jobs
+ * outage as an edge outage. The jobs service's own `/health` and the jobs
+ * alerts (`infra/azure/modules/alerts-jobs.bicep`) own that signal.
+ *
+ * Everything that is not positive evidence of health degrades, with the
+ * detail saying which: a stopped, never-passed or stale probe loop, a server
+ * still `pending` after a fresh pass, an empty server list, and any server
+ * unreachable (naming each one, its reason and since when). Every configured
+ * server reachable reads `ok`. The server's own reported status rides the
+ * detail as evidence; the jobs service's body stays authoritative for its
+ * own state.
  */
 export function jobsReachabilityCheck(
   snapshot: JobsReachabilitySnapshot,
@@ -428,14 +433,14 @@ export function jobsReachabilityCheck(
     case "not_started":
       return {
         ...base,
-        status: "error",
+        status: "degraded",
         detail:
           "the jobs reachability probe is not running — the configured jobs servers' availability is unobserved",
       };
     case "no_pass":
       return {
         ...base,
-        status: "error",
+        status: "degraded",
         detail: `the reachability probe has completed no successful pass${lastPassAgeSuffix(freshness.lastPassSeconds)} — jobs-server availability is unobserved`,
       };
     case "stale":
@@ -451,7 +456,7 @@ export function jobsReachabilityCheck(
         // configured; refuse the healthy reading rather than assume one.
         return {
           ...base,
-          status: "error",
+          status: "degraded",
           detail: "no jobs servers are configured for observation",
         };
       }
@@ -460,7 +465,7 @@ export function jobsReachabilityCheck(
         const names = pending.map((s) => s.server).join(", ");
         return {
           ...base,
-          status: "error",
+          status: "degraded",
           detail: `${names} ${pending.length === 1 ? "has" : "have"} never answered a probe — jobs-server availability is unobserved`,
           lastSuccessAt: snapshot.lastOkPassAt ?? undefined,
         };
@@ -472,7 +477,7 @@ export function jobsReachabilityCheck(
       if (down.length === snapshot.servers.length) {
         return {
           ...base,
-          status: "error",
+          status: "degraded",
           detail: `every configured jobs server is unreachable (${down
             .map((s) => downSince(s, nowMs))
             .join("; ")}) — jobs operations forwarded from this edge cannot be served`,

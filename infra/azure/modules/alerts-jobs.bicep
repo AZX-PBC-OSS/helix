@@ -138,8 +138,9 @@ resource relay 'Microsoft.App/jobs@2024-03-01' = {
 // ---------------------------------------------------------------------------
 // One rule per failure family, each over a fixed set of check names. Every
 // jobs-owned and portal-owned check belongs to exactly one family. The
-// `jobs_reachability` check is the edge's and is served on the public auth
-// host, where the edge availability test already reads it.
+// `jobs_reachability` check is the edge's and is not relayed: it never grades
+// worse than degraded, so a jobs outage pages through these rules, not
+// through the edge availability test.
 var checkRules = [
   {
     name: 'jobs-execution'

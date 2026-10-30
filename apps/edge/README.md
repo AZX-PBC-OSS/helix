@@ -173,11 +173,15 @@ servers are configured — a fully disabled install reports no jobs dependency a
 probe loop `GET`s each configured server's `/health` every 30 s (10 s per-probe bound), on its own
 cadence and independent of user requests; the check grades the last snapshot, never a live probe:
 
-| State      | When                                                                                                                                         |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `error`    | the probe loop is not running, has completed no pass, a server never answered its first probe, or **every** configured server is unreachable |
-| `degraded` | the last pass is stale (> 3× the cadence), or some — not all — configured servers are unreachable                                            |
-| `ok`       | every configured server answered the health contract within the bound                                                                        |
+| State      | When                                                                                                                                                                            |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `degraded` | the probe loop is not running, has completed no pass or is stale (> 3× the cadence), a server never answered its first probe, or one or more configured servers are unreachable |
+| `ok`       | every configured server answered the health contract within the bound                                                                                                           |
+
+The check never reports `error`, even with every jobs server down. The edge keeps serving apps
+through a jobs outage, and an `error` here would roll the edge's whole `/health` to `error` and
+page it as an edge outage. The jobs service's own `/health` and the jobs alerts
+(`infra/azure/modules/alerts-jobs.bicep`) report the jobs plane being down.
 
 Unreachable means "no answer within the bound" or "answered, but not as the jobs service" —
 the detail names each down server, its bounded reason, how long it has been down, and when

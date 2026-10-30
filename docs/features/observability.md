@@ -537,8 +537,9 @@ lines in the workspace, not OTel signals, so the rules work with
 Each rule takes the latest reading per target and check, and alerts split by
 target, so each jobs server alerts on its own. The diagnostic step for each rule
 is in `infra/azure/README.md`. The edge's `jobs_reachability` check is not
-relayed; it is in the edge's public body, which the edge availability test
-reads.
+relayed. It is in the edge's public body and is capped at `degraded`, so the
+edge availability test (which fails on `error`) never pages a jobs outage as an
+edge outage; the rules above cover the jobs plane being down.
 
 The operator procedures these alerts lead to — telling the portal's delivery
 backlog from the jobs service's cancellation backlog, cleanup and expiry,

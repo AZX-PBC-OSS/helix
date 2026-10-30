@@ -207,9 +207,11 @@ describe("dev-gateway /health", () => {
     const body = res.json<{ status: string; checks?: HealthCheck[] }>();
     const check = body.checks?.find((c) => c.name === JOBS_REACHABILITY_CHECK);
     // One configured server, unreachable — the whole configured plane is
-    // refusing this gateway, so the check (and the roll-up) read error.
-    expect(check?.status).toBe("error");
-    expect(body.status).toBe("error");
+    // down, but the gateway still serves, so the check (and the roll-up)
+    // degrade rather than error.
+    expect(check?.status).toBe("degraded");
+    expect(check?.detail).toMatch(/every configured jobs server is unreachable/);
+    expect(body.status).toBe("degraded");
     await app.close();
   });
 

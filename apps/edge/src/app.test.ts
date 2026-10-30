@@ -193,9 +193,11 @@ describe("platform hosts", () => {
       const downBody = down.json<{ status: string; checks?: HealthCheck[] }>();
       const check = downBody.checks?.find((c) => c.name === JOBS_REACHABILITY_CHECK);
       // One configured server, unreachable — the whole configured plane is
-      // refusing this edge, so the check (and the roll-up) read error.
-      expect(check?.status).toBe("error");
-      expect(downBody.status).toBe("error");
+      // down, but the edge still serves apps, so the check (and the roll-up)
+      // degrade rather than error.
+      expect(check?.status).toBe("degraded");
+      expect(check?.detail).toMatch(/every configured jobs server is unreachable/);
+      expect(downBody.status).toBe("degraded");
       // Still the always-200 contract.
       expect(down.statusCode).toBe(200);
     } finally {

@@ -1240,9 +1240,9 @@ az containerapp job execution list -g <rg> -n <prefix>-jobs-health-relay -o tabl
 ```
 
 The edge's `jobs_reachability` check is not relayed. It is in the edge's public
-body, and the edge availability test below fires when it reports `error`
-(every configured server unreachable, which with the one `jobs` server is any
-outage).
+body, but it never reports worse than `degraded`, so the edge availability test
+below does not fire on a jobs outage: the edge still serves apps. The rules above
+and the jobs service's own `/health` cover the jobs plane being down.
 
 ### Availability tests — the only view from outside (`modules/alerts-availability.bicep`)
 

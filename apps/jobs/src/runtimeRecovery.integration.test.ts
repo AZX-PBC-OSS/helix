@@ -703,11 +703,11 @@ describe("runtime recovery of the jobs plane, through the real stack", () => {
       // The edge's own probe saw the stop.
       await waitFor(
         stack,
-        "the edge's jobs_reachability check to read error with one unreachable server",
+        "the edge's jobs_reachability check to read degraded with one unreachable server",
         { timeoutMs: 60_000 },
         async () => {
           const reach = check(await healthOf("edge"), JOBS_REACHABILITY_CHECK);
-          return reach.status === "error" && reach.metrics?.unreachable === 1 ? true : undefined;
+          return reach.status === "degraded" && reach.metrics?.unreachable === 1 ? true : undefined;
         },
       );
 

@@ -114,8 +114,10 @@ and `deployedComposition`. Component and unit suites sit beside each module.
   store.
 - The dev gateway throttles dev submissions in each replica's memory, and they
   do not count toward the deployment-wide window. Tracked in `TODO.md`.
-- The edge's `jobs_reachability` check is not relayed to an alert. The edge
-  availability test fires only when it reports `error`.
+- The edge's `jobs_reachability` check is not relayed to an alert, and it
+  never reports worse than `degraded`, so the edge availability test does not
+  fire on it. A jobs outage pages through the jobs service's own health and
+  the jobs alerts instead.
 - The jobs image check (`apps/jobs/scripts/image-smoke.sh`) runs in CI's
   images job. It has not yet run against a built image on GitHub Actions.
 - No Python or second production runner ships. Named-server routing is proven

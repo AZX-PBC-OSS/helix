@@ -298,7 +298,7 @@ which answers HTTP 200 in every state. Read the body, never the status code.
 | `jobs_capacity` | jobs | retained jobs reached the server-wide cap, or the measurement is stale |
 | `jobs_intake` | jobs | the configured intake posture is not yet applied, or the store belongs to another server |
 | `jobs_lifecycle_delivery` | portal | lifecycle changes have waited over 60 s for delivery, or the sender stopped |
-| `jobs_reachability` | edge, dev gateway | one or more configured jobs servers do not answer `/health` as the jobs service |
+| `jobs_reachability` | edge, dev gateway | one or more configured jobs servers do not answer `/health` as the jobs service, or the probe has not observed them yet. Never `error`: the edge keeps serving apps during a jobs outage |
 
 Missing or stale evidence never reads `ok`. Ordinary throttling (`429
 rate_limited`) and unfinished-capacity refusals degrade nothing: a busy server

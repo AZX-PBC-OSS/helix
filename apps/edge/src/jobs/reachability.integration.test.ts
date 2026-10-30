@@ -409,8 +409,8 @@ describe("the edge composition's jobs_reachability check", () => {
       expect(degradedCheck?.detail).toContain("jobs-eu");
       expect(degradedBody.status).toBe("degraded");
 
-      // The last server goes too: the whole configured plane is refusing this
-      // edge, and the check errors.
+      // The last server goes too. The check stays degraded: the edge still
+      // serves apps, so a jobs outage must not roll its /health to error.
       await jobsA.stop();
       await eventually("jobs to be observed unreachable too", () => {
         const body = loop.snapshot();
@@ -419,9 +419,11 @@ describe("the edge composition's jobs_reachability check", () => {
       const down = await app.inject({ url: "/health", headers: { host: "localhost:8080" } });
       const downBody = HealthStatusSchema.parse(down.json());
       const downCheck = downBody.checks?.find((c) => c.name === JOBS_REACHABILITY_CHECK);
-      expect(downCheck?.status).toBe("error");
+      expect(downCheck?.status).toBe("degraded");
       expect(downCheck?.detail).toMatch(/every configured jobs server is unreachable/);
-      expect(downBody.status).toBe("error");
+      expect(downCheck?.detail).toContain("jobs (");
+      expect(downCheck?.detail).toContain("jobs-eu (");
+      expect(downBody.status).toBe("degraded");
     } finally {
       await loop.stop();
       await app.close();
