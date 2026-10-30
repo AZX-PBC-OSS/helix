@@ -143,7 +143,7 @@ print(json.dumps({
                  "-v edge_password=\"$EDGE_PW\" -v portal_password=\"$PORTAL_PW\" "
                  "-v egress_password=\"$EGRESS_PW\" -v dev_password=\"$DEV_PW\" "
                  "-v jobs_password=\"$JOBS_PW\" -v jobs_migrate_password=\"$JOBS_MIGRATE_PW\" "
-                 "-v ON_ERROR_STOP=1 -f \"$f\"; done"],
+                 "-v ON_ERROR_STOP=1 -f \"$f\" || exit 1; done"],
         "resources": {"cpu": 0.5, "memory": "1Gi"},
         "env": [
           {"name": "ADMIN_URL", "secretRef": "admin-url"},
