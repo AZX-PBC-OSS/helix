@@ -250,7 +250,11 @@ export class FakeUsageStore implements UsageStore {
     // does. Keep the two in step — a fake that counts differently from the
     // real store makes the unit tests lie.
     return this.records.filter(
-      (r) => r.capability === "fetch" && r.outcome !== "quota_blocked" && r.outcome !== "forbidden",
+      (r) =>
+        r.capability === "fetch" &&
+        r.outcome !== "quota_blocked" &&
+        r.outcome !== "forbidden" &&
+        r.outcome !== "too_large",
     ).length;
   }
 

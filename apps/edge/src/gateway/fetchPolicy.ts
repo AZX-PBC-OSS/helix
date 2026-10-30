@@ -52,6 +52,14 @@ import {
  * always metered its allowlist denial (capped, metric unconditional), and the
  * triggering principal — whoever the authority names — stays the attribution
  * on every row.
+ *
+ * A too-large request body is refused at one of two points, and the ledger
+ * row says which. Known over the cap before minting (a declared size, or a
+ * materialized body): `too_large`, nothing dialled, no budget spent. Found
+ * over the cap only while streaming to egress: `refusal`, because the
+ * instruction has already been presented to egress (which burns it and may
+ * have begun the upstream call), so the call counts against the daily budget
+ * like any other forwarded call. Both carry status 413 and the same detail.
  */
 
 /**
@@ -212,6 +220,9 @@ function toOutcome(egressOutcome: string): GatewayOutcome {
   return "error";
 }
 
+/** The `errorDetail` both size refusals record, early and late alike. */
+const TOO_LARGE_DETAIL = "request body exceeds the size cap";
+
 /**
  * Ledger one pre-egress policy denial — the shape the browser route's
  * allowlist denial always had, now shared by every denial the core can reach.
@@ -220,7 +231,7 @@ function toOutcome(egressOutcome: string): GatewayOutcome {
  *
  * Capped per (app, env). This is the one write on the policy path no other
  * gate bounds — the per-IP limiter only sees browser callers, every denial
- * here returns before the egress dial, and the ones ledgered `forbidden` are
+ * here returns before the egress dial, and `forbidden` and `too_large` are
  * excluded from `fetchRequestsToday`, so they consume no budget either —
  * without the throttle a retry loop appends to an undeletable table at line
  * rate. The first N per window carry the whole audit signal; the rest are
@@ -239,7 +250,7 @@ async function meterPolicyDenial(
   deps: FetchPolicyDeps,
   call: FetchPolicyCall,
   origin: string,
-  outcome: Extract<GatewayOutcome, "forbidden">,
+  outcome: Extract<GatewayOutcome, "forbidden" | "too_large">,
   statusCode: number,
   errorDetail: string,
 ): Promise<void> {
@@ -405,10 +416,9 @@ export async function runFetchPolicy(
   // materialized body whose length is final — a declaration cannot make a
   // Buffer smaller, so the lying-declaration case the counter exists for is
   // settled by direct comparison. A bodyless method has nothing to cap.
-  // Both fast paths meter like every other pre-egress denial: the per-IP
-  // limiter skips authenticated callers, `fetchRequestsToday` excludes
-  // `forbidden`, and nothing else bounds this write — an unmetered 413 flood
-  // would be exactly the blindness the denial ledger exists to prevent.
+  // Both fast paths meter like every other pre-egress denial, as `too_large`:
+  // the per-IP limiter skips authenticated callers, `fetchRequestsToday`
+  // excludes the outcome, and nothing else bounds this write.
   const bodyless = BODYLESS.has(method);
   const requestBody = bodyless ? null : call.body;
   const overCap =
@@ -417,14 +427,7 @@ export async function runFetchPolicy(
       (requestBody instanceof Buffer && requestBody.length > deps.maxBodyBytes) ||
       (typeof requestBody === "string" && Buffer.byteLength(requestBody) > deps.maxBodyBytes));
   if (overCap) {
-    await meterPolicyDenial(
-      deps,
-      call,
-      origin,
-      "forbidden",
-      413,
-      "request body exceeds the size cap",
-    );
+    await meterPolicyDenial(deps, call, origin, "too_large", 413, TOO_LARGE_DETAIL);
     return { kind: "denied", denial: { reason: "request_too_large", origin } };
   }
 
@@ -457,6 +460,8 @@ export async function runFetchPolicy(
   // Count the request bytes forwarded to egress: a chunked / CL-absent /
   // lying-CL upload can't stream past the cap uncounted. A trip destroys
   // the body stream and errors the forward → the catch maps it to a 413.
+  // By then egress holds the instruction, so the trip ledgers as a forwarded
+  // `refusal`, not a pre-egress `too_large`.
   let requestCapTripped = false;
   const cappedBody =
     requestBody instanceof Readable
@@ -519,9 +524,10 @@ export async function runFetchPolicy(
     return { kind: "forwarded", response: res };
   } catch (err) {
     // A request-body cap trip surfaces here as a failed egress forward; report
-    // it as a 413 rather than a generic upstream error (nothing sent yet).
+    // it as a 413 rather than a generic upstream error. Egress has the
+    // instruction and part of the body, so the row counts against the budget.
     if (requestCapTripped) {
-      await record("refusal", { statusCode: 413 });
+      await record("refusal", { statusCode: 413, errorDetail: TOO_LARGE_DETAIL });
       return { kind: "denied", denial: { reason: "request_too_large", origin } };
     }
     await record("error", { errorDetail: errorDetailOf(err) });

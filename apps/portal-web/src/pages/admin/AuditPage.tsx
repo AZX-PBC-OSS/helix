@@ -130,6 +130,7 @@ export function AuditPage() {
             { value: "connection_required", label: "Connect" },
             { value: "quota_blocked", label: "Quota" },
             { value: "forbidden", label: "Forbidden" },
+            { value: "too_large", label: "Too large" },
             { value: "conflict", label: "Conflict" },
           ]}
         />

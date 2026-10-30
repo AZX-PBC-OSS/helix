@@ -50,11 +50,12 @@ describe("usage schemas", () => {
     expect("tokens14d" in platform).toBe(false);
   });
 
-  it("widens the ledger outcomes with connection_required — and nothing else", () => {
-    // Pinned whole: the delegated-call label joins (criterion 50), and every
-    // pre-existing label keeps its place. `provider_unavailable` and
-    // `provider_misconfigured` deliberately do NOT appear here — they meter as
-    // `refusal` (design.md decision 13).
+  it("pins the ledger outcomes whole", () => {
+    // Every label keeps its place. `connection_required` is the delegated-call
+    // label (criterion 50) and `too_large` the fetch-proxy's pre-egress size
+    // refusal. `provider_unavailable` and `provider_misconfigured`
+    // deliberately do NOT appear here — they meter as `refusal` (design.md
+    // decision 13).
     expect(GATEWAY_OUTCOMES).toEqual([
       "ok",
       "error",
@@ -63,6 +64,7 @@ describe("usage schemas", () => {
       "conflict",
       "forbidden",
       "connection_required",
+      "too_large",
     ]);
     expect(GatewayOutcomeSchema.parse("connection_required")).toBe("connection_required");
     expect(GatewayOutcomeSchema.safeParse("provider_unavailable").success).toBe(false);

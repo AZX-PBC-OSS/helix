@@ -31,6 +31,7 @@ export const OUT_META: Record<GatewayOutcome, [Tone, string]> = {
   quota_blocked: ["warn", "quota"],
   conflict: ["warn", "conflict"],
   forbidden: ["bad", "forbidden"],
+  too_large: ["warn", "too large"],
 };
 
 /**

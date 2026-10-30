@@ -41,9 +41,12 @@ import { withRootSpan } from "../telemetry.js";
  * reaches with its own authority and no session.
  *
  * Every policy denial still meters into `gateway_calls` (capability `fetch`,
- * model = target origin, plus the request `path` and `method`) — including the
- * allowlist denial, which is recorded as `forbidden` and is the one outcome
- * that never reaches egress. The target's query string is never persisted
+ * model = target origin, plus the request `path` and `method`). Three outcomes
+ * never reach egress: the allowlist denial (`forbidden`), the daily budget
+ * refusal (`quota_blocked`), and a request body known to be over the cap
+ * before minting (`too_large`). A body that trips the cap while streaming has
+ * already reached egress and records `refusal`, status 413. See
+ * `fetchPolicy.ts` for the reason. The target's query string is never persisted
  * (that is where credentials are conventionally placed) — but the path is, and
  * a path can carry a secret too: see `fetchPathOf` in `usage.ts` for why no
  * heuristic tries to spot one.

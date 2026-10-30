@@ -51,6 +51,7 @@ const OUTCOME_TONE: Record<GatewayOutcome, Tone> = {
   quota_blocked: "warn",
   conflict: "warn",
   forbidden: "bad",
+  too_large: "warn",
 };
 
 /**

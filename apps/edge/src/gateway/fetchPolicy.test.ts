@@ -550,12 +550,9 @@ describe("runFetchPolicy — the request-body cap as the reusable core states it
 
   it("meters the fast-path request_too_large denial like every other pre-egress denial", async () => {
     // The core's own invariant: "Every pre-egress policy denial is ledgered —
-    // capped, metric unconditional." Four of the five denial reasons hold to
-    // it; the fast-path refusal (a truthful oversized content-length) returns
-    // without metering, so a flood of oversized uploads is invisible in both
-    // the counter and the audit trail — while the SAME failure caught a moment
-    // later by the byte counter (a lying content-length) ledgers as a refusal.
-    // The docblock's invariant is what is asserted, on both halves.
+    // capped, metric unconditional." The fast-path refusal (a truthful
+    // oversized content-length) is held to it under its own outcome,
+    // `too_large`, so it never reads as an allowlist `forbidden`.
     const { deps, base, usage } = build(
       new Map<string, ProxiedOriginCredential>([["https://api.github.com", { kind: "keyless" }]]),
     );
@@ -582,7 +579,7 @@ describe("runFetchPolicy — the request-body cap as the reusable core states it
     // trail an operator filters by status.
     expect(usage.records[0]).toMatchObject({
       capability: "fetch",
-      outcome: "forbidden",
+      outcome: "too_large",
       statusCode: 413,
       errorDetail: "request body exceeds the size cap",
       method: "POST",

@@ -102,6 +102,22 @@ like `quota_blocked`. (Counting denials would not bound the ledger either — th
 allowlist check returns *before* the quota gate, so a denial loop never reaches
 it; counting would only starve the app's legitimate traffic.)
 
+A **request body over the size cap** is refused `413 too_large` at one of two
+points, and the ledger row says which:
+
+- **Known before minting** — a declared `content-length` over the cap, or a
+  materialized body over it. The row is `outcome = "too_large"`, status 413.
+  Nothing is dialled, so it does not count against `requestsPerDay`. It is
+  rate-capped like the allowlist denial.
+- **Found while streaming** — a chunked upload, or one whose `content-length`
+  understated it, trips the edge's byte counter after the instruction has
+  reached egress. The row is `outcome = "refusal"`, status 413, and it counts
+  against `requestsPerDay`: egress has burned the instruction and may have
+  started the upstream call.
+
+Both rows carry the same `errorDetail`. The only difference is whether egress
+was reached.
+
 `path` is the target's **pathname only — the query string is not recorded**,
 matching the line `redactFetchTarget` in `@azx-pbc/shared/logging` draws for
 request logs. That is where credentials are conventionally placed (`?api_key=`, a
