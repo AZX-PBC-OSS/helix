@@ -52,9 +52,13 @@ the grant.
 **Execution is fenced.** pg-boss workers run at most two jobs per app and
 environment and eight per process (`runner.ts`, `execution.ts`). A start gate
 refuses work whose app lifecycle generation is closed or whose cancellation is
-recorded. The recovery sweeper reconciles lost workers and enforces the
-absolute deadline: 60 minutes, or five for `jobs:fetch` (`recovery.ts`). The
-first recorded terminal outcome wins (`cancellation.ts`).
+recorded. Each attempt's outcome commits the job record and the pg-boss
+settlement in one transaction, so the two never disagree about whether the
+attempt finished. Settlement is at-least-once: if that transaction cannot
+commit, the claim fails through the type's retry policy and a finished
+handler can run again. The recovery sweeper reconciles lost workers and
+enforces the absolute deadline: 60 minutes, or five for `jobs:fetch`
+(`recovery.ts`). The first recorded terminal outcome wins (`cancellation.ts`).
 
 **The fetch job does not make the call itself.** `fetchJob.ts` mints a
 jobs→edge instruction bound to the job's identity and the `{url}` digest. The

@@ -330,11 +330,21 @@ on — the attempt's retry decision reads the runner row's own policy.
   bounded I/O on it. An ignored signal changes nothing — the claim's
   settlement is fenced either way, so the attempt's result can never land
   after the abort.
-- **The claim is the arbiter.** The runner's own attempt-fenced
-  `complete`/`fail` settle FIRST; only a settle that reports the claim held may
-  write the wrapper. A late completion whose claim lapsed (a claim timeout, a
-  lost lease) is discarded, never stored — the timeout outcome the claim's
-  expiry produced is the truth, and the recovery path projects it.
+- **The record and the claim settle together.** Each outcome is one
+  transaction on a borrowed client: the conditional wrapper write (status
+  `running` at this attempt), then the runner's attempt-fenced
+  `complete`/`fail` through pg-boss's `db` option. If the wrapper write
+  matches nothing, or the settle reports `affected` 0, the transaction rolls
+  back. A late completion whose claim lapsed (a claim timeout, a lost lease)
+  is discarded, never stored — the timeout outcome the claim's expiry
+  produced is the truth, and the recovery path projects it. Until the commit,
+  the sweeper reads the runner row `active` and leaves the record alone, so a
+  pass can no longer land between the settle and the record write and crash a
+  finished success. A failed attempt writes the same code to the runner row's
+  output as to the record (`attempts_exhausted` once retries run out).
+  Settlement is at-least-once: when the success transaction cannot commit,
+  the worker loop fails the claim through the type's retry policy, so a
+  finished handler can run again.
 - **Execution-time validation.** The job's input is re-validated against the
   type's CURRENT contract before the handler runs: a job accepted under older
   rules terminates with the distinct `execution_input_invalid` reason (never a
@@ -502,8 +512,11 @@ died is projected `crashed` — execution lost, never reissued.
   the lost attempt's attribution retained; `active` is consistent work;
   terminal `failed` projects the worker's own reported code when the settle
   carried one, else `crashed` (execution lost); `completed` projects `crashed`
-  (the result was lost with the attempt's process — never a fabricated
-  success); `cancelled` projects the cancellation. A record with no runner
+  (the result was lost — never a fabricated success); `cancelled` projects
+  the cancellation. The current worker never leaves a `completed` row beside
+  a `running` record, because it commits both together. The arm remains for
+  rows written by an earlier build, which settled first and wrote the record
+  after. A record with no runner
   row is corruption: logged at error and left for the deadline arm's bounded
   termination.
 - **Durable cancellation intent is part of the same reconciliation.** A

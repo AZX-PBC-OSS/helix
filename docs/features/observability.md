@@ -310,8 +310,8 @@ looked up:
   `gateway/jobsCallback.test.ts`'s telemetry scan).
 - The `helix.jobs.execute` span (the worker's attempt) carries `helix.outcome`
   ∈ `JOBS_EXECUTE_OUTCOMES` — `succeeded` (the handler's result, inside the
-  platform's bounds, projected durably after the claim's own fenced
-  settlement), `failed` (the attempt's failure projected durably; the bounded
+  platform's bounds, projected durably in the same transaction as the
+  claim's own fenced settlement), `failed` (the attempt's failure projected durably; the bounded
   `JobError` code rides `helix.reason`), `gate_refused` (the worker-start gate
   refused an ineligible lifecycle generation — the handler never ran),
   `deadline_exceeded` (the worker-start gate terminated the job — its absolute
@@ -322,7 +322,8 @@ looked up:
   the handler never ran and the intent can never turn into a run or a retry),
   `terminal_fenced` (the record was already terminal or the runner claim had
   lapsed — no outcome overwritten), and `unavailable` (the execution store
-  could not answer). The grading is a decided contract, uniform at every exit:
+  could not answer, or the outcome transaction could not commit — nothing
+  was projected and the claim fails through the retry policy). The grading is a decided contract, uniform at every exit:
   a designed failure (`failed` with the job's own reason) and the refusals
   (`gate_refused`, `deadline_exceeded`, `cancelled`, `terminal_fenced`) stay
   UNSET — the

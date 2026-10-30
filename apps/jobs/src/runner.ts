@@ -3,6 +3,7 @@ import type { PoolClient } from "pg";
 
 import { createPgbossEnqueuer, type JobsEnqueuer } from "./acceptance.js";
 import type { RunnerCancelVerdict } from "./cancellation.js";
+import { settledAffected } from "./execution.js";
 import { JOBS_QUEUE_NAME, jobsRuntimeBossOptions } from "./policy.js";
 import type { RunnerJobLookup } from "./recovery.js";
 
@@ -59,13 +60,8 @@ export async function cancelRunnerJob(
   runnerJobId: string,
 ): Promise<RunnerCancelVerdict> {
   try {
-    // Why the structural type: the pinned dependency's `CommandResponse`
-    // declaration is empty — see the settlement note in `execution.ts` —
-    // and its cancel path returns `{jobs, requested, affected, settled?}`.
-    const response = (await boss.cancel(JOBS_QUEUE_NAME, runnerJobId)) as {
-      affected?: number;
-    };
-    return (response.affected ?? 0) > 0 ? { verdict: "cancelled" } : { verdict: "not_cancellable" };
+    const affected = settledAffected(await boss.cancel(JOBS_QUEUE_NAME, runnerJobId));
+    return affected > 0 ? { verdict: "cancelled" } : { verdict: "not_cancellable" };
   } catch (error) {
     return {
       verdict: "unavailable",
@@ -90,12 +86,13 @@ export async function deleteRunnerJobs(
   runnerJobIds: readonly string[],
 ): Promise<number> {
   if (runnerJobIds.length === 0) return 0;
-  const response = (await boss.deleteJob(JOBS_QUEUE_NAME, [...runnerJobIds], {
-    db: {
-      executeSql: (text, values) => withinTx.query(text, values),
-    },
-  })) as { affected?: number };
-  return response.affected ?? 0;
+  return settledAffected(
+    await boss.deleteJob(JOBS_QUEUE_NAME, [...runnerJobIds], {
+      db: {
+        executeSql: (text, values) => withinTx.query(text, values),
+      },
+    }),
+  );
 }
 
 /** The borrowed-connection runner-row delete the cleanup transaction consumes. */

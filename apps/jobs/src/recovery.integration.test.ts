@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PgBoss } from "pg-boss";
 import { Pool } from "pg";
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 
 import {
   JOB_TERMINAL_STATUSES,
@@ -536,9 +536,12 @@ describe("the runner-row reconciliation's remaining branches", () => {
     const appId = anApp();
     const jobId = await seedJob({ appId, startAfterSeconds: 3_600 });
     const runnerJobId = await runnerJobIdOf(jobId);
-    // The state a crash between the claim's completion and the wrapper write
-    // leaves (the store stores what the real path reaches); the result bytes
-    // were lost with the attempt's process, so no success is fabricatable.
+    // The current worker commits the record write and the runner settle in
+    // one transaction, so it never leaves this state. A worker from an
+    // earlier build settled first and wrote the record after, so rows it
+    // left behind (or wrote during a rolling upgrade) can still read
+    // completed beside a running record. The result bytes are gone, so no
+    // success is fabricatable.
     await direct.query(
       `UPDATE ${JOBS_PGBOSS_SCHEMA}.job SET state = 'completed', completed_on = now()
          WHERE id = $1`,
@@ -811,8 +814,16 @@ describe("the reconciliation's conditional writes fence a loser", () => {
     // The crashed write must lose to the worker's reported failure: a
     // terminal row carries no result, so the store's own checks do not
     // refuse the overwrite — the fence is the only protection.
+    // The runner row is arranged directly above, so the settle is a stub
+    // that reports the claim held: the leg exercises the record write alone.
     const sweeper = sweeperWithInterleavedRead(runnerJobId, async () => {
-      const failed = await fenceStore.failAttempt(begun.record, 1, "upstream_error", false);
+      const failed = await fenceStore.failAttempt(
+        begun.record,
+        1,
+        "upstream_error",
+        false,
+        async () => 1,
+      );
       if (failed !== "projected") throw new Error(`the late failure lost: ${failed}`);
     });
     sweeper.start();
@@ -1155,6 +1166,10 @@ describe("the recovery writes against a live attempt", () => {
             1,
             "upstream_error",
             true,
+            // The claim expiry already settled the runner row; the stub
+            // reports the claim held so the leg exercises the record write
+            // alone.
+            async () => 1,
           );
           if (failed !== "projected") throw new Error(`the late retrying failure lost: ${failed}`);
           return readRunnerJobState(boss, candidate);
@@ -1184,6 +1199,137 @@ describe("the recovery writes against a live attempt", () => {
     // 60s retry delay the suite never reaches).
     await settleLeftover(jobId);
   });
+
+  /**
+   * A spy on one pg-boss settle method that runs `inGap` right after the
+   * real settle of this leg's own claim returns, before the worker's next
+   * step. That holds open the window between the runner settle and the
+   * record write that a 15-second sweep can otherwise land in by chance.
+   * The worker loop's own batch settles (an array of jobs) pass through.
+   */
+  function holdSettleGap(
+    method: "complete" | "fail",
+    runnerJobId: () => string | null,
+    inGap: () => Promise<void>,
+  ): { restore: () => void; ran: () => boolean } {
+    const real = boss[method].bind(boss) as (...args: unknown[]) => Promise<unknown>;
+    let ran = false;
+    const spy = vi.spyOn(boss, method).mockImplementation((async (...args: unknown[]) => {
+      const response = await real(...args);
+      const id = args[1];
+      if (
+        !ran &&
+        typeof id === "object" &&
+        id !== null &&
+        !Array.isArray(id) &&
+        (id as { id?: unknown }).id === runnerJobId()
+      ) {
+        ran = true;
+        await inGap();
+      }
+      return response;
+    }) as never);
+    return { restore: () => spy.mockRestore(), ran: () => ran };
+  }
+
+  test(
+    "a recovery pass landing between the worker's settle and its record write never crashes the success",
+    { timeout: 120_000 },
+    async () => {
+      const appId = anApp();
+      const ready = stalledUntilResolved();
+      let runnerJobId: string | null = null;
+      currentHandler = async () => {
+        await ready.promise;
+        return { answer: 42 };
+      };
+      let sweeper: JobsRecovery | null = null;
+      const gap = holdSettleGap(
+        "complete",
+        () => runnerJobId,
+        async () => {
+          await sweeper?.runPass();
+        },
+      );
+      try {
+        const jobId = await seedJob({ appId });
+        runnerJobId = await runnerJobIdOf(jobId);
+        sweeper = sweeperForOwnJob(runnerJobId);
+        sweeper.start();
+        ready.release();
+        await waitFor("the record to reach a terminal state", async () =>
+          (JOB_TERMINAL_STATUSES as readonly unknown[]).includes((await recordRow(jobId)).status),
+        );
+        expect(gap.ran()).toBe(true);
+        const row = await recordRow(jobId);
+        expect(row.status).toBe("succeeded");
+        expect(row.error_code).toBeNull();
+        expect(JSON.parse(row.result as string)).toEqual({ answer: 42 });
+        expect((await runnerRow(jobId)).state).toBe("completed");
+      } finally {
+        ready.release();
+        gap.restore();
+        await sweeper?.stop();
+      }
+    },
+  );
+
+  test(
+    "a retrying failure's runner settle and its queued projection land together, so the retry cannot overtake them",
+    { timeout: 120_000 },
+    async () => {
+      const appId = anApp();
+      const ready = stalledUntilResolved();
+      let runnerJobId: string | null = null;
+      let jobId = "";
+      currentHandler = async (context) => {
+        if (context.attempt === 1) {
+          await ready.promise;
+          throw new JobsExecutionError("upstream_error");
+        }
+        return "unused";
+      };
+      let sweeper: JobsRecovery | null = null;
+      const seenInGap: { runner?: unknown; record?: unknown } = {};
+      const gap = holdSettleGap(
+        "fail",
+        () => runnerJobId,
+        async () => {
+          // Read from another connection: what a second worker's claim and
+          // the sweeper would see while the settle is still in flight.
+          seenInGap.runner = (await runnerRow(jobId)).state;
+          seenInGap.record = (await recordRow(jobId)).status;
+          await sweeper?.runPass();
+        },
+      );
+      try {
+        jobId = await seedJob({ appId, retryLimit: 1, retryDelay: 60 });
+        runnerJobId = await runnerJobIdOf(jobId);
+        sweeper = sweeperForOwnJob(runnerJobId);
+        sweeper.start();
+        ready.release();
+        await waitFor("the failed attempt to wait for its retry", async () => {
+          const row = await recordRow(jobId);
+          return row.status === "queued" && row.attempt === 1;
+        });
+        expect(gap.ran()).toBe(true);
+        // Inside the settle, the retry is not yet claimable and the record
+        // still reads the live attempt: neither can move ahead of the other.
+        expect(seenInGap).toEqual({ runner: "active", record: "running" });
+        const row = await recordRow(jobId);
+        expect(row.error_code).toBe("upstream_error");
+        expect(row.terminal_at).toBeNull();
+        const runner = await runnerRow(jobId);
+        expect(runner.state).toBe("retry");
+        expect(runner.output).toEqual({ code: "upstream_error" });
+      } finally {
+        ready.release();
+        gap.restore();
+        await sweeper?.stop();
+      }
+      await settleLeftover(jobId);
+    },
+  );
 
   test("a lapsed claim's progress report cannot poison a record the sweeper just requeued", async () => {
     const appId = anApp();

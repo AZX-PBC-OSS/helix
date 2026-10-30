@@ -161,11 +161,12 @@ export type WorkRecoveryDecision =
  *   or the drive was lost and the claim expired), and the outcome the owner
  *   was acknowledged is `cancelled`.
  * - terminal `completed` — the attempt finished but its result was never
- *   projected (a crash or a store outage between the claim's completion and
- *   the wrapper write): the result bytes are gone with the attempt's
- *   process, so the truthful outcome is `crashed`, not a fabricated success.
- *   A pending cancellation intent loses to this completion — its terminal
- *   outcome committed first on the runner row.
+ *   projected. The current worker commits the record write and the runner
+ *   settle in one transaction, so only a worker from an earlier build (which
+ *   settled first and wrote the record after) leaves this state. The result
+ *   bytes are gone, so the truthful outcome is `crashed`, not a fabricated
+ *   success. A pending cancellation intent loses to this completion — its
+ *   terminal outcome committed first on the runner row.
  * - terminal `cancelled` — the row's cancellation wins: the wrapper projects
  *   `cancelled` and recovery never reissues the work.
  */

@@ -13,8 +13,10 @@ import {
   JobsExecution,
   JobsExecutionError,
   JobsHandlerRegistry,
+  JobsSettleResponseUnreadable,
   publicStatus,
   serializeBoundedResult,
+  settledAffected,
   storedExecutionError,
 } from "./execution.js";
 
@@ -455,6 +457,28 @@ describe("deadlinePassed", () => {
       expect(deadlinePassed(new Date(accepted + 3_600_000), 60)).toBe(false);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+describe("the settle response's affected count", () => {
+  test("a numeric count is read as is, including 0 for a lapsed claim", () => {
+    expect(settledAffected({ jobs: ["a"], requested: 1, affected: 1, settled: ["a"] })).toBe(1);
+    expect(settledAffected({ jobs: ["a"], requested: 1, affected: 0 })).toBe(0);
+  });
+
+  test("a response without a numeric count throws its own error instead of reading as 0", () => {
+    for (const response of [
+      {},
+      { affected: "1" },
+      { affected: null },
+      { affected: Number.NaN },
+      { count: 1 },
+      null,
+      undefined,
+      1,
+    ]) {
+      expect(() => settledAffected(response)).toThrow(JobsSettleResponseUnreadable);
     }
   });
 });

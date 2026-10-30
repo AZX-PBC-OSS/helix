@@ -1,5 +1,5 @@
 import { SpanStatusCode, type Span } from "@opentelemetry/api";
-import type { JobWithMetadata, PgBoss, WorkOptions } from "pg-boss";
+import type { Db, JobWithMetadata, PgBoss, WorkOptions } from "pg-boss";
 import type { Pool, PoolClient } from "pg";
 
 import {
@@ -51,14 +51,16 @@ import { countExecution, failSpan, withExecutionSpan } from "./telemetry.js";
  *
  * Three invariants shape the projection:
  *
- * - **A claim's settlement is the arbiter for outcomes.** The runner's own
- *   attempt-fenced `complete`/`fail` run FIRST on each path; the wrapper
- *   write follows only when the settlement reports the claim still held. A
- *   late completion whose claim lapsed (a claim timeout, a lost lease) is
- *   discarded, never stored — the timeout outcome that the claim's expiry
- *   produced is the truth, and the recovery path projects it (design §6:
- *   "fence late completion using runner claim/terminal semantics and
- *   conditional wrapper updates").
+ * - **The record write and the claim's settlement commit together.** Each
+ *   outcome runs in one transaction: the conditional wrapper write, then the
+ *   runner's own attempt-fenced `complete`/`fail` on the same client. If
+ *   either matches nothing, the transaction rolls back. A late completion
+ *   whose claim lapsed (a claim timeout, a lost lease) is discarded, never
+ *   stored — the timeout outcome that the claim's expiry produced is the
+ *   truth, and the recovery path projects it (design §6: "fence late
+ *   completion using runner claim/terminal semantics and conditional wrapper
+ *   updates"). The recovery sweeper therefore never sees a settled runner
+ *   row beside a record still reading `running` for the same attempt.
  * - **Every wrapper write is conditional.** The outcome writes update only a
  *   nonterminal record at the attempt they name; the progress reports update
  *   only the record's CURRENT attempt (a lapsed claim's late reports still
@@ -183,6 +185,53 @@ export class JobsStoreUnavailable extends Error {
     this.name = "JobsStoreUnavailable";
   }
 }
+
+/**
+ * A pg-boss settle call answered without a numeric `affected` count. The
+ * pinned dependency declares `CommandResponse` as `{}`, so the count is read
+ * structurally; if a release renames or drops it, reading it as 0 would turn
+ * every settled claim into a lapsed one and silently discard every result.
+ */
+export class JobsSettleResponseUnreadable extends Error {
+  constructor() {
+    super("the runner's settle response carried no numeric affected count");
+    this.name = "JobsSettleResponseUnreadable";
+  }
+}
+
+/**
+ * The `affected` count of a pg-boss settle response (`complete`, `fail`,
+ * `cancel`, `deleteJob`), which pg-boss 12 returns as
+ * `{jobs, requested, affected, settled?}` (its manager's
+ * `mapCommandResponse`). Throws {@link JobsSettleResponseUnreadable} when the
+ * count is missing or not a number.
+ */
+export function settledAffected(response: unknown): number {
+  const affected =
+    typeof response === "object" && response !== null
+      ? (response as { affected?: unknown }).affected
+      : undefined;
+  if (typeof affected !== "number" || !Number.isFinite(affected)) {
+    throw new JobsSettleResponseUnreadable();
+  }
+  return affected;
+}
+
+/**
+ * The runner's fenced settle of one claim, run on the projection's own
+ * transaction through the `db` connection option. It answers the settle's
+ * affected count: 0 means the claim was no longer held.
+ */
+export type JobsRunnerSettle = (db: Db) => Promise<number>;
+
+/**
+ * What one outcome transaction did. `projected`: the record write and the
+ * runner settle both committed. `fenced`: the conditional record write
+ * matched nothing (a competing terminal outcome or a newer attempt won), so
+ * nothing was settled. `lapsed`: the record matched but the runner claim was
+ * already settled elsewhere, so the record write was rolled back.
+ */
+export type JobsOutcomeVerdict = "projected" | "fenced" | "lapsed";
 
 /**
  * The handler registry — the seam the production type registrations compose
@@ -646,25 +695,24 @@ export class JobsExecutionStore {
    * when no attempt remains. The terminal arm stamps `terminal_at` (the
    * original terminal outcome's instant — the read horizons' input); the
    * retry arm never does. Conditional on this attempt still being the
-   * record's current one; `fenced` means a competing outcome won.
+   * record's current one, and committed in one transaction with `settle`
+   * (the runner's fenced `fail`), so a retry the runner makes claimable is
+   * never visible before the record reads `queued`.
    */
   async failAttempt(
     record: JobsAttemptRecord,
     attempt: number,
     code: JobErrorCode,
     retrying: boolean,
-  ): Promise<"projected" | "fenced"> {
-    const pool = this.pool;
-    if (this.stopped || !pool) {
-      throw new Error("the execution store is not running");
-    }
-    const updated = await pool.query(
+    settle: JobsRunnerSettle,
+  ): Promise<JobsOutcomeVerdict> {
+    return this.projectAndSettle(
       `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
           SET status = $5, error_code = $4, terminal_at = CASE WHEN $5 = 'failed' THEN now() END
         WHERE server = $1 AND job_id = $2 AND status = 'running' AND attempt = $3`,
       [record.server, record.jobId, attempt, code, retrying ? "queued" : "failed"],
+      settle,
     );
-    return (updated.rowCount ?? 0) === 1 ? "projected" : "fenced";
   }
 
   /**
@@ -673,19 +721,17 @@ export class JobsExecutionStore {
    * the result. `terminal_at` is stamped here (the original terminal
    * outcome's instant): the result horizon (seven days) and the record
    * horizon (thirty days) both derive from it, and a later logical expiry
-   * never rewrites it. Conditional like every projection; `fenced` means a
-   * competing terminal outcome (a cancellation, a recovery's crash) won the
-   * race.
+   * never rewrites it. Conditional like every projection, and committed in
+   * one transaction with `settle` (the runner's fenced `complete`), so the
+   * recovery sweeper can never read the runner row completed while the
+   * record still reads `running`.
    */
   async completeAttempt(
     record: JobsAttemptRecord,
     attempt: number,
     result: unknown,
-  ): Promise<"projected" | "fenced"> {
-    const pool = this.pool;
-    if (this.stopped || !pool) {
-      throw new Error("the execution store is not running");
-    }
+    settle: JobsRunnerSettle,
+  ): Promise<JobsOutcomeVerdict> {
     // The stored form is the bound's own canonical JSON text, serialized
     // iteratively (the same walk the bound ran — canonical of canonical is
     // the same bytes it measured) and never parsed or re-serialized by the
@@ -693,13 +739,54 @@ export class JobsExecutionStore {
     // byte cap's maximum legal depth. A refusal here is a value that
     // mutated after its judgment — the projection's failure path answers it.
     const text = stringifyJsonValue(result);
-    const updated = await pool.query(
+    return this.projectAndSettle(
       `UPDATE ${JOBS_JOB_RECORD_QUALIFIED}
           SET status = 'succeeded', result = $4, error_code = NULL, terminal_at = now()
         WHERE server = $1 AND job_id = $2 AND status = 'running' AND attempt = $3`,
       [record.server, record.jobId, attempt, text],
+      settle,
     );
-    return (updated.rowCount ?? 0) === 1 ? "projected" : "fenced";
+  }
+
+  /**
+   * One outcome transaction: the conditional record write, then the runner
+   * settle on the same client. The record row is locked first, so a
+   * concurrent recovery write on it waits for this commit and then finds the
+   * record terminal or re-queued. Until the commit, every other connection
+   * reads the runner row as `active` and the record as `running`, which the
+   * recovery table leaves alone.
+   */
+  private async projectAndSettle(
+    sql: string,
+    params: unknown[],
+    settle: JobsRunnerSettle,
+  ): Promise<JobsOutcomeVerdict> {
+    const pool = this.pool;
+    if (this.stopped || !pool) {
+      throw new Error("the execution store is not running");
+    }
+    return withJobsClient(pool, async (client) => {
+      await client.query("BEGIN");
+      try {
+        const updated = await client.query(sql, params);
+        if ((updated.rowCount ?? 0) !== 1) {
+          await client.query("ROLLBACK");
+          return "fenced";
+        }
+        const affected = await settle({
+          executeSql: (text, values) => client.query(text, values),
+        } satisfies Db);
+        if (affected === 0) {
+          await client.query("ROLLBACK");
+          return "lapsed";
+        }
+        await client.query("COMMIT");
+        return "projected";
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => {});
+        throw error;
+      }
+    });
   }
 }
 
@@ -979,6 +1066,11 @@ export class JobsExecution {
         countExecution("terminal_fenced");
         return;
       }
+      if (error instanceof JobsStoreUnavailable) {
+        // The success transaction could not settle; `execute` already graded
+        // the span. The rethrow lets the worker loop fail the claim.
+        throw error;
+      }
       const code = error instanceof JobsExecutionError ? error.code : "platform_error";
       if (code === "platform_error") {
         this.log.error(
@@ -1062,24 +1154,25 @@ export class JobsExecution {
     });
     const stored = serializeBoundedResult(raw);
 
-    // The claim's own fenced settlement, then the projection: only a settle
-    // that reports the claim held may write the wrapper. The runner row and
-    // the wrapper record cannot disagree about who won.
-    // Why the structural type: the pinned dependency's `CommandResponse`
-    // declaration is empty, but its settlement paths return
-    // `{jobs, requested, affected, settled?}` (its manager's
-    // `mapCommandResponse`) — the attempt fence's answer is the `affected`
-    // count.
-    let settled: { affected?: number };
+    // The record write and the claim's fenced settlement, in one
+    // transaction. The runner row keeps no copy of the result: the record is
+    // the only store of it, so the result horizon governs it alone.
+    let verdict: JobsOutcomeVerdict;
     try {
-      settled = (await boss.complete(JOBS_QUEUE_NAME, {
-        id: job.id,
-        retryCount: job.retryCount,
-      })) as { affected?: number };
+      verdict = await this.store.completeAttempt(record, attempt, stored, async (db) =>
+        settledAffected(
+          await boss.complete(JOBS_QUEUE_NAME, { id: job.id, retryCount: job.retryCount }, null, {
+            db,
+          }),
+        ),
+      );
     } catch (error) {
-      // The settlement's answer is lost: the row may or may not be completed.
-      // Nothing is projected from an uncertain claim — the recovery path
-      // reconciles the record against the runner's own state.
+      // The transaction failed, so the record still reads `running` and the
+      // runner row is still `active` (unless the COMMIT itself landed and only
+      // its answer was lost). The throw makes the worker loop fail the claim
+      // through the type's retry policy. Settlement is at-least-once by
+      // design: a retry, or the recovery sweeper requeueing the record, can
+      // re-run a handler that had already finished.
       this.log.error(
         {
           event: "jobs.execution.settle_uncertain",
@@ -1088,36 +1181,15 @@ export class JobsExecution {
           attempt,
           err: error,
         },
-        "the attempt's completion could not be confirmed — nothing was projected",
+        "the attempt's success could not be settled — nothing was projected, and the claim fails through the retry policy",
       );
       span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsExecuteOutcome);
       failSpan(span, error);
       countExecution("unavailable");
-      return;
+      throw new JobsStoreUnavailable({ cause: error });
     }
-    if ((settled.affected ?? 0) === 0) {
+    if (verdict === "lapsed") {
       throw new JobsClaimLapsed();
-    }
-    let verdict: "projected" | "fenced";
-    try {
-      verdict = await this.store.completeAttempt(record, attempt, stored);
-    } catch (error) {
-      // The runner row is settled completed; the projection's failure leaves
-      // the record mid-flight for the recovery path to reconcile.
-      this.log.error(
-        {
-          event: "jobs.execution.projection_failed",
-          appId: record.appId,
-          jobId: record.jobId,
-          attempt,
-          err: error,
-        },
-        "the attempt's success could not be projected — the runner row is settled; the recovery path reconciles the record",
-      );
-      span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsExecuteOutcome);
-      failSpan(span, error);
-      countExecution("unavailable");
-      return;
     }
     if (verdict === "fenced") {
       this.log.warn(
@@ -1138,10 +1210,11 @@ export class JobsExecution {
   }
 
   /**
-   * Project a failed attempt: the runner's own attempt-fenced fail first — a
-   * claim the timeout (or another worker) already settled refuses, and the
-   * wrapper stays untouched for the recovery path — then the conditional
-   * wrapper write. The span's outcome reflects what actually landed.
+   * Project a failed attempt: the conditional record write and the runner's
+   * attempt-fenced fail commit in one transaction. A claim the timeout (or
+   * another worker) already settled rolls the record write back and leaves
+   * the record for the recovery path. The span's outcome reflects what
+   * actually landed.
    */
   private async projectFailure(
     boss: PgBoss,
@@ -1151,38 +1224,31 @@ export class JobsExecution {
     code: JobErrorCode,
     span: Span,
   ): Promise<void> {
-    // The wrapper's code for a failed attempt that ENDS the job of a type
-    // that permitted retries is the exhausted-retries reason — the attempt's
-    // own code stays on the runner row (`boss.fail` below), and while a
-    // retry remains the wrapper carries the attempt's code, as always.
-    // Types with no retries (retryLimit 0) project their own code.
+    // A failed attempt that ENDS the job of a type that permitted retries
+    // carries the exhausted-retries reason; while a retry remains, it carries
+    // the attempt's own code. Types with no retries (retryLimit 0) carry their
+    // own code. The runner row's output gets the same code as the record, so
+    // recovery projects the same reason if it ever reads the row. The
+    // `retrying` test matches pg-boss's own retry decision for the fenced
+    // attempt (`retry_count < retry_limit`).
     const retrying = job.retryCount < job.retryLimit;
     const projectedCode: JobErrorCode =
       !retrying && job.retryLimit > 0 ? "attempts_exhausted" : code;
+    let verdict: JobsOutcomeVerdict;
     try {
-      // Why the structural type: `CommandResponse`'s declaration is empty —
-      // see the settlement note in `execute` above.
-      const failResponse = (await boss.fail(
-        JOBS_QUEUE_NAME,
-        { id: job.id, retryCount: job.retryCount },
-        { code },
-      )) as { affected?: number };
-      if ((failResponse.affected ?? 0) === 0) {
-        this.log.warn(
-          {
-            event: "jobs.execution.claim_lapsed",
-            appId: record.appId,
-            jobId: record.jobId,
-            attempt,
-          },
-          "the claim was already settled elsewhere — the failure was not projected",
-        );
-        span.setAttribute(ATTR_OUTCOME, "terminal_fenced" satisfies JobsExecuteOutcome);
-        span.setAttribute(ATTR_REASON, projectedCode);
-        countExecution("terminal_fenced");
-        return;
-      }
+      verdict = await this.store.failAttempt(record, attempt, projectedCode, retrying, async (db) =>
+        settledAffected(
+          await boss.fail(
+            JOBS_QUEUE_NAME,
+            { id: job.id, retryCount: job.retryCount },
+            { code: projectedCode },
+            { db },
+          ),
+        ),
+      );
     } catch (error) {
+      // Nothing committed. The caller rethrows the attempt's error, and the
+      // worker loop's own fenced fail settles the claim.
       this.log.error(
         {
           event: "jobs.execution.settle_uncertain",
@@ -1191,48 +1257,46 @@ export class JobsExecution {
           attempt,
           err: error,
         },
-        "the attempt's failure could not be confirmed on the runner row — nothing was projected",
+        "the attempt's failure could not be settled — nothing was projected",
       );
       span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsExecuteOutcome);
       failSpan(span, error);
       countExecution("unavailable");
       return;
     }
-    try {
-      const projected = await this.store.failAttempt(record, attempt, projectedCode, retrying);
-      if (projected === "fenced") {
-        this.log.warn(
-          {
-            event: "jobs.execution.outcome_raced",
-            appId: record.appId,
-            jobId: record.jobId,
-            attempt,
-          },
-          "a competing terminal outcome won the race — the attempt's failure was not projected",
-        );
-        span.setAttribute(ATTR_OUTCOME, "terminal_fenced" satisfies JobsExecuteOutcome);
-        span.setAttribute(ATTR_REASON, projectedCode);
-        countExecution("terminal_fenced");
-        return;
-      }
-      span.setAttribute(ATTR_OUTCOME, "failed" satisfies JobsExecuteOutcome);
-      span.setAttribute(ATTR_REASON, projectedCode);
-      countExecution("failed");
-    } catch (error) {
-      this.log.error(
+    if (verdict === "lapsed") {
+      this.log.warn(
         {
-          event: "jobs.execution.projection_failed",
+          event: "jobs.execution.claim_lapsed",
           appId: record.appId,
           jobId: record.jobId,
           attempt,
-          err: error,
         },
-        "the attempt's failure could not be projected — the recovery path reconciles the record",
+        "the claim was already settled elsewhere — the failure was not projected",
       );
-      span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsExecuteOutcome);
-      failSpan(span, error);
-      countExecution("unavailable");
+      span.setAttribute(ATTR_OUTCOME, "terminal_fenced" satisfies JobsExecuteOutcome);
+      span.setAttribute(ATTR_REASON, projectedCode);
+      countExecution("terminal_fenced");
+      return;
     }
+    if (verdict === "fenced") {
+      this.log.warn(
+        {
+          event: "jobs.execution.outcome_raced",
+          appId: record.appId,
+          jobId: record.jobId,
+          attempt,
+        },
+        "a competing terminal outcome won the race — the attempt's failure was not projected",
+      );
+      span.setAttribute(ATTR_OUTCOME, "terminal_fenced" satisfies JobsExecuteOutcome);
+      span.setAttribute(ATTR_REASON, projectedCode);
+      countExecution("terminal_fenced");
+      return;
+    }
+    span.setAttribute(ATTR_OUTCOME, "failed" satisfies JobsExecuteOutcome);
+    span.setAttribute(ATTR_REASON, projectedCode);
+    countExecution("failed");
   }
 }
 

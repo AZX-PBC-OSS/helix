@@ -952,7 +952,7 @@ describe("the execution seam's telemetry", () => {
     }
   });
 
-  test("a success the store cannot project leaves the record mid-flight — the runner row is settled, the wrapper never fabricates the outcome", async () => {
+  test("a success the store cannot settle leaves the record mid-flight and the claim fails through the retry policy — no completed row without its result", async () => {
     const appId = anApp();
     await deliverGeneration(appId, "1", false);
     const jobId = await seedJob({
@@ -992,17 +992,19 @@ describe("the execution seam's telemetry", () => {
             (s) => s.name === "helix.jobs.execute" && s.attributes["helix.jobs.job_id"] === jobId,
           ),
       );
-      await waitFor("the runner row to settle completed", async () => {
+      // The record write and the runner settle share one transaction, so
+      // neither landed. The worker loop then fails the claim (retryLimit 0:
+      // terminally, with no worker-reported code), which recovery projects
+      // as `crashed`. The runner row is never `completed` beside a record
+      // that lost the result.
+      await waitFor("the runner row to settle failed", async () => {
         try {
-          return (await runnerRow(jobId)).state === "completed";
+          return (await runnerRow(jobId)).state === "failed";
         } catch {
           return false;
         }
       });
       const row = await recordRow(jobId);
-      // The wrapper record says exactly what happened: the attempt began
-      // (running at attempt 1) and its success was never projected — the
-      // state the recovery path reconciles, never a fabricated success.
       expect(row.status).toBe("running");
       expect(row.attempt).toBe(1);
       expect(row.result).toBeNull();
@@ -1176,9 +1178,9 @@ describe("the execution seam's telemetry", () => {
       appId,
       data: { url: "https://example.com/data.json" },
     });
-    // The fail-side projection: the handler's own failure settles the runner
-    // row (the claim's fenced fail runs first), and the wrapper write that
-    // follows cannot answer — the record never carries the failure.
+    // The fail-side projection cannot answer: the record write and the
+    // runner settle share one transaction, so neither lands, and the worker
+    // loop's own fail settles the runner row.
     const fails = new JobsExecution({
       databaseUrl: RUNTIME_DSN,
       statementTimeoutMs: 10_000,
@@ -1214,8 +1216,9 @@ describe("the execution seam's telemetry", () => {
         }
       });
       const row = await recordRow(jobId);
-      // The runner row says failed; the wrapper record never learned it —
-      // the state the recovery path reconciles, never a fabricated failure.
+      // The runner row says failed (the loop's fail carries the attempt's
+      // own code); the wrapper record never learned it — the state the
+      // recovery path reconciles, never a fabricated failure.
       expect(row.status).toBe("running");
       expect(row.attempt).toBe(1);
       expect(row.error_code).toBeNull();
