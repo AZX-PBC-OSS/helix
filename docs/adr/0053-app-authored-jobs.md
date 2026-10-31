@@ -19,7 +19,7 @@ Apps can write their own server-side jobs: ordinary `async` functions in the app
 
 A job never performs I/O itself. When it calls `await h.fetch(...)`, it is **asking** Helix to make the call. Helix makes it through the edge, with the same grants, budgets, metering and audit as a call from the browser. Helix records the answer in the run's **history**, and hands it back to the job. If anything crashes, Helix starts the job again in a fresh sandbox and **replays** the recorded answers until the job catches up. This is how Temporal and Azure Durable Functions work. The difference is that here the job code is untrusted.
 
-- **Starting a run** works like `jobs:fetch` today. An admin approves the app's job modules once, as an elevated capability. After that, a signed-in user of the app starts a run through ADR-0045's submit route, and owns it.
+- **Starting a run** works like `jobs:fetch` today, with no popup. An admin approves the app's job modules once, as an elevated capability. After that, a signed-in user of the app starts a run through ADR-0045's submit route, and owns it. The edge keeps a **run record** for each run it accepts, and checks every request the run makes against it.
 - **A run has the app's authority, never the user's.** It uses the app's own grants and budgets. It never sees user-scope data or delegated connections.
 - **The operator owns the limits:** how long a run may live (24 hours by default), how many requests it may make, and how fast each outbound origin may be called.
 - **Job code runs in QuickJS compiled to WebAssembly**, built by Helix, with one Wasm instance per run, in a sandbox pool that has no credentials and no network. A single engine bug on an unpatched install reaches only its own run.
@@ -90,6 +90,7 @@ Each word below means exactly one thing in this ADR.
 | **Sandbox host** | A process in the sandbox pool that holds instances and answers the runner's protocol. |
 | **Sandbox pool** | The set of sandbox hosts, deployed apart from the runner, with no credentials and no network. |
 | **Sticky** | A run whose instance stays in memory between steps, so the next step needs no replay. |
+| **Run record** | The edge's own record of a run it accepted: app, environment, owner, module hash, deadline and whether it has been stopped. Created automatically on submit. |
 | **Run header** | The facts a run is pinned to when it starts: module hash, engine build, limit settings. |
 | **Callback** | ADR-0045's signed jobs → edge hop, through which a job service asks the edge to perform an outbound operation. |
 
@@ -165,7 +166,7 @@ Every part of the implementation must keep these rules. Cite them by number, for
 - **I2. Job code has no credential, network, clock or randomness.** Time and randomness come only from `h.now()` and `h.random()`, whose values are recorded. (What a job reaches *through an engine bug* is I8's subject.) (d1, d6, d7)
 - **I3. A run starts only for an app whose job modules an admin approved, and only on a signed-in user's submission.** That user owns the run. (d2, d3)
 - **I4. A run never acts as the user.** It gets no user-scope data, no delegated connection and no user token. (d3)
-- **I5. Every request passes the edge's ordinary checks.** The app's grants, budgets, fetch policy, metering and audit apply to a module run's requests exactly as to the app's browser calls. (d4)
+- **I5. The edge decides from its own run record, and applies its ordinary checks.** A request is refused unless it belongs to a run the edge accepted, and that run is not stopped or past its deadline. Nothing the module service asserts can widen what a run may do. Then the app's grants, budgets, fetch policy, metering and audit apply exactly as to the app's browser calls. (d3, d4)
 - **I6. A refusal is never handed to the job as an answer.** It ends the run. (d1, d5)
 - **I7. The runner's history is the only source of truth.** A sandbox's state is a cache, and every frame from a sandbox is untrusted input. (d7, d8)
 - **I8. One engine bug, on an unpatched install, reaches only its own run's instance**, plus what that instance's fixed imports expose (a clock, stderr and its own recorded values). It gains no credential, network or authority. Reaching another run takes a second, independent bug. (d6, d7)
@@ -218,7 +219,7 @@ jobs: {
 - **Limits are not in the manifest.** Ceilings, pacing and concurrency belong to the operator (decision 5).
 - **Approval.** `classifyChange` (ADR-0016) treats adding a module as **elevated**. An admin approves it once, like any elevated capability. Platform job types stay baseline grants under ADR-0045.
 - **Code changes need no new approval.** A redeploy that changes job code but not the manifest is like any other app code change. What bounds every version of the code is the same: the app's grants and budgets, the operator's limits, and the edge's checks on every request.
-- **Each run pins its module version.** When a run is accepted, the module service records the hash of the module file in the app's live version, and fetches that exact source through the callback (decision 4). It keeps the source, keyed by hash, as long as any run uses it. So replay never depends on which bundle version is live, ADR-0018 rollbacks and archiving cannot strand a run, and a redeploy never changes a run already in flight.
+- **Each run pins its module version.** The run record holds the hash of the module file in the app's live version when the run was accepted (decision 3). The module service fetches that exact source through the callback (decision 4). It keeps the source, keyed by hash, as long as any run uses it. So replay never depends on which bundle version is live, ADR-0018 rollbacks and archiving cannot strand a run, and a redeploy never changes a run already in flight.
 - **Revoking the app's module approval stops its runs** (decision 3). It is the admin's kill switch.
 
 **One of ADR-0045's rules is deliberately different for the module service.** The jobs design says granted types "must come from the installed production catalogue … never arbitrary actor names". Module names are the app's own. The admin's approval of the app's module list takes the catalogue's place.
@@ -226,6 +227,8 @@ jobs: {
 ### Decision 3. Starting, owning and stopping a run
 
 **Starting a run works like `jobs:fetch`.** There is no consent popup. A signed-in user of the app submits with ADR-0045's ordinary route, `POST /_api/jobs/modules/types/<module>`, with the input as the JSON body and an optional `Idempotency-Key`. ADR-0045's submission throttle, retry-key rules, 64 KiB input limit and unfinished and retained caps all apply unchanged. The edge accepts only if the app's approved manifest lists the module.
+
+**The edge keeps a run record.** Before it forwards an accepted submission, the edge writes a run record in `helix`: app, environment, owner (the user's canonical oid, ADR-0048), the module's hash in the app's live version, and the deadline. The signed submission to the module service carries the record's id, and every callback for the run names it (decision 4). A resent submission with the same `Idempotency-Key` and the same bytes finds the same record, so a lost reply is still recoverable and a retry never creates a second run. This is a deliberate departure from ADR-0045, where the edge keeps no job records. It applies to module runs only, because their code is untrusted and they can run for hours.
 
 **Ownership** belongs to the submitting user. That means the `gateway_calls` rows, the audit trail, and the right to read results and cancel. ADR-0045's exact-owner checks on poll, result and cancel apply unchanged.
 
@@ -242,13 +245,11 @@ jobs: {
 
 A run does **not** stop when its owner signs out, or loses access to the app. It continues until it finishes, is stopped or reaches its deadline. This is the same as `jobs:fetch`, and is listed under residual risks.
 
-**How a stop reaches the run.**
-- **Revocation and archiving** take effect at the edge at once: the edge already checks the app's current registry projection on every callback, so a request for a module the app no longer has approved is refused (decision 4).
-- **The owner's cancel** uses ADR-0045's cancel route.
-- **An admin's stop** goes from the portal over ADR-0045's lifecycle outbox, which retries until acknowledged. That outbox today tracks delivery per (app, generation, server), so it gains a record type keyed per run.
-- **The deadline** is enforced by the runner.
+**How a stop is enforced.** Two independent paths carry every stop:
+1. **The edge refuses at once.** The run record holds the deadline, and is marked when the run is stopped: by the edge itself for the owner's cancel, and by the portal for an admin's stop, projected to the edge with the ADR-0017 pattern (sub-second). Revocation and archiving show in the app's registry projection, which the edge already checks on every callback. This path is authoritative: from then on, the run cannot cause another effect.
+2. **The module service cancels.** The owner's cancel uses ADR-0045's ordinary cancel route. An admin's stop, revocation and archiving go over ADR-0045's lifecycle outbox, which retries until acknowledged. That outbox today tracks delivery per (app, generation, server), so it gains a record type keyed per run. The runner also enforces the deadline itself. It records each stop durably, and checks before it dispatches each request and before it resumes a run from `h.sleep`.
 
-The runner records each stop durably, and checks before it dispatches each request and before it resumes a run from `h.sleep`.
+The module service has no platform-database access (ADR-0045), so a delay on the second path only wastes sandbox time. It cannot cause an effect.
 
 ### Decision 4. Every request goes through the edge
 
@@ -262,11 +263,15 @@ The runner records each stop durably, and checks before it dispatches each reque
 
 This ADR widens the callback's allowlisted operations from outbound fetch to the request kinds in decision 1 (fetch, LLM and app-data), plus fetching a run's pinned module source by hash (decision 2). Each new operation gets the design's explicit-authority adapter, as fetch has, so the edge never fabricates a session. A data write's CAS precondition is part of the signed body, so it cannot be stripped in transit. One side effect is an improvement: `h.llm` goes through the real LLM gateway, so module runs get the USD ledger and `dollarsPerDay` that ADR-0045 noted its fetch-routed LLM job would lack.
 
-**For every request, the edge applies the same policy path as `/_api/*` (I5):** the module is in the app's approved manifest, the request is inside the app's grants, the app's budget allows it, fetch policy allows it, and the call is metered and audited. `gateway_calls` gains a `jobRunId` column, so every call is attributed to its run. The change is additive and needs no backfill, like ADR-0021's request-path amendment.
+**For a module run, the edge never takes authority from the callback (I5).** The callback names the run record. The edge looks it up, and refuses the callback if:
+- there is no such record, or the run is stopped or past its deadline;
+- the callback's claimed app, environment or owner disagrees with the record.
+
+**Then the edge applies the same policy path as `/_api/*`:** the module is in the app's approved manifest, the request is inside the app's grants, the app's budget allows it, fetch policy allows it, and the call is metered and audited. `gateway_calls` gains a `jobRunId` column, so every call is attributed to its run. The change is additive and needs no backfill, like ADR-0021's request-path amendment.
 
 **Job code never sees the callback credential (I2).** Only the runner holds it, and nothing in the sandbox protocol carries it.
 
-The callback's adversarial tests are extended **in the same change** with module cases: a module not in the approved manifest, an archived app, a request outside the app's grants, a request over budget, and a data write without a precondition.
+The callback's adversarial tests are extended **in the same change** with module cases: an unknown, stopped or expired run; a mismatched app, environment or owner; a module not in the approved manifest; an archived app; a request outside the app's grants; a request over budget; and a data write without a precondition.
 
 ### Decision 5. The operator owns the limits
 
@@ -438,7 +443,7 @@ The design puts three independent walls between a hostile job and anything worth
 
 **Wall 1: policy. An approved job can only ask, and every ask is checked.**
 - Nothing runs unless an admin approved the app's job modules (d2).
-- Even then, the job performs nothing itself. Every request goes from the runner to the edge, and is checked against the app's grants and budgets and fetch policy, then metered and attributed to the run (d4). The operator's per-run limits and pacing bound it further (d5).
+- Even then, the job performs nothing itself. Every request goes from the runner to the edge, which checks it against its own run record, then the app's grants, budgets and fetch policy, then meters it and attributes it to the run (d3, d4). The operator's per-run limits and pacing bound it further (d5).
 
 *An attacker who stays inside this wall* gets what the app's own grants and budgets allow, attributed under `jobRunId`. That is what the same app's browser code could already do while a tab was open.
 
@@ -448,9 +453,9 @@ The design puts three independent walls between a hostile job and anything worth
 
 *An attacker with a QuickJS memory-safety bug* controls only their own run's instance, which they already controlled. Reaching the sandbox host takes a second, independent bug, in V8's Wasm implementation or in a host import.
 
-**Wall 3: the platform. The pool has nothing to steal.**
+**Wall 3: the platform. The pool has nothing to steal, and the runner cannot be made to lend authority.**
 - A sandbox host has no identity, no secrets, no database and no network (d7).
-- The runner treats every sandbox frame as untrusted (I7).
+- The runner does hold credentials, but it treats every sandbox frame as untrusted (I7), and the edge does not take the runner's word for which run a request belongs to (I5).
 
 *An attacker with two chained bugs* reaches one sandbox host. They can read and disturb the runs on it, but they cannot call anything, and cannot reach another app's grants.
 
@@ -465,13 +470,13 @@ The design puts three independent walls between a hostile job and anything worth
 | A QuickJS bug plus a V8 Wasm or host-import bug | One sandbox host: co-resident runs' inputs, answers and state, and the ability to **forge answers across** those runs, which per-run replay cannot detect. No credential, no network | The pool is separate from the runner and holds nothing (d7). Optional: a sandbox host per app, or Javy plus Wasmtime per step (Alternatives) |
 | Escape to the node (a kernel bug) | The pool's nodes | A dedicated workload profile that hosts nothing else; optional Hyper-V per run (d7) |
 | A compromised sandbox host lying in its frames | Wrong answers or values for the runs it hosts | Frames are capped, matched to their id and validated; the runner's history is authoritative (d7, I7) |
-| A compromised runner (module service) | Callbacks for any app with approved modules, within that app's grants and budgets, as a compromised `jobs` service can for `jobs:fetch`. It cannot reach the `jobs` service's store | The edge's checks on every request (d4); per-app budgets cap spend; every request is attributed; ADR-0045 gives each server its own secrets and database. An edge-side record of each run would narrow this to runs that exist ([proposal](#proposals-awaiting-a-decision)) |
-| The owner loses access mid-run | Requests until the run finishes, is stopped or reaches its deadline (24 hours by default) | The deadline; a stop by the owner or an admin (d3) |
+| A compromised runner (module service) | Within runs the edge accepted and has not stopped: it can spend within their apps' grants and budgets and forge the answers their jobs see. It cannot invent a run, reach another app, or reach the `jobs` service's store | The edge's run record (d3, I5); per-app budgets cap spend; every request is attributed (d4); ADR-0045 gives each server its own secrets and database |
+| The owner loses access mid-run | Requests until the run finishes, is stopped or reaches its deadline (24 hours by default) | The deadline in the run record; a stop by the owner or an admin, enforced at the edge at once (d3) |
 | Hostile log content | Text shown to the run's owner | Stored per run, capped, never in the platform log store (d8) |
 
 **Known residual risks.** These are accepted. They are named here so that nobody mistakes them for gaps:
 - A double escape can forge answers between runs on the same sandbox host. A sandbox host per app narrows this to one app's runs.
-- A compromised module service can make calls for apps with approved modules, within their grants and budgets.
+- A compromised module service can spend within runs the edge accepted, but cannot invent or widen them.
 - Approval covers the module list, not each version of the code. An app author can change job code without re-approval, within the app's grants and the operator's limits.
 - An app can start a run for a signed-in user without that user clicking anything, as it can submit a `jobs:fetch` job today.
 - A run can continue for up to its deadline after its owner loses access.
@@ -482,7 +487,7 @@ The design puts three independent walls between a hostile job and anything worth
 ### Other shapes
 
 - **Jobs as async generators that `yield` requests.** This was the first form, and the one the spikes measured. The runner advances the job one request at a time with `gen.next(answer)`, which keeps the sandbox protocol very small. It gives exactly the same security as `async` functions, because isolation comes from the engine and the runner, not from the syntax. It was replaced because `await` is what developers already write, and what Temporal's TypeScript SDK uses.
-- **A consent popup for every run.** A platform-rendered popup would show the module, its input and its limits, and record a per-run grant before the app could submit. Rejected as too heavy: starting a module run now works like submitting `jobs:fetch`, and the admin's approval, the app's budgets, the operator's limits and the edge's checks bound what a run can do.
+- **A consent popup for every run.** A platform-rendered popup would show the module, its input and its limits, and the user's approval would create the run's record. Rejected as too heavy. The run record stays, created automatically on submit (d3), but the user is not asked: starting a module run now works like submitting `jobs:fetch`, and the admin's approval, the app's budgets, the operator's limits and the edge's checks bound what a run can do.
 - **An admin re-approves job code by hash on every change.** Rejected for v1: it adds a review step to every redeploy, while the app's grants and budgets, the operator's limits and the edge's per-request checks already bound what any version of the code can do.
 - **Limits declared per module in the manifest** (ceilings, rates, concurrency). Rejected for v1 in favour of operator settings (d5). It can be added later if one deployment-wide value proves too blunt.
 - **A platform "fetch campaign" job type, with the plan as payload (rung 0).** It handles the I/O half well, and decision 5 keeps that part. It was rejected for the control-flow half, because the plan language would grow into an interpreter.
@@ -538,7 +543,8 @@ QuickJS in Wasm closes the same surface by construction. An instance has only wh
 - **Engine bugs become reachable server-side for the first time.** The walls are built to contain one without a patch (Security).
 - **ADR-0045 gains a second named job service** with two images, the runner and the sandbox pool. The `jobs` service is unchanged.
 - **The jobs → edge callback grows** from outbound fetch to fetch, LLM and app-data operations, plus module source by hash (d2, d4).
-- **ADR-0045's lifecycle outbox gains per-run stop records,** for an admin's stop (d3).
+- **The edge keeps a run record per module run** (d3). ADR-0045's edge keeps no job records, so this is a departure, for module runs only.
+- **ADR-0045's lifecycle outbox gains per-run stop records** (d3).
 - **Helix gains outbound pacing,** for module runs, set by the operator (d5). Browser callers are unchanged.
 - **The engine spikes are re-run with the `async`-function contract** before the module service opens intake (d6).
 - **The pool costs money while idle.** A dedicated workload profile bills for its nodes whether or not any runs exist. The minimum node count and size are deployment settings, and the install's sizing guide should cover them.
@@ -581,7 +587,6 @@ These are values and mechanisms the drafting team filled in. None is decided. Ea
 | Engine stack limit (d6) | 256 KiB or less | At 512 KiB or more, V8's own stack overflowed first [spikes §1] |
 | CPU deadline per step (d6) | 100–250 ms | Long enough for real work between requests; short enough that a spinning run stalls its thread briefly |
 | Protocol frame cap (d7) | 8 MiB | The value the spikes ran with. It must exceed the largest answer the edge can return |
-| An edge-side record of each run | The edge records each module run it admits (app, environment, owner, module hash, deadline), and refuses any callback for a run it did not admit | Narrows a compromised runner to runs that exist. It departs from ADR-0045, where the edge keeps no job records |
 | Narrowing a module to a subset of the app's grants (d2) | An optional `uses` list per module: fetch origins and data prefixes | Lets an admin approve a module that touches less than the whole app |
 
 ## Open questions
