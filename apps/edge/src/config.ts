@@ -6,12 +6,14 @@ import {
   JobsSubmissionOverridesSchema,
   isValidJobsRootSecret,
   resolveJobsCapacityLimits,
+  resolveLoopIntervalMs,
   strictWireObject,
   strictWireRecord,
   type JobsCapacityLimits,
 } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./db/pool.js";
+import { JOBS_REACHABILITY_INTERVAL_MS } from "./jobs/reachability.js";
 
 /**
  * Edge configuration, resolved once at boot from the environment (project plan
@@ -319,6 +321,14 @@ export interface EdgeJobsConfig {
    * value fails the boot even with no job servers configured.
    */
   submissionLimits: JobsCapacityLimits;
+  /**
+   * The reachability probe loop's steady cadence
+   * (`EDGE_JOBS_REACHABILITY_INTERVAL_MS`; default
+   * {@link JOBS_REACHABILITY_INTERVAL_MS}). An override may only shorten it.
+   * The loader always sets it, in both branches like {@link submissionLimits};
+   * optional because only `server.ts` reads it and test-built configs omit it.
+   */
+  reachabilityIntervalMs?: number;
 }
 
 // The entry is a `strictWireObject`, not a bare z.strictObject: zod's strict
@@ -404,6 +414,11 @@ export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
   // must fail the boot even when no job servers are configured, the same
   // posture as a bad EDGE_JOBS_TIMEOUT_MS.
   const submissionLimits = loadSubmissionLimits(env);
+  const reachabilityIntervalMs = resolveLoopIntervalMs(
+    env.EDGE_JOBS_REACHABILITY_INTERVAL_MS,
+    JOBS_REACHABILITY_INTERVAL_MS,
+    "EDGE_JOBS_REACHABILITY_INTERVAL_MS",
+  );
   const raw = env.EDGE_JOBS_CONFIG;
   if (raw === undefined || raw.trim() === "") {
     return {
@@ -411,6 +426,7 @@ export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
       timeoutMs: DEFAULT_JOBS_FORWARD_TIMEOUT_MS,
       refuseDiagnosticTypes,
       submissionLimits,
+      reachabilityIntervalMs,
     };
   }
   let document: unknown;
@@ -441,6 +457,7 @@ export function loadEdgeJobsConfig(env: NodeJS.ProcessEnv): EdgeJobsConfig {
     ),
     refuseDiagnosticTypes,
     submissionLimits,
+    reachabilityIntervalMs,
   };
 }
 

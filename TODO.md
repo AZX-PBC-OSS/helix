@@ -151,6 +151,16 @@ The portal SPA now detects a malformed upload and rebuilds the canonical bundle 
       service's runner, recovery and worker-overlap suites. Add a Python/TaskQ service
       only when a concrete workload justifies it; it must pass the same contract the
       two named-server fixtures exercise (`apps/jobs/src/namedServers.integration.test.ts`).
+- [ ] **Cut the remaining wall time of the jobs integration suites.** `./check-and-lint.sh` takes about 4.5 minutes, and the test step (200–250 s) is bounded by four files, each run on one worker. The real-stack harness already runs every background loop at a 1 s cadence (`REAL_STACK_LOOP_INTERVAL_MS`) and caps concurrent stacks at five, so the waits left are thresholds, sleeps and restarts, not loop cadences. Durations below are from a 2026-11-02 full local run.
+  - `apps/jobs/src/lifecycleCancellation.integration.test.ts` (~187 s): 100 s of fixed `sleep()` calls (three of 20 s, one of 15 s, two of 10 s, one of 5 s) that prove a cancelled or crashed job does nothing further. With the sweeper running every second, most can become "wait for N more recovery passes" off the `jobs_sweeper` check's pass count. Check each one's intent first; some cover the job's own step timing.
+  - `apps/jobs/src/runtimeRecovery.integration.test.ts` (~169 s): waits on fixed thresholds that the loop cadence does not change, namely `JOBS_DELIVERY_OVERDUE_MS` (60 s, `apps/portal/src/jobs/delivery.ts`) and `JOBS_RECOVERY_STALE_AFTER_MS` (45 s, `apps/jobs/src/recovery.ts`), plus 25 service stop/start/restart/crash calls. Deriving the stale thresholds from the configured cadence would shorten the stale wait. The 60 s overdue bound is a stated acceptance criterion (ADR-0009), so it stays.
+  - `apps/jobs/src/boot.integration.test.ts` (~172 s): does not use the real stack. Not investigated.
+  - `apps/jobs/src/outboundFetch.integration.test.ts` (~166 s): not investigated.
+  - `apps/jobs/src/capacity.integration.test.ts` (~112 s): waits out the edge's 60 s deployment submission window several times; `EDGE_JOBS_LIMITS` can tune the window for the suite, as one of its tests already does.
+  - Floor to keep in mind: pg-boss's heartbeat and supervise intervals are 10 s (pg-boss's own minimum, and stored by the migration), so crash detection costs at least that much per scenario.
+
+  How to measure: `pnpm vitest run --reporter=default --reporter=json --outputFile.json=<file>`, then sort `testResults` by `endTime - startTime`. — ADR-0045
+
 - [ ] Design the generic LLM pipeline after the plane is proven. Resource/cost
       ceilings and provider continuation policy remain workload decisions; they
       do not block the initial fetch delivery.

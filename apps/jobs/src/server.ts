@@ -175,6 +175,7 @@ const runner = new JobsRunner({
 const recovery = new JobsRecovery({
   databaseUrl: config.databaseUrl,
   statementTimeoutMs: config.statementTimeoutMs,
+  intervalMs: config.recoveryIntervalMs,
   readRunnerJob: (runnerJobId) => runner.jobState(runnerJobId),
   cancelRunnerJob: (runnerJobId) => runner.cancelJob(runnerJobId),
   typePolicies,
@@ -239,6 +240,7 @@ const observation = new JobsObservationStore({
 const cleanup = new JobsCleanup({
   databaseUrl: config.databaseUrl,
   statementTimeoutMs: config.statementTimeoutMs,
+  intervalMs: config.cleanupIntervalMs,
   deleteRunnerRows: runner.deleter,
   log: lateLog,
 });

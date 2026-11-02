@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { resolveLoopIntervalMs } from "@azx-pbc/shared";
 import {
   developerLocalOverridesSkipped,
   installGracefulShutdown,
@@ -13,7 +14,7 @@ import {
   resolveJobsCatalogueServers,
   resolvePortalJobsDeliveryConfig,
 } from "./deployment.js";
-import { JobsLifecycleDelivery } from "./jobs/delivery.js";
+import { JOBS_DELIVERY_INTERVAL_MS, JobsLifecycleDelivery } from "./jobs/delivery.js";
 import { HttpLifecycleDelivery } from "./jobs/deliveryHttp.js";
 
 /**
@@ -82,6 +83,12 @@ const prisma = createPrismaClient();
 // and the failed-startup path.
 const delivery: { current: JobsLifecycleDelivery | null } = { current: null };
 const deliveryConfig = resolvePortalJobsDeliveryConfig();
+// Resolved even when delivery is off, so a bad value fails the boot either way.
+const deliveryIntervalMs = resolveLoopIntervalMs(
+  process.env.PORTAL_JOBS_DELIVERY_INTERVAL_MS,
+  JOBS_DELIVERY_INTERVAL_MS,
+  "PORTAL_JOBS_DELIVERY_INTERVAL_MS",
+);
 assertDeliveryTargetsMatch(resolveJobsCatalogueServers(), deliveryConfig);
 
 const app = buildApp({ prisma, jobsDelivery: () => delivery.current?.snapshot() ?? null });
@@ -92,6 +99,7 @@ if (deliveryConfig) {
     prisma,
     targets: deliveryConfig,
     transport: (attempt) => http.deliver(attempt),
+    intervalMs: deliveryIntervalMs,
     log: app.log,
   });
 }

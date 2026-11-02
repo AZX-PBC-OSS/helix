@@ -254,6 +254,7 @@ const jobsReachability =
           endpoint,
         })),
         probe: probeJobsHealth,
+        intervalMs: config.jobs.reachabilityIntervalMs,
         log: {
           info: (obj, msg) => logRef.current.info(obj, msg),
           warn: (obj, msg) => logRef.current.warn(obj, msg),

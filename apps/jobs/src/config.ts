@@ -1,5 +1,6 @@
 import {
   JobServerIdSchema,
+  resolveLoopIntervalMs,
   JobsDatabaseUrlSchema,
   JobsCapacityOverridesSchema,
   JobsInternalUrlSchema,
@@ -8,6 +9,8 @@ import {
 } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey, JobsSigningDomains } from "@azx-pbc/shared/jobsSigning";
 import { z } from "zod";
+import { JOBS_CLEANUP_INTERVAL_MS } from "./cleanup.js";
+import { JOBS_RECOVERY_INTERVAL_MS } from "./recovery.js";
 
 /**
  * The jobs service's boot configuration, resolved once at startup and never
@@ -50,6 +53,16 @@ export interface JobsServiceConfig {
    * The same pool-exhaustion guard the edge's and egress's pools carry.
    */
   statementTimeoutMs: number;
+  /**
+   * The cleanup loop's steady cadence (`JOBS_CLEANUP_INTERVAL_MS`; default
+   * {@link JOBS_CLEANUP_INTERVAL_MS}). An override may only shorten it.
+   */
+  cleanupIntervalMs: number;
+  /**
+   * The recovery sweeper's steady cadence (`JOBS_RECOVERY_INTERVAL_MS`;
+   * default {@link JOBS_RECOVERY_INTERVAL_MS}). An override may only shorten it.
+   */
+  recoveryIntervalMs: number;
   /** The derived edge→jobs verification key (HKDF over this server's edge root). */
   edgeToJobsKey: Uint8Array;
   /** The derived portal→jobs verification key (HKDF over this server's portal root). */
@@ -262,6 +275,16 @@ export function loadJobsConfig(env: NodeJS.ProcessEnv = process.env): JobsServic
       env.JOBS_STATEMENT_TIMEOUT_MS,
       DEFAULT_JOBS_STATEMENT_TIMEOUT_MS,
       "JOBS_STATEMENT_TIMEOUT_MS",
+    ),
+    cleanupIntervalMs: resolveLoopIntervalMs(
+      env.JOBS_CLEANUP_INTERVAL_MS,
+      JOBS_CLEANUP_INTERVAL_MS,
+      "JOBS_CLEANUP_INTERVAL_MS",
+    ),
+    recoveryIntervalMs: resolveLoopIntervalMs(
+      env.JOBS_RECOVERY_INTERVAL_MS,
+      JOBS_RECOVERY_INTERVAL_MS,
+      "JOBS_RECOVERY_INTERVAL_MS",
     ),
     edgeToJobsKey: requireSigningKey(env, "edgeToJobs"),
     portalToJobsKey: requireSigningKey(env, "portalToJobs"),

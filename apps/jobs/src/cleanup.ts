@@ -119,7 +119,7 @@ export interface JobsCleanupOptions {
 }
 
 /** Steady cleanup cadence — how long content past a logical horizon can wait for its removal. */
-const CLEANUP_INTERVAL_MS = 60_000;
+export const JOBS_CLEANUP_INTERVAL_MS = 60_000;
 /**
  * The capped backoff a FAILED pass retries under — the storage supervisor's
  * ladder: a pass failed because the store could not answer, and waiting the
@@ -147,7 +147,7 @@ const CLEANUP_DRAIN_DELAY_MS = 1_000;
  * checks wait before reading the evidence stale — three cadences, the same
  * multiple the sweeper check uses.
  */
-export const JOBS_CLEANUP_STALE_AFTER_MS = 3 * CLEANUP_INTERVAL_MS;
+export const JOBS_CLEANUP_STALE_AFTER_MS = 3 * JOBS_CLEANUP_INTERVAL_MS;
 
 /** The runtime pool stays small: one measurement and two bounded writes per pass. */
 const POOL_MAX = 2;
@@ -170,7 +170,7 @@ export class JobsCleanup {
    * never overlap (the single-flight guard), so the value is always the last
    * pass's own answer.
    */
-  private nextDelayMs = CLEANUP_INTERVAL_MS;
+  private nextDelayMs = JOBS_CLEANUP_INTERVAL_MS;
   /** Failed passes since the last successful one — the backoff ladder's step. */
   private failedPasses = 0;
 
@@ -188,7 +188,7 @@ export class JobsCleanup {
     this.databaseUrl = options.databaseUrl;
     this.statementTimeoutMs = options.statementTimeoutMs;
     this.deleteRunnerRows = options.deleteRunnerRows;
-    this.intervalMs = options.intervalMs ?? CLEANUP_INTERVAL_MS;
+    this.intervalMs = options.intervalMs ?? JOBS_CLEANUP_INTERVAL_MS;
     this.batch = options.batch ?? CLEANUP_BATCH;
     this.log = options.log;
   }

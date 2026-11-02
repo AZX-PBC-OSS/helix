@@ -26,6 +26,7 @@ export * from "./connections.js";
 export * from "./consent.js";
 export * from "./exchange.js";
 export * from "./env.js";
+export * from "./loopInterval.js";
 export * from "./principal.js";
 export * from "./devTokens.js";
 export * from "./repoBinding.js";

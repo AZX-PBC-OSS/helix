@@ -309,7 +309,7 @@ export interface JobsRecoveryOptions {
 }
 
 /** Steady recovery cadence — how long an interrupted job's reconciliation can wait. */
-const RECOVERY_INTERVAL_MS = 15_000;
+export const JOBS_RECOVERY_INTERVAL_MS = 15_000;
 /** One pass considers at most this many records, oldest first. */
 const RECOVERY_BATCH = 100;
 /**
@@ -317,7 +317,7 @@ const RECOVERY_BATCH = 100;
  * reading stale — three cadences, inside the 60-second healthy-service bound
  * the cancellation and recovery visibility hang from.
  */
-export const JOBS_RECOVERY_STALE_AFTER_MS = 3 * RECOVERY_INTERVAL_MS;
+export const JOBS_RECOVERY_STALE_AFTER_MS = 3 * JOBS_RECOVERY_INTERVAL_MS;
 
 /**
  * How long a pending archive cancellation may await its terminal outcome
@@ -377,7 +377,7 @@ export class JobsRecovery {
     this.statementTimeoutMs = options.statementTimeoutMs;
     this.readRunnerJob = options.readRunnerJob;
     this.cancelRunnerJob = options.cancelRunnerJob;
-    this.intervalMs = options.intervalMs ?? RECOVERY_INTERVAL_MS;
+    this.intervalMs = options.intervalMs ?? JOBS_RECOVERY_INTERVAL_MS;
     this.batch = options.batch ?? RECOVERY_BATCH;
     this.typePolicies = options.typePolicies ?? JOBS_TYPE_POLICIES;
     this.log = options.log;

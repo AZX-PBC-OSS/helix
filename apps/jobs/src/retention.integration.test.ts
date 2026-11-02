@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
   HealthStatusSchema,
   JOB_TERMINAL_STATUSES,
+  JOBS_CAPACITY_CHECK,
   JOBS_CLEANUP_CHECK,
   JOBS_DIAGNOSTIC_QUALIFIED_TYPE,
   JOBS_FETCH_QUALIFIED_TYPE,
@@ -52,8 +53,11 @@ import {
  * The one stand-in: days passing are simulated by backdating `created_at` /
  * `terminal_at` on `jobs.job_record` rows through the jobs owner DSN — the
  * cleanup loop, the read horizons, the edge gateway and the jobs routes are
- * all the real ones, and no test-only knob exists anywhere in production
- * code. Backdate instants come from the database's own `now()`.
+ * all the real ones. The harness runs the loop at a one-second cadence
+ * (`REAL_STACK_LOOP_INTERVAL_MS`), so a scenario that must age rows before a
+ * pass sees them does it with the jobs process stopped
+ * ({@link holdWhileStopped}). Backdate instants come from the database's own
+ * `now()`.
  *
  * The tests run sequentially in file order and share one stack, one app per
  * scenario so the edge's per-app submission window never binds.
@@ -221,21 +225,6 @@ async function cleanupPasses(): Promise<number> {
   return check(await healthOf("jobs"), JOBS_CLEANUP_CHECK).metrics?.passes ?? 0;
 }
 
-/**
- * Wait for a fresh cleanup pass before backdating: the next steady pass is
- * then ~60 s away, so a backdated row cannot be removed by an in-flight pass
- * before the test takes its lock.
- */
-async function waitForFreshPass(): Promise<void> {
-  const before = await cleanupPasses();
-  await waitFor(
-    stack,
-    "the next cleanup pass to complete (the jobs_cleanup pass count to advance)",
-    { timeoutMs: 90_000 },
-    async () => ((await cleanupPasses()) > before ? true : undefined),
-  );
-}
-
 // ── the store, through the jobs owner DSN ────────────────────────────────────
 
 interface RecordRow {
@@ -390,6 +379,38 @@ async function holdRunnerRows(runnerJobIds: readonly string[]): Promise<RowHold>
     `SELECT id FROM ${JOBS_PGBOSS_SCHEMA}.job WHERE id = ANY($1::uuid[]) FOR UPDATE`,
     [runnerJobIds],
   );
+}
+
+/**
+ * Age rows and lock them with no cleanup pass able to run in between. With a
+ * one-second cadence there is no quiet window while the jobs process runs, so
+ * `prepare` backdates and takes its hold while the process is stopped. On
+ * restart the boot pass runs at once and blocks on the hold. Every check but
+ * the two the blocked pass feeds must read ok before the scenario continues,
+ * so submissions and reads meet a serving process.
+ */
+async function holdWhileStopped(prepare: () => Promise<RowHold>): Promise<RowHold> {
+  await stack.stop("jobs");
+  const hold = await prepare();
+  try {
+    await stack.start("jobs", { until: "listener" });
+    const fedByCleanup = new Set<string>([JOBS_CLEANUP_CHECK, JOBS_CAPACITY_CHECK]);
+    await waitFor(
+      stack,
+      "every jobs check the held cleanup pass does not feed to read ok",
+      { timeoutMs: 60_000 },
+      async () => {
+        const checks = (await healthOf("jobs")).checks ?? [];
+        return checks.every((c) => fedByCleanup.has(c.name) || c.status === "ok")
+          ? true
+          : undefined;
+      },
+    );
+  } catch (error) {
+    await hold.release();
+    throw error;
+  }
+  return hold;
 }
 
 /** Wait until some session's statement is blocked on the held locks. */
@@ -605,13 +626,14 @@ describe("result expiry at the read horizon", () => {
       const knRowBefore = must(await recordRow(kn.jobId), "the fetch record");
       expiredJob = { jobId: kd.jobId, key: kdKey };
 
-      await waitForFreshPass();
       // Past the seven-day result horizon, far inside the thirty-day record
       // horizon. The record-row hold keeps the result arm's UPDATE blocked
       // (its 10 s statement timeout fails the pass, which retries) — the
       // physical bytes cannot move while the logical horizons are asserted.
-      await backdateRecords([kd.jobId, kn.jobId], "8 days", "7 days 1 hour");
-      const hold = await holdRecordRows([kd.jobId, kn.jobId]);
+      const hold = await holdWhileStopped(async () => {
+        await backdateRecords([kd.jobId, kn.jobId], "8 days", "7 days 1 hour");
+        return holdRecordRows([kd.jobId, kn.jobId]);
+      });
       try {
         for (const [name, job] of [
           ["diagnostic", kd],
@@ -805,15 +827,6 @@ describe("record expiry for every terminal outcome", () => {
         crashHold.release();
       }
 
-      // active — backdate ONLY its created_at: it has no terminal_at, and no
-      // age may remove active work.
-      const kaKey = newKey("ka");
-      const kaReply = await submitInput(session, { steps: 20, stepDelayMs: 1000 }, kaKey);
-      expect(kaReply.status, `the active scenario's submission: ${kaReply.text}`).toBe(202);
-      const ka = parseAccepted(kaReply);
-      await pollSnapshot(session.api, ka.jobId, (s) => s.status === "running", 60_000);
-      await backdateRecords([ka.jobId], "40 days", null);
-
       // The expired outcome is the result-expired job from the first scenario.
       const retired = [
         { jobId: ks.jobId, key: ksKey, appId, session },
@@ -829,13 +842,26 @@ describe("record expiry for every terminal outcome", () => {
       ];
       const retiredIds = retired.map((r) => r.jobId);
 
-      await waitForFreshPass();
-      await backdateRecords(retiredIds, "32 days", "31 days");
       const runnerIds = (await recordRows(retiredIds)).map((r) =>
         must(r.runnerJobId, "a terminal record's runner id"),
       );
-      const hold = await holdRunnerRows(runnerIds);
+      const hold = await holdWhileStopped(async () => {
+        await backdateRecords(retiredIds, "32 days", "31 days");
+        return holdRunnerRows(runnerIds);
+      });
+      let ka: { jobId: string } | undefined;
       try {
+        // active — submitted after the restart so the stop never interrupts
+        // it. Backdate ONLY its created_at: it has no terminal_at, and no age
+        // may remove active work. It runs through the retirement pass and
+        // the one-second passes after it.
+        const kaKey = newKey("ka");
+        const kaReply = await submitInput(session, { steps: 20, stepDelayMs: 1000 }, kaKey);
+        expect(kaReply.status, `the active scenario's submission: ${kaReply.text}`).toBe(202);
+        ka = parseAccepted(kaReply);
+        await pollSnapshot(session.api, ka.jobId, (s) => s.status === "running", 60_000);
+        await backdateRecords([ka.jobId], "40 days", null);
+
         await waitForCleanupBlocked(hold);
 
         // The read horizon is instant, whatever the physical state: every
@@ -902,14 +928,15 @@ describe("record expiry for every terminal outcome", () => {
       // survive the pass that retired the terminal ones. If the recovery
       // sweeper's absolute deadline made it terminal meanwhile, the terminal
       // instant is its own — recent, never the backdated age.
+      const activeJobId = must(ka?.jobId, "the active job's id");
       const kaRow = must(
-        await recordRow(ka.jobId),
+        await recordRow(activeJobId),
         "the active job's record after the retirement pass",
       );
-      const kaSnapshot = await readSnapshot(session.api, ka.jobId);
+      const kaSnapshot = await readSnapshot(session.api, activeJobId);
       if ((JOB_TERMINAL_STATUSES as readonly string[]).includes(kaSnapshot.status)) {
         expect(
-          await terminalAtIsRecent(ka.jobId),
+          await terminalAtIsRecent(activeJobId),
           "a backdated active job that turned terminal carries its own recent terminal instant",
         ).toBe(true);
       }
@@ -1053,9 +1080,10 @@ describe("cleanup racing key reuse", () => {
         "the original job's runner id",
       );
 
-      await waitForFreshPass();
-      await backdateRecords([old.jobId], "32 days", "31 days");
-      const hold = await holdRunnerRows([oldRunnerId]);
+      const hold = await holdWhileStopped(async () => {
+        await backdateRecords([old.jobId], "32 days", "31 days");
+        return holdRunnerRows([oldRunnerId]);
+      });
       let replacementJobId: string | null = null;
       try {
         await waitForCleanupBlocked(hold);

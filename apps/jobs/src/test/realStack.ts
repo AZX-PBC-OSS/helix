@@ -285,6 +285,16 @@ const STOP_GRACE_MS = 10_000;
 const MAX_LOGIN_HOPS = 20;
 const POLL_INTERVAL_MS = 500;
 
+/**
+ * The cadence every background loop in the stack runs at: the jobs cleanup
+ * loop and recovery sweeper, the portal's lifecycle delivery, and the edge's
+ * reachability probe. Production cadences run 15 to 60 seconds, and a suite
+ * waiting on them spends minutes asleep per scenario. The loops are the real
+ * ones; only the interval between passes changes. Thresholds stated against
+ * the production cadence (stale-after, delivery-overdue) are unchanged.
+ */
+export const REAL_STACK_LOOP_INTERVAL_MS = 1_000;
+
 export const REQUIRED_AMBIENT_KEYS = [
   "DATABASE_URL",
   "PORTAL_DATABASE_URL",
@@ -637,8 +647,21 @@ function processAlive(pid: number): boolean {
  * and the later one then dies on EADDRINUSE. A lock left by a process that no
  * longer exists (a killed test run) is taken over.
  */
+/** The lock file that reserves one of the {@link stackSlots} for one live stack. */
+function slotLockPath(slot: number): string {
+  return path.join(tmpdir(), `helix-realstack-slot-${slot}.lock`);
+}
+
 function tryLockOffset(offset: number): boolean {
-  const lockPath = offsetLockPath(offset);
+  return tryLockFile(offsetLockPath(offset));
+}
+
+function unlockOffset(offset: number): void {
+  unlockFile(offsetLockPath(offset));
+}
+
+/** Create a pid-stamped lock file, taking it over when its holder has died. */
+function tryLockFile(lockPath: string): boolean {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       writeFileSync(lockPath, String(process.pid), { flag: "wx" });
@@ -658,8 +681,7 @@ function tryLockOffset(offset: number): boolean {
   return false;
 }
 
-function unlockOffset(offset: number): void {
-  const lockPath = offsetLockPath(offset);
+function unlockFile(lockPath: string): void {
   try {
     if (readFileSync(lockPath, "utf8").trim() === String(process.pid)) rmSync(lockPath);
   } catch {
@@ -2102,7 +2124,77 @@ export async function assertStackHostnamesResolveToLoopback(baseDomain: string):
 
 // ── the harness itself ───────────────────────────────────────────────────────
 
+/**
+ * How many real stacks may run at once across every vitest worker. A stack
+ * holds about 35 Postgres connections (18 of them the jobs service's pools),
+ * and the dev and CI clusters allow 300, shared with every other integration
+ * suite. With six stacks the full local run peaked at 282, too close to the
+ * limit; five leave about 30 more connections of headroom and cost no wall
+ * time, because the slowest stack suite alone takes as long as the rest
+ * shared five ways. `HELIX_REAL_STACK_SLOTS` changes the cap for a cluster
+ * with a different budget.
+ */
+const DEFAULT_STACK_SLOTS = 5;
+/** How long a suite waits for a slot before failing with the cause named. */
+const STACK_SLOT_WAIT_MS = 600_000;
+
+function stackSlots(): number {
+  const raw = process.env.HELIX_REAL_STACK_SLOTS;
+  if (raw === undefined || raw === "") return DEFAULT_STACK_SLOTS;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`HELIX_REAL_STACK_SLOTS must be a positive integer, got "${raw}"`);
+  }
+  return n;
+}
+
+async function acquireStackSlot(): Promise<string> {
+  const slots = stackSlots();
+  const deadline = Date.now() + STACK_SLOT_WAIT_MS;
+  for (;;) {
+    for (let slot = 0; slot < slots; slot++) {
+      const lockPath = slotLockPath(slot);
+      if (tryLockFile(lockPath)) return lockPath;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(
+        `realStack: all ${slots} stack slots stayed taken for ${STACK_SLOT_WAIT_MS}ms — ` +
+          `another suite's stack may be hung (see helix-realstack-slot-*.lock in ${tmpdir()})`,
+      );
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+}
+
+/**
+ * Boot a real stack once one of the {@link stackSlots} is free. The slot is
+ * held until `close()`, so the suites' combined Postgres connections stay
+ * inside the cluster's budget however many vitest workers run.
+ */
 export async function startRealStack(
+  options: Parameters<typeof bootRealStack>[0] = {},
+): Promise<RealStack> {
+  const slot = await acquireStackSlot();
+  let stack: RealStack;
+  try {
+    stack = await bootRealStack(options);
+  } catch (error) {
+    unlockFile(slot);
+    throw error;
+  }
+  return {
+    ...stack,
+    close: async () => {
+      try {
+        await stack.close();
+      } finally {
+        unlockFile(slot);
+      }
+    },
+  };
+}
+
+async function bootRealStack(
   options: {
     offset?: number;
     label?: string;
@@ -2216,6 +2308,10 @@ export async function startRealStack(
     EGRESS_ALLOW_PRIVATE: "true",
     EDGE_ALLOW_DEV_MODE: "true",
     OTEL_SDK_DISABLED: "1",
+    JOBS_CLEANUP_INTERVAL_MS: String(REAL_STACK_LOOP_INTERVAL_MS),
+    JOBS_RECOVERY_INTERVAL_MS: String(REAL_STACK_LOOP_INTERVAL_MS),
+    PORTAL_JOBS_DELIVERY_INTERVAL_MS: String(REAL_STACK_LOOP_INTERVAL_MS),
+    EDGE_JOBS_REACHABILITY_INTERVAL_MS: String(REAL_STACK_LOOP_INTERVAL_MS),
   };
   if (telemetry !== null) {
     delete serviceEnv.OTEL_SDK_DISABLED;

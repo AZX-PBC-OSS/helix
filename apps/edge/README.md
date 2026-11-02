@@ -175,7 +175,10 @@ Requests without the header never count — probes, `containerapp exec` and loca
 The **`jobs_reachability`** sub-check (`src/jobs/reachability.ts`, ADR-0009) exists only when jobs
 servers are configured — a fully disabled install reports no jobs dependency at all. A supervised
 probe loop `GET`s each configured server's `/health` every 30 s (10 s per-probe bound), on its own
-cadence and independent of user requests; the check grades the last snapshot, never a live probe:
+cadence and independent of user requests; the check grades the last snapshot, never a live probe.
+`EDGE_JOBS_REACHABILITY_INTERVAL_MS` can shorten the cadence (100 ms to 30000 ms) but never lengthen
+it, because the stale threshold is stated against the 30 s default; the real-stack test harness sets
+it to 1 s:
 
 | State      | When                                                                                                                                                                            |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

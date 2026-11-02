@@ -22,8 +22,8 @@ name: CI
 # (The docs build joined `static` later: a few seconds, no services needed, so
 # the job floor is unchanged in kind. The `timing:` line is the current truth —
 # and for `test` it now reflects the real-stack suites, not the split-era
-# numbers above: the whole suite runs about 9.5 minutes wall locally, dominated
-# by the retention suite alone.)
+# numbers above: the whole suite runs about 3.5 minutes wall locally, bounded
+# by the slowest real-stack suite at about three minutes.)
 #
 # One job doing all of it was 2m34s. `test` is then sharded three ways, since
 # at the split 76s of vitest on a 2-core runner was mostly lost in-process
@@ -113,9 +113,9 @@ jobs:
     runs-on: ubuntu-latest
     # A hung Azurite wait or a stuck integration suite would otherwise burn the
     # 6h runner default. The timeout bounds a hung suite, so it must stay above
-    # the slowest shard — the real-stack retention suite dominates at roughly
-    # ten minutes, and locally the whole suite is about 9.5 minutes wall. 30
-    # gives a 4-vCPU shard headroom over that.
+    # the slowest shard. Locally the slowest real-stack suite takes about
+    # three minutes and the whole suite about 3.5 minutes wall; 30 gives a
+    # 4-vCPU shard generous headroom over that.
     timeout-minutes: 30
 
     strategy:

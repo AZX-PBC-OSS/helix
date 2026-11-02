@@ -506,7 +506,9 @@ runner's retry policy re-runs work, so a single-attempt fetch job whose worker
 died is projected `crashed` — execution lost, never reissued.
 
 - **The cadence.** Every 15 seconds, oldest non-terminal records first, at
-  most 100 per pass; every write is conditional (non-terminal, or the exact
+  most 100 per pass. `JOBS_RECOVERY_INTERVAL_MS` can shorten the cadence
+  (100 ms to 15000 ms) but never lengthen it, because the stale threshold is
+  stated against the default; every write is conditional (non-terminal, or the exact
   attempt read), so a worker settling, a cancellation or another replica's
   sweeper fences a loser instead of racing one.
 - **The decision.** The deadline arm decides first (no runner I/O — deadline
@@ -564,7 +566,10 @@ died is projected `crashed` — execution lost, never reissued.
 The retention contract's physical half (`src/observation.ts` owns the logical
 horizons; design §7 owns the bounds): expired content stops being READ at its
 horizon and stops being STORED within 48 hours after it — including after a
-service restoration. One supervised pass, on a one-minute cadence:
+service restoration. One supervised pass, on a one-minute cadence.
+`JOBS_CLEANUP_INTERVAL_MS` can shorten the cadence (100 ms to 60000 ms) but
+never lengthen it, because the 48-hour removal bound and the stale threshold
+are stated against the default:
 
 - **The result arm.** Every stored result whose seven-day lifetime has ended
   is removed from the live record, and the row's stored status converges to
@@ -945,6 +950,25 @@ The harness mints its own self-signed TLS pair (trusted by the test process via
 `NODE_EXTRA_CA_CERTS` and per-request `ca`), leaves telemetry off by default, and sets
 exactly one dev relaxation: `EGRESS_ALLOW_PRIVATE=true`, so the outbound fetch
 can reach the harness's loopback JSON origin (`startJsonOrigin()`).
+
+Every background loop in the stack runs at a one-second cadence
+(`REAL_STACK_LOOP_INTERVAL_MS`): the jobs cleanup loop and recovery sweeper,
+the portal's lifecycle delivery and the edge's reachability probe, through
+the shorten-only `*_INTERVAL_MS` overrides. The loops are the real ones; only
+the time between passes changes, so a suite waits seconds for a pass rather
+than the production 15 to 60. Thresholds stated against the production
+cadence (stale-after, delivery-overdue) are unchanged. A scenario that must
+age rows before any pass sees them stops the jobs process while it backdates,
+as `src/retention.integration.test.ts` does, instead of relying on a gap
+between passes.
+
+At most five stacks run at once across all vitest workers
+(`HELIX_REAL_STACK_SLOTS` changes the cap). A stack holds about 35 Postgres
+connections and the dev and CI clusters allow 300, so without the cap the
+suites exhaust the cluster and fail with "remaining connection slots are
+reserved". A suite waits in `startRealStack()` for a free
+`helix-realstack-slot-<n>.lock`, taken over from a dead process like the
+offset locks.
 
 The harness never frees a port, so suites in parallel vitest workers each get
 their own stack, and a developer's servers are never touched. The children resolve the stack's normal hostnames —

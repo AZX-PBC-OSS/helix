@@ -740,8 +740,10 @@ describe("HttpJobsForwarder — the record operations", () => {
     await forwarder.close();
     await receiver.stop();
     expect(verdict).toMatchObject({ kind: "invalid_response", status: 200 });
-    // The silent close costs the whole bound: nothing answers sooner.
-    expect(waited).toBeGreaterThanOrEqual(1_000);
+    // The silent close costs the whole bound: nothing answers sooner. The
+    // margin absorbs timers firing a few ms early against Date.now() under
+    // load; an answer at the 50 ms body end would still fail.
+    expect(waited).toBeGreaterThanOrEqual(950);
     expect(waited).toBeLessThan(5_000);
   });
 

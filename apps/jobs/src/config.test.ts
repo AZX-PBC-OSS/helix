@@ -3,7 +3,9 @@ import { describe, expect, test } from "vitest";
 import { JOBS_CAPACITY_DEFAULTS, resolveJobsCapacityLimits } from "@azx-pbc/shared";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
 
+import { JOBS_CLEANUP_INTERVAL_MS } from "./cleanup.js";
 import { DEFAULT_JOBS_STATEMENT_TIMEOUT_MS, loadJobsConfig } from "./config.js";
+import { JOBS_RECOVERY_INTERVAL_MS } from "./recovery.js";
 
 /**
  * The boot configuration's contract: an explicit startup error for every
@@ -61,6 +63,28 @@ describe("loadJobsConfig", () => {
     // the same branch an absent key takes.
     expect(loadJobsConfig({ ...VALID, JOBS_STATEMENT_TIMEOUT_MS: "   " }).statementTimeoutMs).toBe(
       DEFAULT_JOBS_STATEMENT_TIMEOUT_MS,
+    );
+  });
+
+  test("the loop cadences default to production and accept only a shorter override", () => {
+    const defaults = loadJobsConfig({ ...VALID });
+    expect(defaults.cleanupIntervalMs).toBe(JOBS_CLEANUP_INTERVAL_MS);
+    expect(defaults.recoveryIntervalMs).toBe(JOBS_RECOVERY_INTERVAL_MS);
+
+    const tuned = loadJobsConfig({
+      ...VALID,
+      JOBS_CLEANUP_INTERVAL_MS: "1000",
+      JOBS_RECOVERY_INTERVAL_MS: "500",
+    });
+    expect(tuned.cleanupIntervalMs).toBe(1000);
+    expect(tuned.recoveryIntervalMs).toBe(500);
+
+    // A slower loop would break the bounds stated against the default cadence.
+    expect(() =>
+      loadJobsConfig({ ...VALID, JOBS_CLEANUP_INTERVAL_MS: String(JOBS_CLEANUP_INTERVAL_MS + 1) }),
+    ).toThrow(/JOBS_CLEANUP_INTERVAL_MS/);
+    expect(() => loadJobsConfig({ ...VALID, JOBS_RECOVERY_INTERVAL_MS: "0" })).toThrow(
+      /JOBS_RECOVERY_INTERVAL_MS/,
     );
   });
 

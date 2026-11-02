@@ -87,7 +87,9 @@ that use delegated user credentials are refused with no keyless fallback.
 **Lifecycle changes reach every server.** Archive and unarchive bump the app's
 generation and write one outbox intent per configured server in the same
 transaction (`apps/portal/src/jobs/lifecycle.ts`). The portal's delivery loop
-sends each intent independently (`apps/portal/src/jobs/delivery.ts`). The jobs
+sends each intent independently (`apps/portal/src/jobs/delivery.ts`), every
+15 seconds; `PORTAL_JOBS_DELIVERY_INTERVAL_MS` can shorten that cadence but
+never lengthen it, because the 60-second overdue bound assumes it. The jobs
 service applies it before it acknowledges, and stamps cancellation intent on
 the closed generation's active work. New apps cannot submit until their state
 has been delivered; until then a submission answers a retryable `503`.

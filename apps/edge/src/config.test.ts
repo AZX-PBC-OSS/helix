@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { JOBS_CAPACITY_DEFAULTS, JOBS_CAPACITY_LIMIT_MAX } from "@azx-pbc/shared";
 import { loadConfig, loadDevGatewayConfig, parseConnectionString, publicOrigin } from "./config.js";
 import { deriveJobsInstructionKey } from "@azx-pbc/shared/jobsSigning";
+import { JOBS_REACHABILITY_INTERVAL_MS } from "./jobs/reachability.js";
 
 // The well-known Azurite dev credentials (public, not a secret).
 const AZURITE_KEY =
@@ -1136,6 +1137,32 @@ describe("the jobs forwarding config (EDGE_JOBS_CONFIG)", () => {
     expect(() => loadConfig({ ...ENV, EDGE_JOBS_CONFIG: doc, EDGE_JOBS_TIMEOUT_MS: "0" })).toThrow(
       /EDGE_JOBS_TIMEOUT_MS must be a positive number/,
     );
+  });
+
+  it("resolves EDGE_JOBS_REACHABILITY_INTERVAL_MS in both branches, shorten-only", () => {
+    const doc = JSON.stringify({
+      servers: {
+        jobs: {
+          endpoint: "https://jobs.internal.helix",
+          edgeToJobsRoot: ROOT_A,
+          jobsToEdgeRoot: ROOT_C,
+        },
+      },
+    });
+    expect(loadConfig({ ...ENV, EDGE_JOBS_CONFIG: doc }).jobs.reachabilityIntervalMs).toBe(
+      JOBS_REACHABILITY_INTERVAL_MS,
+    );
+    expect(
+      loadConfig({ ...ENV, EDGE_JOBS_CONFIG: doc, EDGE_JOBS_REACHABILITY_INTERVAL_MS: "1000" }).jobs
+        .reachabilityIntervalMs,
+    ).toBe(1000);
+    // A bad value fails the boot even with jobs disabled.
+    expect(() =>
+      loadConfig({
+        ...ENV,
+        EDGE_JOBS_REACHABILITY_INTERVAL_MS: String(JOBS_REACHABILITY_INTERVAL_MS + 1),
+      }),
+    ).toThrow(/EDGE_JOBS_REACHABILITY_INTERVAL_MS/);
   });
 });
 
