@@ -1,4 +1,5 @@
 import type { AuthConfig, AzureBlobConfig, DevGatewayConfig, EdgeConfig } from "../config.js";
+import { JOBS_CAPACITY_DEFAULTS } from "@azx-pbc/shared";
 
 /** The well-known unit-test auth secret (32 bytes). Tests may derive keys
  *  from it to forge tokens — proving forgery still requires the key. */
@@ -100,6 +101,15 @@ export function testEdgeConfig(overrides: Partial<EdgeConfig> = {}): EdgeConfig 
     // Auth-host /connections reverse proxy unset by default; the proxy suites
     // set it (and pass a portal provider into buildApp).
     portalUrl: null,
+    // Jobs fully disabled by default (no configured servers); the jobs suites
+    // override with a document under test (or inject a forwarder directly).
+    // Refusing the diagnostic type is a production posture; tests default off.
+    jobs: {
+      servers: {},
+      timeoutMs: 30_000,
+      refuseDiagnosticTypes: false,
+      submissionLimits: JOBS_CAPACITY_DEFAULTS,
+    },
     ...overrides,
   };
 }
@@ -140,6 +150,14 @@ export function testDevGatewayConfig(overrides: Partial<DevGatewayConfig> = {}):
     },
     internalSecret: null,
     portalUrl: null,
+    // Jobs fully disabled by default (no configured servers); the jobs suites
+    // override with a document under test (or inject a forwarder directly).
+    jobs: {
+      servers: {},
+      timeoutMs: 30_000,
+      refuseDiagnosticTypes: false,
+      submissionLimits: JOBS_CAPACITY_DEFAULTS,
+    },
     devGateway: {
       databaseUrl: "postgresql://helix_dev:unused@db/helix",
       allowDevMode: true,

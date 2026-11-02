@@ -887,7 +887,7 @@ describe("delegated call — provider state", () => {
   it("a malformed provider row (cache-dropped, probe finds it): 502 provider_misconfigured, opaque", async () => {
     if (!ok) return;
     const ref = "delegated-broken";
-    await seedMalformedProviderRow(ref, "prod");
+    const id = await seedMalformedProviderRow(ref, "prod");
     const app = makeApp(cacheFor());
     try {
       const instruction = await mint({
@@ -908,6 +908,11 @@ describe("delegated call — provider state", () => {
       expect(vendor.tokenCalls()).toEqual([]);
     } finally {
       await app.close();
+      // The row is deliberately invalid platform data; while it exists, any
+      // parallel suite reading the whole providers table strict-parses it and
+      // fails. It must not outlive its own test — the afterAll sweep below is
+      // the safety net, not the containment.
+      await ownerQuery(`DELETE FROM connection_providers WHERE id = $1::uuid`, [id]);
     }
   });
 

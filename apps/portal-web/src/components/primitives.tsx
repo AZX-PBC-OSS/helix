@@ -1,5 +1,17 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
-import { Badge, Box, Button, CopyButton, Group, Stack, Text, Title, Tooltip } from "@mantine/core";
+import {
+  Badge,
+  Box,
+  Button,
+  Card,
+  Center,
+  CopyButton,
+  Group,
+  Stack,
+  Text,
+  Title,
+  Tooltip,
+} from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import type { Visibility } from "@azx-pbc/shared";
 import { PortalApiError } from "../api/client";
@@ -7,6 +19,50 @@ import { appVisibilityGroupsQuery } from "../api/queries";
 import { Icon, type IconName } from "./Icon";
 
 /** The control-plane vocabulary widgets: eyebrows, status dots, badges, stats. */
+
+/**
+ * The capability-card frame every block of the §6.3 manifest editor shares:
+ * icon, title, one-line description, then the block's own controls.
+ */
+export function CapBlock({
+  icon,
+  title,
+  desc,
+  children,
+}: {
+  icon: IconName;
+  title: string;
+  desc: string;
+  children: ReactNode;
+}) {
+  return (
+    <Card>
+      <Group gap={11} mb={14} align="flex-start" wrap="nowrap">
+        <Center
+          w={34}
+          h={34}
+          style={{
+            borderRadius: 9,
+            background: "var(--mantine-color-dark-5)",
+            color: "var(--az-acc)",
+            flexShrink: 0,
+          }}
+        >
+          <Icon name={icon} size={17} />
+        </Center>
+        <Box>
+          <Text ff="heading" fw={600} fz={14.5}>
+            {title}
+          </Text>
+          <Text size="xs" c="dark.2" mt={4} lh={1.45}>
+            {desc}
+          </Text>
+        </Box>
+      </Group>
+      {children}
+    </Card>
+  );
+}
 
 export function Eyebrow({ children, mb }: { children: ReactNode; mb?: number }) {
   return (

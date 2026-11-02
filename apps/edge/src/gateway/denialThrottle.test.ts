@@ -54,4 +54,19 @@ describe("DenialThrottle", () => {
     clock += 60_001;
     expect((await t.admit("app-a", "prod")).meter).toBe(true);
   });
+
+  it("keeps distinct key namespaces' budgets apart", async () => {
+    // Two ledgers' denial caps share a counter store; without separate
+    // namespaces one surface's flood would blind the other's audit rows.
+    const fetchDenials = throttle(1);
+    const jobsDenials = new DenialThrottle(new InMemoryCounterStore(), {
+      max: 1,
+      windowMs: 60_000,
+      keyPrefix: "jobs-denial:",
+    });
+    expect((await fetchDenials.admit("app-a", "prod")).meter).toBe(true);
+    expect((await jobsDenials.admit("app-a", "prod")).meter).toBe(true);
+    expect((await fetchDenials.admit("app-a", "prod")).meter).toBe(false);
+    expect((await jobsDenials.admit("app-a", "prod")).meter).toBe(false);
+  });
 });

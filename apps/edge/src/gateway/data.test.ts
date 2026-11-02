@@ -930,6 +930,27 @@ describe("writesPerDay budget (§7)", () => {
   });
 });
 
+describe("the router's parameter bound", () => {
+  it("a data key of 100–128 characters reaches the handler's own validation and round-trips", async () => {
+    // Fastify 5 reads maxParamLength once, at the factory, for every
+    // parametric route: the jobs reference grammar's 128-character bound is
+    // the router-wide setting here, and it widened what the data routes see —
+    // keys legal to 256 by ADR-0043 used to answer the router default's 414
+    // at 100–128 characters before the data handlers' own validation ran.
+    const edge = buildDataEdge();
+    const token = await seedSession(edge.sessions, "alice");
+    for (const length of [100, 110, 128]) {
+      const key = `k${"x".repeat(length - 1)}`;
+      const put = await req(edge, "PUT", `/_api/data/user/${key}`, { token, payload: length });
+      expect(put.statusCode, String(length)).toBe(200);
+      expect(put.json().key, String(length)).toBe(key);
+      const got = await req(edge, "GET", `/_api/data/user/${key}`, { token });
+      expect(got.statusCode, String(length)).toBe(200);
+      expect(got.json().value, String(length)).toBe(length);
+    }
+  });
+});
+
 describe("adversarial: no collection read verb exists on the edge", () => {
   it("404s GET/DELETE on a collection path — only POST (append) exists", async () => {
     const edge = buildDataEdge({

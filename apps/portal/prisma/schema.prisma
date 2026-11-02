@@ -74,7 +74,7 @@ model App {
   /// empty is also a legal (deny-everyone) `group` state. Cap lives in zod
   /// (`MAX_VISIBILITY_GROUPS`), not here — an array needs no migration to
   /// re-tune it (ADR-0040 §5).
-  visibilityGroupIds String[]
+  visibilityGroupIds String[]        @default([])
   // Shared-password credential for `password` visibility (docs/features/
   // authentication.md). `passwordHash`/`passwordSalt` (scrypt) are PROJECTED to
   // the edge to verify a login; `passwordEnc` (AES-256-GCM) is portal-only —
@@ -113,6 +113,15 @@ model App {
   policyVersion      Int               @default(0)
   /// Archived apps return 410 + Clear-Site-Data at the edge (architecture §7).
   archivedAt         DateTime?
+  /// The app's jobs lifecycle generation (background-jobs-plane design §5,
+  /// ADR-0007) — the portal app model is the generation authority. Starts at 1
+  /// at creation; every successful archive/unarchive transition increments it
+  /// in the same transaction that appends the per-target outbox intents. Never
+  /// decremented, never reset by promotion/rollback (those are deploy state).
+  /// Not projected to the edge by this column alone — the edge projection
+  /// selects its own explicit column list, and the jobs routing tickets carry
+  /// the generation there.
+  jobsGeneration     Int               @default(1)
   createdAt          DateTime          @default(now())
   updatedAt          DateTime          @updatedAt
 
@@ -409,6 +418,31 @@ model InstructionJti {
 
   @@index([expiresAt])
   @@map("instruction_jti")
+}
+
+/// One-time-use burn set for the signed jobs→edge callback instruction
+/// (background-jobs-plane design §3) — the edge-side counterpart of
+/// `InstructionJti`, and a separate table on purpose: `instruction_jti` stays
+/// the egress burn set (the edge has no grant on it and must never gain one).
+/// **Edge-written data**: the receiving edge burns the verified `jti` before
+/// any side effect (INSERT … ON CONFLICT DO NOTHING — `rowCount === 0` is a
+/// replay), so the refusal survives a restart and holds across replicas. The
+/// `env` tier partitions the table: the prod edge (helix_edge) burns prod
+/// rows, the dev gateway (helix_dev) dev rows, and env-literal RLS policies
+/// (20261015000000_jobs_callback_jti_burn) make the database itself refuse a
+/// cross-tier burn, read, or delete. `helix_portal` is carved out to
+/// read-only (and RLS shows it no rows at all).
+model JobsCallbackJti {
+  /// The callback tier the nonce was consumed under — 'prod' | 'dev'.
+  env       String
+  /// The callback instruction's `jti`, as the verifier validated it.
+  jti       String
+  /// Retention floor ≥ maxTokenAge + clockTolerance + margin; swept after this.
+  burnUntil DateTime
+
+  @@id([env, jti])
+  @@index([burnUntil])
+  @@map("jobs_callback_jti")
 }
 
 /// Per-user / per-app key-value store (architecture §6.1, app-data design
@@ -749,6 +783,49 @@ model ConnectionConsentAttempt {
   /// The portal sweep's expiry scan.
   @@index([expiresAt])
   @@map("connection_consent_attempts")
+}
+
+/// One pending (or delivered) jobs lifecycle intent for one app on one
+/// configured server (background-jobs-plane design §5, ADR-0007). Each archive
+/// and unarchive transition appends one row per lifecycle target — every
+/// server in the deployment map, serving and retiring alike (a retiring server
+/// still retains work and must learn the change) — in the same transaction as
+/// the app-state write, so the intent exists exactly when the state does.
+///
+/// The key is the design's triple `(appId, generation, server)`: delivery is
+/// tracked per target, and a successful delivery to one server can never
+/// acknowledge another. Rows are durable cancellation/delivery intent, not
+/// registry state — **no FK to `apps`** (the GatewayCall precedent):
+/// a future hard-delete flow must retain and deliver the cancellation
+/// tombstone before discarding app metadata, so the schema must be unable to
+/// drop pending intents just because the app row went away.
+///
+/// The portal writes rows and the lifecycle sender (the supervised delivery
+/// loop) marks acknowledgement; rows are append-only in practice — `archived`
+/// and `generation` are fixed at birth, `deliveredAt` is the one transition.
+model JobsLifecycleOutbox {
+  /// The app whose lifecycle changed. Deliberately not a relation — see above.
+  appId       String    @db.Uuid
+  /// The generation this intent belongs to — the app's `jobsGeneration` value
+  /// after the transition that wrote it.
+  generation  Int
+  /// The target server id — one configured entry of the deployment map.
+  server      String
+  /// The lifecycle change for this generation: `true` (archive) closes the
+  /// generation, `false` (creation/unarchive) opens it. With `generation` this
+  /// is the `JobsLifecycleUpdate` body the sender delivers (@azx-pbc/shared).
+  archived    Boolean
+  /// When the target durably acknowledged this generation — null while
+  /// delivery is pending. Acknowledgements record the applied generation, and
+  /// the sender clears a row only on one at least as new as this row's.
+  deliveredAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  /// One intent per (app, generation, target); delivery is independent per server.
+  @@id([appId, generation, server])
+  /// The sender's pending scan: undelivered intents, oldest first.
+  @@index([deliveredAt, createdAt])
+  @@map("jobs_lifecycle_outbox")
 }
 
 /// A scoped credential for developing an app against its env=dev partition

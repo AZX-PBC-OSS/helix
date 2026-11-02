@@ -1,8 +1,7 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import {
   Box,
   Button,
-  Card,
   Center,
   Code,
   Grid,
@@ -31,11 +30,12 @@ import {
 import { useSetManifest } from "../../api/mutations";
 import { manifestQuery } from "../../api/queries";
 import { useAuth } from "../../auth/AuthProvider";
-import { Icon, type IconName } from "../../components/Icon";
-import { Eyebrow, Hint, ToneBadge } from "../../components/primitives";
+import { Icon } from "../../components/Icon";
+import { CapBlock, Eyebrow, Hint, ToneBadge } from "../../components/primitives";
 import { useCatalogue } from "../../lib/catalogue";
 import { ModelAllowlist } from "../../components/ModelAllowlist";
 import { fmtUsd } from "../../lib/format";
+import { JobsCard } from "./JobsCard";
 import { SecretsCard } from "./SecretsCard";
 
 /**
@@ -50,46 +50,6 @@ import { SecretsCard } from "./SecretsCard";
 
 /** Default daily LLM spend cap when an app first enables a model. */
 const DEFAULT_CAP = 10;
-
-function CapBlock({
-  icon,
-  title,
-  desc,
-  children,
-}: {
-  icon: IconName;
-  title: string;
-  desc: string;
-  children: ReactNode;
-}) {
-  return (
-    <Card>
-      <Group gap={11} mb={14} align="flex-start" wrap="nowrap">
-        <Center
-          w={34}
-          h={34}
-          style={{
-            borderRadius: 9,
-            background: "var(--mantine-color-dark-5)",
-            color: "var(--az-acc)",
-            flexShrink: 0,
-          }}
-        >
-          <Icon name={icon} size={17} />
-        </Center>
-        <Box>
-          <Text ff="heading" fw={600} fz={14.5}>
-            {title}
-          </Text>
-          <Text size="xs" c="dark.2" mt={4} lh={1.45}>
-            {desc}
-          </Text>
-        </Box>
-      </Group>
-      {children}
-    </Card>
-  );
-}
 
 /** The 3-way credential select's values (spec decision 28). */
 type CredentialMode = "none" | "secret" | "provider";
@@ -131,6 +91,8 @@ interface Draft {
   dataWritesPerDay: number | undefined;
   mcp: string[];
   externalOrigins: string[];
+  /** Background jobs (ADR-0001): the qualified job types the app may submit. */
+  jobsTypes: string[];
   /** Fetch-proxy: proxied origins, each through the 3-way credential select. */
   fetchOrigins: OriginDraft[];
   /** Injected helpers — two independent sub-options. */
@@ -186,6 +148,7 @@ function toDraft(c: Capabilities): Draft {
     dataWritesPerDay: c.data?.writesPerDay,
     mcp: c.mcp,
     externalOrigins: c.externalOrigins,
+    jobsTypes: c.jobs?.types ?? [],
     fetchOrigins: (c.fetch?.origins ?? []).map(toOriginDraft),
     shimFetch: c.shim?.fetch ?? c.fetch?.shim ?? false,
     shimConnect: c.shim?.connect ?? false,
@@ -275,6 +238,9 @@ function fromDraft(d: Draft): Capabilities {
     ...(d.offlineScope !== undefined ? { offline: { scope: d.offlineScope } } : {}),
     mcp: d.mcp,
     externalOrigins: d.externalOrigins,
+    // A jobs block exists only while it names a type — removing the last one
+    // removes the grant (the parse refuses an empty block).
+    ...(d.jobsTypes.length > 0 ? { jobs: { types: d.jobsTypes } } : {}),
   };
 }
 
@@ -306,6 +272,10 @@ function renderYaml(app: App, d: Draft): string {
   }
   lines.push(`  mcp: [${d.mcp.join(", ")}]`);
   lines.push(`  external_origins: [${d.externalOrigins.join(", ")}]`);
+  if (d.jobsTypes.length) {
+    lines.push(`  jobs:`);
+    lines.push(`    types: [${d.jobsTypes.join(", ")}]`);
+  }
   const proxied = d.fetchOrigins
     .map(originFromDraft)
     .filter((o): o is FetchConnection => o !== null);
@@ -858,6 +828,12 @@ export function CapabilitiesTab({ app }: { app: App }) {
                 </div>
               </Stack>
             </CapBlock>
+
+            <JobsCard
+              savedTypes={manifest.data.capabilities.jobs?.types ?? []}
+              selectedTypes={draft.jobsTypes}
+              onTypesChange={(jobsTypes) => patch({ jobsTypes })}
+            />
 
             <CapBlock
               icon="bolt"

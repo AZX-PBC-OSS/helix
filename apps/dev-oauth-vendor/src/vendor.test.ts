@@ -167,15 +167,24 @@ describe("token-endpoint modes", () => {
         challenge: s256CodeChallenge(verifier),
       });
       const started = Date.now();
-      await expect(
-        exchangeAuthorizationCode(
-          vendor,
-          grant.code as string,
-          { verifier, redirectUri: REDIRECT_URI },
-          AbortSignal.timeout(250),
-        ),
-      ).rejects.toThrowError();
-      expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+      const rejection = await exchangeAuthorizationCode(
+        vendor,
+        grant.code as string,
+        { verifier, redirectUri: REDIRECT_URI },
+        AbortSignal.timeout(250),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      // The stall ended by the CALLER's own bound: the rejection is the
+      // abort's TimeoutError — not an instant transport refusal, and not a
+      // vendor answer (any HTTP answer would resolve, not reject).
+      expect((rejection as Error | null)?.name).toBe("TimeoutError");
+      // And it genuinely waited. The elapsed reading races the abort timer's
+      // own clock at exactly the timeout value (observed 249 against 250), so
+      // the floor carries slack; its job is only to distinguish a real stall
+      // from an instant refusal, which no scheduling skew approaches.
+      expect(Date.now() - started).toBeGreaterThanOrEqual(200);
     });
   });
 
@@ -360,6 +369,25 @@ describe("in-process starter", () => {
     // Idempotent, and the surface is really gone afterwards.
     await vendor.close();
     await expect(fetch(`${vendor.issuer}/authorize`)).rejects.toThrowError();
+  });
+
+  it("owns its bound port on both loopback families", async () => {
+    // The vendor's bind is dual-stack (`::`), because the flake this pins was
+    // a cross-family port collision: bound to `::1` only, a fetch whose
+    // resolver handed it `127.0.0.1` first could reach a different process's
+    // listener holding the same ephemeral port number on IPv4, which answered
+    // 404 for the vendor's own routes under parallel load. One socket now
+    // owns the port for both families; the vendor's own error shape (400
+    // invalid_client) is the proof it answered, where a wrong listener would
+    // 404.
+    await withVendor({}, async (vendor) => {
+      for (const base of [`http://127.0.0.1:${vendor.port}`, `http://[::1]:${vendor.port}`]) {
+        const res = await fetch(`${base}/authorize?client_id=nope`, { redirect: "manual" });
+        const body = (await res.json()) as { error?: string };
+        expect(res.status, base).toBe(400);
+        expect(body.error, base).toBe("invalid_client");
+      }
+    });
   });
 });
 

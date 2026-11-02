@@ -1,6 +1,6 @@
 ---
 title: The /_api gateway
-description: "The same-origin /_api/* endpoints an app calls for everything dynamic: identity, LLM proxying with streaming and structured output, app data in three scopes with compare-and-swap writes, and the fetch proxy — gated by the manifest, metered and budgeted."
+description: "The same-origin /_api/* endpoints an app calls for everything dynamic: identity, LLM proxying with streaming and structured output, app data in three scopes with compare-and-swap writes, the fetch proxy, and background jobs — gated by the manifest, metered and budgeted."
 ---
 
 # The `/_api` gateway
@@ -290,7 +290,9 @@ both need a manifest grant:
     [Connected accounts](./connected-accounts));
   - blocks private, loopback, and cloud-metadata addresses;
   - refuses redirects;
-  - streams the response back.
+  - streams the response back with `Cache-Control: no-store`, dropping the
+    upstream's own cache headers (`Cache-Control`, `Expires`, and the
+    CDN-targeted ones).
 
   The app's own `cookie` and `authorization` headers are never forwarded. Calls
   are audited and counted against `fetch.requestsPerDay`.
@@ -308,6 +310,13 @@ origins are routed through `/_api/fetch/<url>` automatically. This helps when
 porting code that already calls a third-party API directly. In new code, write
 the `/_api/fetch/` path yourself: it is explicit, and it works without the shim.
 The older spelling `fetch.shim: true` still works.
+
+## Background jobs
+
+`/_api/jobs/*` starts platform-provided work that keeps running after the page
+closes, such as a fetch whose JSON result you collect later. Your app submits
+the job, polls its status, reads the result, and can cancel it. See
+[Background jobs](/apps/jobs).
 
 ## Offline
 

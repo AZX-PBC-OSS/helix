@@ -346,6 +346,19 @@ describe("AccessTab selector", () => {
     await user.click(await screen.findByRole("button", { name: "Archive…" }));
     expect(await screen.findByText("Archive Demo?")).toBeDefined();
     expect(screen.getByText(/stops serving immediately/)).toBeDefined();
+
+    // The jobs paragraph rides beside the serving/browser-data explanation:
+    // cancellation is a request delivered asynchronously, external effects
+    // already sent are irreversible, and unarchiving revives nothing.
+    expect(
+      screen.getByText(/Archiving also requests cancellation of queued and running jobs/),
+    ).toBeDefined();
+    expect(
+      screen.getByText(/work may continue while the request is being delivered/),
+    ).toBeDefined();
+    expect(screen.getByText(/Already sent external effects cannot be undone/)).toBeDefined();
+    expect(screen.getByText(/Unarchiving does not resume these jobs/)).toBeDefined();
+
     await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Archive" }));
 
     // The archive verb is the URL, not a body.
@@ -358,6 +371,45 @@ describe("AccessTab selector", () => {
       fetchMock.mock.calls.some(([url]) => typeof url === "string" && url.endsWith("/unarchive")),
     ).toBe(false);
     expect(visibilityBody(fetchMock)).toBeUndefined();
+
+    // The success feedback acknowledges the archive and the cancellation
+    // REQUEST — never completed cancellation.
+    expect(await screen.findByText(/App archived/)).toBeDefined();
+    expect(
+      screen.getByText(/Cancellation was requested for its queued and running jobs/),
+    ).toBeDefined();
+    expect(screen.getByText(/work may continue until it lands/)).toBeDefined();
+    expect(screen.queryByText(/jobs have been cancelled/i)).toBeNull();
+  });
+
+  it("explains delivery lag and no revival when unarchiving alone", async () => {
+    stubFetch({
+      app: makeApp({ mode: "internal" }),
+      applied: [],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "internal" }, true));
+    const user = userEvent.setup();
+
+    // The Archived row's own summary scopes "exactly as it was" to serving and
+    // access, with the no-revival half beside it — it must not contradict the
+    // cancellation copy one interaction away in the dialog.
+    expect(
+      await screen.findByText(/puts serving and access back exactly as they were/),
+    ).toBeDefined();
+    expect(screen.getByText(/background jobs it cancelled stay cancelled/)).toBeDefined();
+
+    await selectState(user, /Internal/);
+    await user.click(await screen.findByRole("button", { name: "Unarchive…" }));
+    expect(await screen.findByText("Unarchive Demo?")).toBeDefined();
+    expect(screen.getByText(/resumes serving exactly as it was/)).toBeDefined();
+    expect(
+      screen.getByText(
+        /New jobs become available after the lifecycle change reaches the relevant jobs service/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByText(/Previously cancelled jobs do not resume/)).toBeDefined();
   });
 
   it("enables password access through the selector", async () => {
@@ -460,6 +512,13 @@ describe("AccessTab selector", () => {
     await user.click(screen.getByRole("button", { name: "Add" }));
     await user.click(screen.getByRole("button", { name: "Restrict to groups…" }));
     await screen.findByText("Restrict Demo to groups?");
+    // The visibility+unarchive branch carries the jobs copy too.
+    expect(
+      screen.getByText(
+        /New jobs become available after the lifecycle change reaches the relevant jobs service/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByText(/Previously cancelled jobs do not resume/)).toBeDefined();
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Restrict to groups" }),
     );
@@ -476,6 +535,64 @@ describe("AccessTab selector", () => {
     expect(seen.findIndex((u) => typeof u === "string" && u.endsWith("/visibility"))).toBeLessThan(
       seen.findIndex((u) => typeof u === "string" && u.endsWith("/unarchive")),
     );
+  });
+
+  it("states the deferred jobs consequences when restoring a public app from the archive", async () => {
+    // From the archive, going public opens an approval and applies nothing —
+    // the unarchive (and with it the jobs lifecycle change) happens later, so
+    // the dialog phrases the jobs consequences for that later unarchive rather
+    // than claiming anything applies now.
+    stubFetch({
+      app: makeApp({ mode: "internal" }),
+      applied: [],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "internal" }, true));
+    const user = userEvent.setup();
+
+    await selectState(user, /Public/);
+    await user.click(await screen.findByRole("button", { name: "Request approval…" }));
+    expect(await screen.findByText("Request public access for Demo?")).toBeDefined();
+    expect(screen.getByText(/stays archived until the approval lands/)).toBeDefined();
+    expect(
+      screen.getByText(
+        /New jobs become available after the lifecycle change reaches the relevant jobs service/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByText(/Previously cancelled jobs do not resume/)).toBeDefined();
+  });
+
+  it("restores a preserved-public app from the archive as a plain unarchive, not an approval request", async () => {
+    // The preserved visibility IS public, so restoring it changes nothing about
+    // access: the plan is a single unarchive and opens no approval. The dialog
+    // must branch on what the plan's step does — not on the target being
+    // public, the condition the approval branch right below uses — or it would
+    // claim an approval request this transition never opens and leave the
+    // owner waiting for one.
+    stubFetch({
+      app: makeApp({ mode: "public" }),
+      applied: [],
+      pending: null,
+    });
+    setToken("test-token");
+    render(makeApp({ mode: "public" }, true));
+    const user = userEvent.setup();
+
+    await selectState(user, /Public/);
+    // Not elevated: the pending bar offers the unarchive verb, not the approval one.
+    await user.click(await screen.findByRole("button", { name: "Unarchive…" }));
+    expect(await screen.findByText("Unarchive Demo?")).toBeDefined();
+    expect(screen.getByText(/resumes serving exactly as it was — public/)).toBeDefined();
+    expect(
+      screen.getByText(
+        /New jobs become available after the lifecycle change reaches the relevant jobs service/,
+      ),
+    ).toBeDefined();
+    expect(screen.getByText(/Previously cancelled jobs do not resume/)).toBeDefined();
+    // The approval copy would promise a request this plan never opens.
+    expect(screen.queryByText(/stays archived until the approval lands/)).toBeNull();
+    expect(screen.queryByText(/opens an approval request rather than applying now/)).toBeNull();
   });
 
   it("hides a mode the deployment forbids, unless the app is in it", () => {

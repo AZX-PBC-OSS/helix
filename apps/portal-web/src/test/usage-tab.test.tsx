@@ -59,6 +59,8 @@ function callRow(over: Partial<GatewayCall> = {}): GatewayCall {
     userEmail: "caller@azx.io",
     userKind: "user",
     capability: "llm",
+    // The caller's resolved partition — prod for a signed-in user.
+    env: "prod",
     model: "claude-opus-4-8",
     inputTokens: 100,
     outputTokens: 50,
@@ -236,5 +238,34 @@ describe("UsageTab recent calls", () => {
     await userEvent.click(screen.getByRole("button", { name: "Show call detail" }));
     expect(screen.getByText("Why it failed")).toBeDefined();
     expect(screen.getByText(/bad key/)).toBeDefined();
+  });
+
+  it("reads a jobs row as a recorded submission request with its environment tier", async () => {
+    // The same table the audit log uses, fed by the same ADR-0004 semantics: a
+    // 202 is a successful submission request (possibly a replay), never a job
+    // outcome — and the type cell carries the environment tier.
+    stubFetch(summary({ ok: 6 }), {
+      me: { sub: "u", via: "oidc", oid: "oid-owner", isAdmin: false },
+      audit: {
+        rows: [
+          callRow({
+            capability: "jobs",
+            env: "dev",
+            model: "jobs:fetch",
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: 0,
+            statusCode: 202,
+            outcome: "ok",
+          }),
+        ],
+      },
+    });
+    renderUsage(makeApp({ ownerId: "oid-owner" }));
+    expect(await screen.findByText("Successful submission request")).toBeDefined();
+    expect(screen.getByText("jobs:fetch")).toBeDefined();
+    expect(screen.getByText("· dev")).toBeDefined();
+    // The owner's footnote stays request-level; it makes no execution claim.
+    expect(screen.getByText(/Outcome, status and latency per call/)).toBeDefined();
   });
 });

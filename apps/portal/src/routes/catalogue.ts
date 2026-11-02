@@ -6,13 +6,19 @@ import {
   CapabilityCatalogueSchema,
   CatalogueProviderSchema,
   ELEVATION_TRIGGERS,
+  isJobsFullyDisabled,
   type CapabilityCatalogue,
 } from "@azx-pbc/shared";
 import { renderSkill, type SkillVars } from "@azx-pbc/deploy-skill";
 import { authenticate } from "../plugins/auth.js";
 import { modelPolicy, servableLlmModels } from "../policy/modelPolicy.js";
 import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPolicy.js";
-import { resolveAppPublicBase, resolveDevApiBase } from "../deployment.js";
+import {
+  resolveAdvertisedJobTypes,
+  resolveAppPublicBase,
+  resolveDevApiBase,
+  resolveJobsCatalogueServers,
+} from "../deployment.js";
 import { resolveMaxFileBytes, resolveMaxTotalBytes } from "../deploy/limits.js";
 import { visibilityModesFor } from "@azx-pbc/shared";
 
@@ -120,6 +126,17 @@ async function buildCatalogue(app: FastifyInstance): Promise<CapabilityCatalogue
 
   const devApiBase = resolveDevApiBase();
 
+  // ── Background jobs: the installed types, derived from the deployment's
+  // server map — never from jobs-service reachability. A fully disabled
+  // installation omits the block entirely; a deployment whose servers are all
+  // retiring advertises an empty list (saved grants survive; nothing new may
+  // request them). The projection the portal parses carries no endpoint,
+  // database URL or signing root, so the block can carry none either. The
+  // advertised set — production types plus, off a non-production stack that
+  // opted in, the diagnostic type — is `resolveAdvertisedJobTypes`'s one
+  // decision, shared with the approval write-gate.
+  const jobsServers = resolveJobsCatalogueServers();
+
   return CapabilityCatalogueSchema.parse({
     visibility: { modes },
     llm: {
@@ -150,6 +167,7 @@ async function buildCatalogue(app: FastifyInstance): Promise<CapabilityCatalogue
       available: true,
       scopeRule: "must not be the domain root or a /_… reserved path",
     },
+    ...(isJobsFullyDisabled(jobsServers) ? {} : { jobs: { types: resolveAdvertisedJobTypes() } }),
     deploy: {
       maxFileMb: resolveMaxFileBytes() / MB,
       maxBundleMb: resolveMaxTotalBytes() / MB,

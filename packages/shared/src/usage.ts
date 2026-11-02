@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { EnvSchema } from "./env.js";
 import { PrincipalKindSchema } from "./principal.js";
 
 /**
@@ -27,6 +28,13 @@ import { PrincipalKindSchema } from "./principal.js";
  * origin its manifest never granted. Like `quota_blocked` it is the platform's
  * own pre-egress refusal: no instruction is minted and nothing is dialled.
  *
+ * `too_large` is the fetch-proxy's request-body size refusal when it is decided
+ * before egress — a declared or materialized body already over the edge's cap.
+ * It is a pre-egress refusal in the same sense, kept apart from `forbidden` so
+ * a size refusal never reads as an allowlist denial. An upload found over the
+ * cap only while it streams has already reached egress, so it ledgers as
+ * `refusal` (status 413) instead.
+ *
  * `connection_required` is the delegated-call outcome "the caller has no usable
  * connection to the bound provider". It stays distinct from `refusal` so the
  * ledger separates "user not connected" from "policy refused" — that separation
@@ -42,6 +50,7 @@ export const GATEWAY_OUTCOMES = [
   "conflict",
   "forbidden",
   "connection_required",
+  "too_large",
 ] as const;
 export const GatewayOutcomeSchema = z.enum(GATEWAY_OUTCOMES);
 export type GatewayOutcome = z.infer<typeof GatewayOutcomeSchema>;
@@ -149,6 +158,14 @@ export const GatewayCallSchema = z.object({
    */
   userKind: PrincipalKindSchema.nullable(),
   capability: z.string(),
+  /**
+   * The environment tier the call ran in (`prod` | `dev`) — recorded from the
+   * caller's resolved partition, never a request choice. Jobs submission views
+   * surface it because production and development jobs are independent
+   * namespaces (an env=dev submission is not the app's live workload); the
+   * column predates that use (dev-mode §5.1 budgets).
+   */
+  env: EnvSchema,
   model: z.string(),
   inputTokens: z.int().nonnegative(),
   outputTokens: z.int().nonnegative(),

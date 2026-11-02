@@ -85,3 +85,16 @@ export function capBody(
   pipeline(source, cap, () => {});
   return cap;
 }
+
+/**
+ * Abandon a response body nobody will read, without letting the abandonment
+ * crash the process. undici's body stream turns a `destroy()` before the body
+ * ended into a `RequestAbortedError` emitted as `'error'`; with no listener
+ * that error is uncaught. The sink makes the deliberate abort a non-event,
+ * and `destroy()` releases the connection without draining an upstream body
+ * of unknown size.
+ */
+export function discardBody(body: Readable): void {
+  body.on("error", () => {});
+  body.destroy();
+}

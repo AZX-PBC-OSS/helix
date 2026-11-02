@@ -51,14 +51,16 @@ not a bug.
       "requestsPerDay": 10000
     },
     "shim": { "fetch": false, "connect": false }, // helper scripts the platform adds to your HTML
-    "offline": { "scope": "/app/" } // a service worker supplied by the platform
+    "offline": { "scope": "/app/" }, // a service worker supplied by the platform
+    "jobs": { "types": ["jobs:fetch"] } // background job types; jobs:fetch calls go through fetch.origins
   }
 }
 ```
 
 Every capability is an explicit grant; nothing is implied. An app with no `llm`
 block can't call the model gateway, and an app with no `fetch` block can't
-proxy an outbound call.
+proxy an outbound call, and an app with no `jobs` block can't start a
+[background job](./jobs).
 
 What each capability does at runtime:
 
@@ -66,6 +68,7 @@ What each capability does at runtime:
 - `externalOrigins` and `offline`: [Serving rules and CSP](./serving-and-csp).
 - `shim.fetch`: [the fetch shim](./gateway#the-fetch-shim).
 - `shim.connect` and `provider` origins: [Connected accounts](./connected-accounts).
+- `jobs`: [Background jobs](./jobs).
 
 ### Values that depend on your deployment
 
@@ -75,6 +78,7 @@ them:
 - the model ids allowed in `llm.models`;
 - the named `connection` secrets you can reference;
 - the OAuth `provider` refs you can bind, and the API origins each one covers;
+- the job types you can list in `jobs.types`;
 - which visibility modes are allowed.
 
 Use those names exactly. Don't guess them.

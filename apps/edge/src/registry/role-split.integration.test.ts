@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Client, Pool } from "pg";
 import { PROVIDERS_CHANNEL } from "@azx-pbc/shared";
-import { TEST_DATABASE_URL } from "../test/seed.js";
+import { TEST_DATABASE_URL, deleteApp, seedApp } from "../test/seed.js";
+import { RegistryProjection } from "./projection.js";
 
 /**
  * App-data design §2.1 — the database-role split, asserted against the real
@@ -130,6 +131,26 @@ describe("helix_edge least-privilege grants", () => {
       await expect(pool.query("SELECT count(*) FROM instruction_jti")).rejects.toThrow(
         /permission denied/i,
       );
+      // The jobs-callback burn set (background-jobs-plane design §3) is a
+      // DIFFERENT table the edge does own, one tier of: SELECT/INSERT/DELETE —
+      // the burn (INSERT … ON CONFLICT) and its sweep — and no UPDATE, because
+      // a burn is never rewritten. The dev tier's rows inside it are fenced by
+      // the env-literal RLS policies, asserted in
+      // jobs/burns.integration.test.ts against a dedicated database.
+      await expect(
+        pool.query(
+          `INSERT INTO jobs_callback_jti ("env", jti, "burnUntil")
+             VALUES ('prod', 'rs-edge-callback', now() + interval '1 minute')`,
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`DELETE FROM jobs_callback_jti WHERE jti = 'rs-edge-callback'`),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(
+          `UPDATE jobs_callback_jti SET "burnUntil" = now() WHERE jti = 'rs-edge-callback'`,
+        ),
+      ).rejects.toThrow(/permission denied/i);
       // And so is the control plane's own counter table (ADR-0040 §4). This is
       // the mirror image of the portal being kept out of `rate_counters`, and it
       // is the property that whole second table exists to buy: neither plane can
@@ -366,6 +387,72 @@ describe("helix_portal on sessions: the admin revoke grant set", () => {
 });
 
 /**
+ * The jobs lifecycle outbox (background-jobs-plane design §5): durable
+ * per-server delivery intent — the record that tells a server "this app's
+ * lifecycle generation changed". Portal-only by grant, like the consent-flow
+ * table: the portal writes the intents and its sender marks acknowledgement,
+ * while the policy edge and the dev-gateway hold nothing (they learn lifecycle
+ * through the registry projection's own `apps` grant). Asserted on both sides
+ * of the boundary — a bootstrap widening or a "helpful" migration grant fails
+ * here rather than silently shipping.
+ */
+describe("jobs_lifecycle_outbox: full DML for helix_portal, nothing for the data planes", () => {
+  it("lets helix_portal append, read, acknowledge and clear an intent", async () => {
+    if (!(await portalRoleAvailable())) return; // not provisioned on this cluster
+    const pool = new Pool({ connectionString: portalUrl(), max: 1 });
+    try {
+      const appId = randomUUID();
+      await expect(
+        pool.query(
+          `INSERT INTO jobs_lifecycle_outbox ("appId", generation, server, archived)
+             VALUES ($1, 1, 'rs-portal-outbox', false)`,
+          [appId],
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        pool.query(`SELECT count(*) FROM jobs_lifecycle_outbox WHERE "appId" = $1`, [appId]),
+      ).resolves.toBeDefined();
+      // Acknowledgement is the one UPDATE a delivered row ever gets…
+      await expect(
+        pool.query(`UPDATE jobs_lifecycle_outbox SET "deliveredAt" = now() WHERE "appId" = $1`, [
+          appId,
+        ]),
+      ).resolves.toBeDefined();
+      // …and the sender's retention the one DELETE.
+      await expect(
+        pool.query(`DELETE FROM jobs_lifecycle_outbox WHERE "appId" = $1`, [appId]),
+      ).resolves.toBeDefined();
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it("holds no grant at all for helix_edge, helix_dev, or helix_egress", async () => {
+    for (const [url, available] of [
+      [edgeUrl(), edgeRoleAvailable],
+      [devUrl(), devRoleAvailable],
+      [egressUrl(), egressRoleAvailable],
+    ] as const) {
+      if (!(await available())) continue; // not provisioned on this cluster
+      const pool = new Pool({ connectionString: url, max: 1 });
+      try {
+        await expect(pool.query("SELECT count(*) FROM jobs_lifecycle_outbox")).rejects.toThrow(
+          /permission denied/i,
+        );
+        await expect(
+          pool.query(
+            `INSERT INTO jobs_lifecycle_outbox ("appId", generation, server, archived)
+               VALUES (gen_random_uuid(), 1, 'rs-denied', false)`,
+          ),
+        ).rejects.toThrow(/permission denied/i);
+      } finally {
+        await pool.end();
+      }
+    }
+  });
+});
+
+/**
  * Dev-mode design §5.3 — the load-bearing security thesis: the database itself
  * refuses to cross the env boundary. `helix_edge`'s RLS policy hardcodes
  * env='prod' and `helix_dev`'s hardcodes env='dev', so neither can read or write
@@ -536,10 +623,12 @@ describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", ()
       // query that type-checks and passes every unit test. ADR-0040 renamed this
       // exact column, and before this line the suite asserted only
       // `visibilityMode` — so it would have gone green through the breakage.
-      // Whatever the registry projection selects, assert here.
+      // `jobsGeneration` is named for the same reason: the projection carries
+      // the jobs lifecycle generation, and 20261016000000 is the grant that
+      // covers it. Whatever the registry projection selects, assert here.
       await expect(
         pool.query(
-          `SELECT slug, "visibilityMode", "visibilityGroupIds", capabilities FROM apps LIMIT 1`,
+          `SELECT slug, "visibilityMode", "visibilityGroupIds", capabilities, "jobsGeneration" FROM apps LIMIT 1`,
         ),
       ).resolves.toBeDefined();
       await expect(pool.query("SELECT count(*) FROM versions")).resolves.toBeDefined();
@@ -567,6 +656,105 @@ describe("env partition isolation: helix_dev vs helix_edge (dev-mode §5.3)", ()
       await expect(pool.query("DROP TABLE apps")).rejects.toThrow(/must be owner/i);
     } finally {
       await pool.end();
+    }
+  });
+
+  /**
+   * The dev surface of the jobs projection, proven against the real role: the
+   * dev-gateway's registry runs the no-password SQL (`includePasswords: false`)
+   * under helix_dev's column-scoped grant, so the SQL and the grant must agree.
+   * The 20260821183000 failure mode — a projection column the grant was never
+   * widened for — loads nothing (serve-stale absorbs the permission denial into
+   * the freshness counter), and that is exactly what makes this red rather than
+   * silently empty. The jobs grant and the lifecycle generation must come
+   * through in their projected forms, and the withheld credential columns must
+   * still arrive nulled.
+   */
+  it("the dev projection loads under helix_dev's column grant, carrying jobs state", async () => {
+    if (!(await devRoleAvailable())) return;
+    const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
+    const slug = `devproj-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    let appId: string | null = null;
+    try {
+      const seeded = await seedApp(owner, {
+        slug,
+        live: true,
+        capabilities: { jobs: { types: ["jobs:fetch"] } },
+      });
+      appId = seeded.appId;
+      // What an archive transition writes — the portal bumps the generation in
+      // the same transaction as the archive; a direct seed keeps this test off
+      // the portal's routes.
+      await owner.query(`UPDATE apps SET "jobsGeneration" = 4 WHERE id = $1`, [appId]);
+
+      const dev = new Pool({ connectionString: devUrl(), max: 1 });
+      try {
+        const projection = new RegistryProjection(dev, { includePasswords: false });
+        await projection.load();
+        expect(projection.freshness().consecutiveLoadFailures).toBe(0);
+        const entry = projection.getApp(slug);
+        expect(entry?.jobs).toEqual({ types: ["jobs:fetch"] });
+        expect(entry?.jobsGeneration).toBe("4");
+        expect(entry?.passwordHash).toBeNull();
+        expect(entry?.passwordSalt).toBeNull();
+      } finally {
+        await dev.end();
+      }
+    } finally {
+      if (appId) await deleteApp(owner, appId);
+      await owner.end();
+    }
+  });
+
+  /**
+   * The prod surface of the jobs projection, proven against the real role — the
+   * mirror of the dev test above. The prod edge's claim is that helix_edge's
+   * TABLE-WIDE SELECT on `apps` (20260616000001) covers every column the
+   * projection reads, the new `jobsGeneration` included, automatically. The
+   * only other assertion on this role's registry access is `SELECT count(*)`,
+   * which reads no column list and cannot see a grant narrowed to specific
+   * columns — the exact way helix_dev's grant was narrowed (20260722225628) —
+   * so a prod grant drift would otherwise surface as a runtime `permission
+   * denied` on a query that type-checks and passes every unit test, absorbing
+   * into serve-stale and 503ing every app host. Loading the real prod SQL
+   * (passwords included) under the real role turns that into a counted,
+   * assertable load failure here.
+   */
+  it("the prod projection loads under helix_edge's grants, carrying jobs state", async () => {
+    if (!(await edgeRoleAvailable())) return;
+    const owner = new Pool({ connectionString: TEST_DATABASE_URL, max: 1 });
+    const slug = `edgproj-${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    let appId: string | null = null;
+    try {
+      const seeded = await seedApp(owner, {
+        slug,
+        live: true,
+        capabilities: { jobs: { types: ["jobs:fetch"] } },
+      });
+      appId = seeded.appId;
+      // A non-default generation — the value the prod column delivery must
+      // carry, not merely the column's DEFAULT.
+      await owner.query(`UPDATE apps SET "jobsGeneration" = 4 WHERE id = $1`, [appId]);
+
+      const edge = new Pool({ connectionString: edgeUrl(), max: 1 });
+      try {
+        // Default construction — the prod edge's own shape, password columns in.
+        const projection = new RegistryProjection(edge);
+        await projection.load();
+        expect(projection.freshness().consecutiveLoadFailures).toBe(0);
+        const entry = projection.getApp(slug);
+        expect(entry?.jobs).toEqual({ types: ["jobs:fetch"] });
+        expect(entry?.jobsGeneration).toBe("4");
+        // The password columns loaded (as null — the row has none): the prod
+        // grant covered the projection's full column list.
+        expect(entry?.passwordHash).toBeNull();
+        expect(entry?.passwordSalt).toBeNull();
+      } finally {
+        await edge.end();
+      }
+    } finally {
+      if (appId) await deleteApp(owner, appId);
+      await owner.end();
     }
   });
 });

@@ -6,13 +6,16 @@
 //     (app images are pulled from public GHCR, so there is no private registry)
 //   - four user-assigned identities with a least-privilege RBAC matrix (the
 //     fourth, dev-gateway, is idle unless deployDevGateway is set)
-//   - two ACA environments + the edge / portal / egress container apps, plus the
-//     opt-in dev-gateway (edge image, helix_dev role) when deployDevGateway=true
+//   - two ACA environments + the edge / portal / egress container apps, the
+//     helix-jobs app (internal ingress in the apps environment, opt-in with
+//     deployJobs), plus the opt-in dev-gateway (edge image, helix_dev role)
+//     when deployDevGateway=true
 //   - the public DNS zone for the apps domain
 //
 // Two-phase deploy (see README): apply once with deployApps=false to build the
-// infra, ensure the three app images are published to GHCR (CI does this), then
-// apply with deployApps=true to roll out the apps.
+// infra, ensure the images are published to GHCR (CI builds and publishes
+// edge / portal / egress / certbot / jobs), then apply with deployApps=true to
+// roll out the apps.
 
 targetScope = 'resourceGroup'
 
@@ -116,6 +119,27 @@ param egressDbPassword string = ''
 @secure()
 @description('Password for the helix_dev runtime role (dev-gateway). BOOTSTRAP ONLY — ignored when edgeDevDatabaseUrl is set. Only needed when deployDevGateway=true.')
 param devDbPassword string = ''
+@secure()
+@description('helix_jobs DSN (assembled). Steady state: az.getSecret from kv-platform. Empty = compose from jobsDbPassword (bootstrap). Only consumed when deployJobs=true.')
+param jobsDatabaseUrl string = ''
+@secure()
+@description('Password for the helix_jobs runtime role. BOOTSTRAP ONLY — ignored when jobsDatabaseUrl is set. Only needed when deployJobs=true.')
+param jobsDbPassword string = ''
+@secure()
+@description('helix_jobs_migrate DSN (assembled) — the jobs migration identity, read at run time by the jobs migrate job. Steady state: az.getSecret from kv-platform. Empty = compose from jobsMigrateDbPassword (bootstrap). Only consumed when deployJobs=true.')
+param jobsMigrateDatabaseUrl string = ''
+@secure()
+@description('Password for the helix_jobs_migrate migration identity. BOOTSTRAP ONLY — ignored when jobsMigrateDatabaseUrl is set. Only needed when deployJobs=true. Never installed in a runtime image (background-jobs design §8).')
+param jobsMigrateDbPassword string = ''
+@secure()
+@description('The `jobs` server\'s edge→jobs signing root (canonical base64 of 32 random bytes — `openssl rand -base64 32`). Steady state: az.getSecret from kv-platform (`jobs-edge-to-jobs-root`). Only consumed when deployJobs=true; the edge, the dev-gateway and the jobs service hold it.')
+param jobsEdgeToJobsRoot string = ''
+@secure()
+@description('The `jobs` server\'s jobs→edge signing root (canonical base64 of 32 random bytes — `openssl rand -base64 32`). Steady state: az.getSecret from kv-platform (`jobs-jobs-to-edge-root`). Only consumed when deployJobs=true; the edge, the dev-gateway and the jobs service hold it.')
+param jobsJobsToEdgeRoot string = ''
+@secure()
+@description('The `jobs` server\'s portal→jobs signing root (canonical base64 of 32 random bytes — `openssl rand -base64 32`). Steady state: az.getSecret from kv-platform (`jobs-portal-to-jobs-root`). Only consumed when deployJobs=true; the portal and the jobs service hold it.')
+param jobsPortalToJobsRoot string = ''
 
 // Symmetric platform secrets (base64, >= 32 bytes). Generate with
 // `openssl rand -base64 48`.
@@ -279,7 +303,7 @@ param foundryResourceGroupName string = ''
 param egressManagedIdentityConnections string = ''
 
 // Image references (phase 2). Repo names are fixed; registry + tag are parameterized.
-// The three app images are built and published by this repo's CI to GHCR
+// CI builds and publishes edge / portal / egress / certbot / jobs to GHCR
 // (docker/metadata-action lowercases the owner). Override imageRegistry for a fork.
 @description('Registry + owner holding the GHCR-built images, e.g. ghcr.io/azx-pbc-oss.')
 param imageRegistry string = 'ghcr.io/azx-pbc-oss'
@@ -293,10 +317,20 @@ param deployApps bool = false
 @description('Opt-in dev-gateway (dev-mode design §3): the cross-origin dev surface on dev-api.<appsDomain>, run as helix_dev. Off by default — enabling it needs the helix_dev role + password (README step 4) and the pre-deploy riders in docs/features/dev-mode.md. Only takes effect together with deployApps=true.')
 param deployDevGateway bool = false
 
+@description('Deploy the background-jobs plane (ADR-0045): its private database provisioning is unconditional (an apply must never be able to delete the jobs store — a re-enabled jobs plane reuses its retained records), and this flag gates the jobs container app, the edge / dev-gateway / portal jobs wiring, and the kv-platform jobs DSN secrets + the jobs server\'s three signing roots + the <namePrefix>-jobs-migrate job (README "Background jobs"). Off by default: enabling the plane is an explicit operator step, and an enabled apply refuses to run without the jobs DSNs and signing roots. Flipping it back off parks the feature; the retained store stays.')
+param deployJobs bool = false
+
+@description('The `jobs` server\'s serving state (background-jobs design §8). `serving` advertises its types for new grants; `retiring` withdraws them from new-grant discovery and closes intake (new submissions are refused 503 jobs_disabled) while keeping every route, credential and the service itself, so retained jobs stay readable, cancellable, recoverable by their retry keys and cleaned up. Fully disabling the plane (deployJobs=false) is the step after retirement completes, never a substitute for it.')
+@allowed(['serving', 'retiring'])
+param jobsServerState string = 'serving'
+
+@description('Whether the `jobs` server admits new submissions (JOBS_ACCEPTING). Closing intake while serving drains an active installation without withdrawing its types; a retiring server never admits new work, so this is forced closed when jobsServerState is retiring. Retained-key recovery, reads, cancellation, lifecycle delivery and cleanup continue either way.')
+param jobsIntakeOpen bool = true
+
 @description('Deploy the OpenTelemetry collector + Application Insights (ADR-0037). Off leaves every service exporting nowhere — `startTelemetry` returns its inert handle — which is the platform\'s documented default state and exactly how it ran before this existed.')
 param deployTelemetry bool = true
 
-@description('Deploy the alert rules that consume the platform\'s own observability — the registry projection stale + never-loaded rules (ADR-0025 residual, ADR-0037). Default true: they are the near-term payoff of the telemetry work and cost cents. The stale rule reads a metric so it needs deployTelemetry; the never-loaded rule is log-based and deploys either way. NOTE with alertEmails empty the rules still deploy and still fire — into nothing. Set alertEmails, or set this false; a rule nobody is told about is worse than no rule, because it looks like coverage.')
+@description('Deploy the alert rules that consume the platform\'s own observability — the registry projection stale + never-loaded rules (ADR-0025 residual, ADR-0037), and with deployJobs the jobs health relay and its body-aware rules (modules/alerts-jobs.bicep, log-based). Default true: they are the near-term payoff of the telemetry work and cost cents. The stale rule reads a metric so it needs deployTelemetry; the never-loaded rule is log-based and deploys either way. NOTE with alertEmails empty the rules still deploy and still fire — into nothing. Set alertEmails, or set this false; a rule nobody is told about is worse than no rule, because it looks like coverage.')
 param deployAlerts bool = true
 
 @description('Addresses notified when an alert fires. SEVERAL ARE SUPPORTED — each becomes its own email receiver on one shared action group, e.g. \'["a@x.io","b@x.io"]\' (or `--parameters alertEmails="[\'a@x.io\']"` from the CLI). Empty means the rules notify nobody.')
@@ -695,6 +729,74 @@ var devDbConn = deployDevGateway
       ? edgeDevDatabaseUrl
       : 'postgresql://helix_dev:${devDbPassword}@${pgFqdn}:5432/helix?sslmode=require')
   : ''
+// The jobs plane's two DSNs — the `helix_jobs` runtime role's and the
+// `helix_jobs_migrate` migration identity's, against the jobs database the
+// postgres module declares (the same name sql/01-roles.sql hardens). Written
+// to kv-platform only when deployJobs is set. The migration DSN's reader is
+// the jobs migrate job; the runtime DSN's intended reader is the jobs
+// container app (the service's deployment wiring) — and neither ever reaches
+// another container.
+//
+// The fail() guard is the safe default the platform DSNs predate (their
+// empty-password composition is a documented bootstrap hazard instead): an
+// existing install that opts in while in steady state — both jobs params
+// unset — would otherwise silently write an unauthenticatable empty-password
+// DSN into the vault. The first jobs-enabled apply composes
+// from the bootstrap passwords (or --parameters); steady state sources the
+// vault copies via az.getSecret() in the bicepparam.
+var jobsDbConn = deployJobs
+  ? (!empty(jobsDatabaseUrl)
+      ? jobsDatabaseUrl
+      : empty(jobsDbPassword)
+          ? fail(
+              'deployJobs=true needs the two jobs DSNs, and neither jobsDatabaseUrl nor jobsDbPassword is set — composing one with an empty password would write an unauthenticatable DSN into kv-platform. Bootstrap the secrets once with HELIX_JOBS_DB_PASSWORD / HELIX_JOBS_MIGRATE_DB_PASSWORD (main.bootstrap.bicepparam, or --parameters on this apply), then source them steady-state via az.getSecret() in main.bicepparam.'
+            )
+          : 'postgresql://helix_jobs:${jobsDbPassword}@${pgFqdn}:5432/${postgres.outputs.jobsDatabaseName}?sslmode=require')
+  : ''
+var jobsMigrateDbConn = deployJobs
+  ? (!empty(jobsMigrateDatabaseUrl)
+      ? jobsMigrateDatabaseUrl
+      : empty(jobsMigrateDbPassword)
+          ? fail(
+              'deployJobs=true needs the two jobs DSNs, and neither jobsMigrateDatabaseUrl nor jobsMigrateDbPassword is set — composing one with an empty password would write an unauthenticatable DSN into kv-platform. Bootstrap the secrets once with HELIX_JOBS_DB_PASSWORD / HELIX_JOBS_MIGRATE_DB_PASSWORD (main.bootstrap.bicepparam, or --parameters on this apply), then source them steady-state via az.getSecret() in main.bicepparam.'
+            )
+          : 'postgresql://helix_jobs_migrate:${jobsMigrateDbPassword}@${pgFqdn}:5432/${postgres.outputs.jobsDatabaseName}?sslmode=require')
+  : ''
+
+// The jobs server's three directional signing roots. With deployJobs on, all
+// three must be supplied, each the canonical base64 of exactly 32 bytes, and
+// pairwise distinct — each direction holds an independently generated secret,
+// so a hop that leaks one root cannot forge the other direction's callbacks.
+// The guard fails the apply before any value can reach the vault or a
+// container; ARM evaluates the untaken ternary branch lazily, as the
+// jobsDbConn guard above relies on. The disabled arm is the same shape with
+// empty strings, so every consumer can project from it unconditionally.
+var jobsRootsSupplied = !empty(jobsEdgeToJobsRoot) && !empty(jobsJobsToEdgeRoot) && !empty(jobsPortalToJobsRoot)
+// 32 bytes in canonical base64 is 44 characters ending in exactly one '='.
+var jobsRootShapes = [for root in [jobsEdgeToJobsRoot, jobsJobsToEdgeRoot, jobsPortalToJobsRoot]: length(root) == 44 && endsWith(root, '=') && !endsWith(root, '==')]
+var jobsRoots = deployJobs
+  ? (!jobsRootsSupplied
+      ? fail(
+          'deployJobs=true needs the jobs server\'s three signing roots: HELIX_JOBS_EDGE_TO_JOBS_ROOT / HELIX_JOBS_JOBS_TO_EDGE_ROOT / HELIX_JOBS_PORTAL_TO_JOBS_ROOT (main.bootstrap.bicepparam reads them from the environment, or pass --parameters on this apply). Generate each with `openssl rand -base64 32`, then source them steady-state via az.getSecret() in main.bicepparam.'
+        )
+      : contains(jobsRootShapes, false)
+          ? fail(
+              'The jobs server\'s signing roots must each be the canonical base64 encoding of exactly 32 bytes — 44 characters ending in exactly one \'=\' (`openssl rand -base64 32`). Regenerate the root that is not, generating each direction separately.'
+            )
+          : (jobsEdgeToJobsRoot == jobsJobsToEdgeRoot || jobsEdgeToJobsRoot == jobsPortalToJobsRoot || jobsJobsToEdgeRoot == jobsPortalToJobsRoot)
+              ? fail(
+                  'The jobs server\'s signing roots must each hold an independently generated secret — two of the three directions are the same value, which collapses the per-direction separation the roots exist for. Generate each direction separately with `openssl rand -base64 32`.'
+                )
+              : {
+                  edgeToJobs: jobsEdgeToJobsRoot
+                  jobsToEdge: jobsJobsToEdgeRoot
+                  portalToJobs: jobsPortalToJobsRoot
+                })
+  : {
+      edgeToJobs: ''
+      jobsToEdge: ''
+      portalToJobs: ''
+    }
 
 module platformSecrets 'modules/kv-secrets.bicep' = {
   name: 'platform-secrets'
@@ -711,6 +813,11 @@ module platformSecrets 'modules/kv-secrets.bicep' = {
     edgeOidcPrivateKey: edgeOidcPrivateKey
     edgeOidcCertificate: edgeOidcCertificate
     edgeDevDatabaseUrl: devDbConn
+    jobsDatabaseUrl: jobsDbConn
+    jobsMigrateDatabaseUrl: jobsMigrateDbConn
+    jobsEdgeToJobsRoot: deployJobs ? jobsRoots.edgeToJobs : ''
+    jobsJobsToEdgeRoot: deployJobs ? jobsRoots.jobsToEdge : ''
+    jobsPortalToJobsRoot: deployJobs ? jobsRoots.portalToJobs : ''
     postgresAdminPassword: postgresAdminPassword
   }
   dependsOn: [
@@ -842,17 +949,18 @@ module egressCollector 'modules/otel-collector.bicep' = if (deployTelemetry && d
 // ---------------------------------------------------------------------------
 // Alerting
 // ---------------------------------------------------------------------------
-// Five modules, deliberately split by WHAT THEY READ rather than by what they
+// Six modules, deliberately split by WHAT THEY READ rather than by what they
 // are about, because that is what decides whether a rule can see a given
 // failure at all:
 //
 //   alerts.bicep             the platform's own telemetry (needs deployTelemetry)
+//   alerts-jobs.bicep        jobs health bodies via an in-environment relay (deployJobs; needs neither)
 //   alerts-availability.bicep  an outside probe (needs deployTelemetry: App Insights)
 //   alerts-infra.bicep       Azure platform metrics (needs neither)
 //   alerts-cost.bicep        billing, platform-infra axis (needs neither, not about health)
 //   alerts-cost-foundry.bicep  billing, LLM axis (deployFoundry only; own group, own budget)
 //
-// The first three notify through ONE action group. `alertEmails` empty means no
+// The first four notify through ONE action group. `alertEmails` empty means no
 // group is created at all: the rules still deploy and still fire, into nothing —
 // the state that looks like coverage, which the `alertsNotify` output exists to
 // report.
@@ -881,6 +989,39 @@ module alerts 'modules/alerts.bicep' = if (deployAlerts && deployApps) {
     actionGroupId: actionGroupId
     includeMetricRule: deployTelemetry
     registryStalenessThresholdMs: registryStalenessThresholdMs
+  }
+}
+
+// The jobs plane's health bodies, read from inside the apps environment by a
+// scheduled relay (modules/alerts-jobs.bicep): the jobs app and, by default,
+// the portal have internal ingress, so the outside probe below cannot read
+// them. One target per configured jobs server, reusing the endpoint the edge
+// and the portal already forward to, plus the portal for lifecycle delivery.
+var jobsHealthTargets = concat(
+  map(items(jobsServers), e => {
+    kind: 'jobs'
+    target: e.key
+    url: '${e.value.endpoint}/health'
+  }),
+  [
+    {
+      kind: 'portal'
+      target: 'portal'
+      url: 'https://${portalApp.?outputs.fqdn ?? ''}/health'
+    }
+  ]
+)
+
+module jobsAlerts 'modules/alerts-jobs.bicep' = if (deployAlerts && deployApps && deployJobs) {
+  name: 'platform-jobs-alerts'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    workspaceId: appsEnv.outputs.logAnalyticsWorkspaceId
+    acaEnvId: appsEnv.outputs.environmentId
+    image: '${imageRegistry}/helix-jobs:${imageTag}'
+    targets: jobsHealthTargets
+    actionGroupId: actionGroupId
   }
 }
 
@@ -927,16 +1068,17 @@ module availability 'modules/alerts-availability.bicep' = if (deployAvailability
   }
 }
 
-// Every container app that should never be crash-looping. The dev-gateway joins
-// only when it is deployed; a metric alert cannot scope a resource that does not
-// exist.
+// Every container app that should never be crash-looping. The dev-gateway and
+// the jobs app join only when they are deployed; a metric alert cannot scope a
+// resource that does not exist.
 var watchedContainerAppIds = concat(
   [
     edgeApp!.outputs.appId
     portalApp!.outputs.appId
     egressApp!.outputs.appId
   ],
-  deployDevGateway ? [devGatewayApp!.outputs.appId] : []
+  deployDevGateway ? [devGatewayApp!.outputs.appId] : [],
+  deployJobs ? [jobsApp!.outputs.appId] : []
 )
 
 module infraAlerts 'modules/alerts-infra.bicep' = if (deployInfraAlerts && deployApps) {
@@ -1152,105 +1294,116 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
           }
         ]
       : []
-    secretValues: {
-      'edge-database-url': {
-        keyVaultUrl: '${platformSecretsUri}edge-database-url'
-        identity: identity.outputs.edgeIdentityId
-      }
-      'edge-oidc-private-key': {
-        keyVaultUrl: '${platformSecretsUri}edge-oidc-private-key'
-        identity: identity.outputs.edgeIdentityId
-      }
-      'edge-oidc-certificate': {
-        keyVaultUrl: '${platformSecretsUri}edge-oidc-certificate'
-        identity: identity.outputs.edgeIdentityId
-      }
-      'edge-auth-secret': {
-        keyVaultUrl: '${platformSecretsUri}edge-auth-secret'
-        identity: identity.outputs.edgeIdentityId
-      }
-      'helix-instruction-secret': {
-        keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
-        identity: identity.outputs.edgeIdentityId
-      }
-      // ADR-0003: the edge mints edge->portal internal tokens.
-      'helix-internal-secret': {
-        keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
-        identity: identity.outputs.edgeIdentityId
-      }
-    }
-    envVars: [
-      { name: 'NODE_ENV', value: 'production' }
-      { name: 'LOG_LEVEL', value: logLevel }
-      // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
-      // leaves `startTelemetry` inert — the platform's documented default state,
-      // not a broken one.
+    secretValues: union(
       {
-        name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
-        value: deployTelemetry ? appsCollector!.outputs.otlpEndpoint : ''
-      }
-      { name: 'PORT', value: '8080' }
-      { name: 'HOST', value: '0.0.0.0' }
-      // The port the edge LISTENS on (PORT, above) is not the port the world
-      // reaches it on: ACA's ingress terminates TLS at 443 and forwards to 8080.
-      // publicOrigin() builds every externally visible URL from publicPort and
-      // omits it only when it is 443 — and publicPort falls back to PORT — so
-      // without this the edge advertises `https://auth.<domain>:8080/callback`,
-      // which fails Entra's redirect-URI match (AADSTS50011) and, more quietly,
-      // breaks the per-app Origin check in auth/validate.ts for every app.
-      { name: 'EDGE_PUBLIC_PORT', value: '443' }
-      { name: 'EDGE_BASE_DOMAIN', value: appsDomain }
-      { name: 'BLOB_CONTAINER', value: blobContainerName }
-      // Blob reads via managed identity (issue #15) — no account key. AZURE_CLIENT_ID
-      // selects the user-assigned identity for the AAD token fetch; IDENTITY_ENDPOINT/
-      // IDENTITY_HEADER are injected by Container Apps.
-      { name: 'AZURE_CLIENT_ID', value: identity.outputs.edgeIdentityClientId }
-      { name: 'AZURE_STORAGE_BLOB_ENDPOINT', value: storage.outputs.blobEndpoint }
-      { name: 'EDGE_OIDC_ISSUER', value: oidcIssuer }
-      { name: 'EDGE_OIDC_CLIENT_ID', value: edgeOidcClientId }
-      // Security groups (the `groups` claim), NOT App Roles — ADR-0040 decision 1.
-      // Pairs with `groupMembershipClaims: 'SecurityGroup'` on the edge registration
-      // (../entra/main.bicep): change both or neither. While this said `roles` and
-      // that registration declared no app roles, the claim was empty for every user,
-      // so `visibility: group` denied 100% of them — the app's owner included.
-      // Redundant with the code default (apps/edge/src/config.ts) and kept explicit
-      // anyway: an empty group claim fails silently, and this is the line you grep
-      // for when it does.
-      { name: 'EDGE_OIDC_GROUPS_CLAIM', value: 'groups' }
-      { name: 'EDGE_OIDC_SCOPES', value: 'openid profile email' }
-      // Operator visibility policy — the serving half of the pair (the portal
-      // holds the authoring half). The app parses these STRICTLY (`=== "true"`),
-      // and ARM's string(bool) yields 'True' — which would silently read as
-      // false — so emit the lowercase literal explicitly. Same reason
-      // EDGE_ALLOW_DEV_MODE below is a literal.
-      { name: 'EDGE_ALLOW_PUBLIC_APPS', value: allowPublicApps ? 'true' : 'false' }
-      { name: 'EDGE_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
-      // LLM upstreams (ADR-0046): first-party by default, the Foundry account
-      // when deployFoundry is set, or a BYO endpoint via the llm* params.
-      { name: 'EDGE_LLM_ENDPOINT', value: llm.anthropicEndpoint }
-      { name: 'EDGE_LLM_ANTHROPIC_PATH', value: llm.anthropicPath }
-      { name: 'EDGE_LLM_ANTHROPIC_CONNECTION', value: llm.anthropicConnection }
-      { name: 'EDGE_LLM_OPENAI_ENDPOINT', value: llm.openaiEndpoint }
-      { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
-      { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
-      // Behind ACA's Envoy ingress the socket peer is the ingress, so the
-      // per-IP anon rate limiter and the password-login throttle need the
-      // ingress address named to recover the real client IP (issue #13). See
-      // edgeTrustProxy / effectiveEdgeTrustProxy.
-      { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
-      { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
-      { name: 'EDGE_FETCH_MAX_BODY_BYTES', value: fetchMaxBodyBytes }
-      // The /connections/* proxy and both consent surfaces
-      // consult the portal over this base; unset they answer fail-closed 503.
-      { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
-      { name: 'EDGE_DATABASE_URL', secretRef: 'edge-database-url' }
-      // Certificate (private_key_jwt) client auth — the tenant blocks secrets.
-      { name: 'EDGE_OIDC_CLIENT_PRIVATE_KEY', secretRef: 'edge-oidc-private-key' }
-      { name: 'EDGE_OIDC_CLIENT_CERTIFICATE', secretRef: 'edge-oidc-certificate' }
-      { name: 'EDGE_AUTH_SECRET', secretRef: 'edge-auth-secret' }
-      { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
-      { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
-    ]
+        'edge-database-url': {
+          keyVaultUrl: '${platformSecretsUri}edge-database-url'
+          identity: identity.outputs.edgeIdentityId
+        }
+        'edge-oidc-private-key': {
+          keyVaultUrl: '${platformSecretsUri}edge-oidc-private-key'
+          identity: identity.outputs.edgeIdentityId
+        }
+        'edge-oidc-certificate': {
+          keyVaultUrl: '${platformSecretsUri}edge-oidc-certificate'
+          identity: identity.outputs.edgeIdentityId
+        }
+        'edge-auth-secret': {
+          keyVaultUrl: '${platformSecretsUri}edge-auth-secret'
+          identity: identity.outputs.edgeIdentityId
+        }
+        'helix-instruction-secret': {
+          keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
+          identity: identity.outputs.edgeIdentityId
+        }
+        // ADR-0003: the edge mints edge->portal internal tokens.
+        'helix-internal-secret': {
+          keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
+          identity: identity.outputs.edgeIdentityId
+        }
+      },
+      // The jobs wire-up: the jobs endpoint + the two edge hop roots this app
+      // mints/verifies with — never the portal root, never a database URL.
+      // Composed by this template from the root params, so the secret is an
+      // inline value, not a Key Vault reference.
+      deployJobs ? { 'jobs-config': { value: edgeJobsConfig } } : {}
+    )
+    envVars: concat(
+      [
+        { name: 'NODE_ENV', value: 'production' }
+        { name: 'LOG_LEVEL', value: logLevel }
+        // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
+        // leaves `startTelemetry` inert — the platform's documented default state,
+        // not a broken one.
+        {
+          name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
+          value: deployTelemetry ? appsCollector!.outputs.otlpEndpoint : ''
+        }
+        { name: 'PORT', value: '8080' }
+        { name: 'HOST', value: '0.0.0.0' }
+        // The port the edge LISTENS on (PORT, above) is not the port the world
+        // reaches it on: ACA's ingress terminates TLS at 443 and forwards to 8080.
+        // publicOrigin() builds every externally visible URL from publicPort and
+        // omits it only when it is 443 — and publicPort falls back to PORT — so
+        // without this the edge advertises `https://auth.<domain>:8080/callback`,
+        // which fails Entra's redirect-URI match (AADSTS50011) and, more quietly,
+        // breaks the per-app Origin check in auth/validate.ts for every app.
+        { name: 'EDGE_PUBLIC_PORT', value: '443' }
+        { name: 'EDGE_BASE_DOMAIN', value: appsDomain }
+        { name: 'BLOB_CONTAINER', value: blobContainerName }
+        // Blob reads via managed identity (issue #15) — no account key. AZURE_CLIENT_ID
+        // selects the user-assigned identity for the AAD token fetch; IDENTITY_ENDPOINT/
+        // IDENTITY_HEADER are injected by Container Apps.
+        { name: 'AZURE_CLIENT_ID', value: identity.outputs.edgeIdentityClientId }
+        { name: 'AZURE_STORAGE_BLOB_ENDPOINT', value: storage.outputs.blobEndpoint }
+        { name: 'EDGE_OIDC_ISSUER', value: oidcIssuer }
+        { name: 'EDGE_OIDC_CLIENT_ID', value: edgeOidcClientId }
+        // Security groups (the `groups` claim), NOT App Roles — ADR-0040 decision 1.
+        // Pairs with `groupMembershipClaims: 'SecurityGroup'` on the edge registration
+        // (../entra/main.bicep): change both or neither. While this said `roles` and
+        // that registration declared no app roles, the claim was empty for every user,
+        // so `visibility: group` denied 100% of them — the app's owner included.
+        // Redundant with the code default (apps/edge/src/config.ts) and kept explicit
+        // anyway: an empty group claim fails silently, and this is the line you grep
+        // for when it does.
+        { name: 'EDGE_OIDC_GROUPS_CLAIM', value: 'groups' }
+        { name: 'EDGE_OIDC_SCOPES', value: 'openid profile email' }
+        // Operator visibility policy — the serving half of the pair (the portal
+        // holds the authoring half). The app parses these STRICTLY (`=== "true"`),
+        // and ARM's string(bool) yields 'True' — which would silently read as
+        // false — so emit the lowercase literal explicitly. Same reason
+        // EDGE_ALLOW_DEV_MODE below is a literal.
+        { name: 'EDGE_ALLOW_PUBLIC_APPS', value: allowPublicApps ? 'true' : 'false' }
+        { name: 'EDGE_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
+        // LLM upstreams (ADR-0046): first-party by default, the Foundry account
+        // when deployFoundry is set, or a BYO endpoint via the llm* params.
+        { name: 'EDGE_LLM_ENDPOINT', value: llm.anthropicEndpoint }
+        { name: 'EDGE_LLM_ANTHROPIC_PATH', value: llm.anthropicPath }
+        { name: 'EDGE_LLM_ANTHROPIC_CONNECTION', value: llm.anthropicConnection }
+        { name: 'EDGE_LLM_OPENAI_ENDPOINT', value: llm.openaiEndpoint }
+        { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
+        { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
+        // Behind ACA's Envoy ingress the socket peer is the ingress, so the
+        // per-IP anon rate limiter and the password-login throttle need the
+        // ingress address named to recover the real client IP (issue #13). See
+        // edgeTrustProxy / effectiveEdgeTrustProxy.
+        { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
+        { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
+        { name: 'EDGE_FETCH_MAX_BODY_BYTES', value: fetchMaxBodyBytes }
+        // The /connections/* proxy and both consent surfaces
+        // consult the portal over this base; unset they answer fail-closed 503.
+        { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
+        { name: 'EDGE_DATABASE_URL', secretRef: 'edge-database-url' }
+        // Certificate (private_key_jwt) client auth — the tenant blocks secrets.
+        { name: 'EDGE_OIDC_CLIENT_PRIVATE_KEY', secretRef: 'edge-oidc-private-key' }
+        { name: 'EDGE_OIDC_CLIENT_CERTIFICATE', secretRef: 'edge-oidc-certificate' }
+        { name: 'EDGE_AUTH_SECRET', secretRef: 'edge-auth-secret' }
+        { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
+        { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
+      ],
+      // EDGE_JOBS_CONFIG — the jobs document in the secret above.
+      deployJobs ? [{ name: 'EDGE_JOBS_CONFIG', secretRef: 'jobs-config' }] : []
+    )
   }
   dependsOn: [
     rbac
@@ -1280,89 +1433,105 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
           }
         ]
       : []
-    secretValues: {
-      'portal-database-url': {
-        keyVaultUrl: '${platformSecretsUri}portal-database-url'
-        identity: identity.outputs.portalIdentityId
-      }
-      'portal-secret': {
-        keyVaultUrl: '${platformSecretsUri}portal-secret'
-        identity: identity.outputs.portalIdentityId
-      }
-      // ADR-0003: the portal verifies edge->portal internal tokens and mints
-      // portal->egress exchange tokens, so it holds both bilateral keys.
-      'helix-internal-secret': {
-        keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
-        identity: identity.outputs.portalIdentityId
-      }
-      'helix-exchange-secret': {
-        keyVaultUrl: '${platformSecretsUri}helix-exchange-secret'
-        identity: identity.outputs.portalIdentityId
-      }
-    }
-    envVars: [
-      { name: 'NODE_ENV', value: 'production' }
-      { name: 'LOG_LEVEL', value: logLevel }
-      // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
-      // leaves `startTelemetry` inert — the platform's documented default state,
-      // not a broken one.
+    secretValues: union(
       {
-        name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
-        value: deployTelemetry ? appsCollector!.outputs.otlpEndpoint : ''
-      }
-      { name: 'PORTAL_PORT', value: '3001' }
-      { name: 'HOST', value: '0.0.0.0' }
-      { name: 'BLOB_CONTAINER', value: blobContainerName }
-      // Blob writes via managed identity (issue #15) — no account key. AZURE_CLIENT_ID
-      // selects the user-assigned identity for DefaultAzureCredential.
-      { name: 'AZURE_CLIENT_ID', value: identity.outputs.portalIdentityClientId }
-      { name: 'AZURE_STORAGE_BLOB_ENDPOINT', value: storage.outputs.blobEndpoint }
-      { name: 'PORTAL_OIDC_ISSUER', value: oidcIssuer }
-      { name: 'PORTAL_OIDC_AUDIENCE', value: portalOidcAudience }
-      { name: 'PORTAL_ADMIN_GROUP_ID', value: portalAdminGroupId }
-      { name: 'AZX_CLI_CLIENT_ID', value: azxCliClientId }
-      { name: 'AZX_WEB_CLIENT_ID', value: azxWebClientId }
-      // Operator visibility policy — the authoring half of the pair (the edge
-      // holds the serving half). visibilityPolicy.ts parses strictly `=== "true"`,
-      // so emit the lowercase literal, NOT string(bool) — ARM renders that as
-      // 'True', which reads as false.
-      { name: 'PORTAL_ALLOW_PUBLIC_APPS', value: allowPublicApps ? 'true' : 'false' }
-      { name: 'PORTAL_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
-      // Repo-backed deploys (ADR-0051). Lowercase literals for the same reason as
-      // the visibility pair; the portal refuses any other value at boot.
-      { name: 'PORTAL_REPO_DEPLOY_ENABLED', value: repoDeployEnabled ? 'true' : 'false' }
-      { name: 'PORTAL_GITHUB_OIDC_ISSUER', value: githubOidcIssuer }
-      // Servable-model policy (ADR-0047) — semantics on the llmModel* params.
-      // The portal parses an empty/whitespace string as "unset", which is what
-      // makes the foundryModels auto-derivation skippable by an explicit list.
-      { name: 'PORTAL_LLM_MODEL_ALLOWLIST', value: join(effectiveModelAllowlist, ',') }
-      { name: 'PORTAL_LLM_MODEL_BLOCKLIST', value: join(llmModelBlocklist, ',') }
-      // Deployment topology, served to the prebuilt portal SPA at runtime by
-      // GET /api/v1/config — the bundle is baked into this image, so anything it
-      // burned in at build time would be wrong in every environment but one.
-      { name: 'APP_PUBLIC_BASE', value: 'https://${appsDomain}' }
-      // Empty when the opt-in dev gateway isn't deployed; the portal reads that
-      // as "not enabled" and the SPA hides the dev-mode API base accordingly.
-      {
-        name: 'DEV_API_PUBLIC_BASE'
-        value: deployDevGateway ? 'https://dev-api.${appsDomain}' : ''
-      }
-      { name: 'PLATFORM_MONTHLY_USD_CAP', value: string(platformMonthlyUsdCap) }
-      { name: 'DEPLOY_MAX_FILE_MB', value: string(deployMaxFileMb) }
-      { name: 'DEPLOY_MAX_BUNDLE_MB', value: string(deployMaxBundleMb) }
-      { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
-      // The OAuth callback delegates the vendor code
-      // exchange to egress over this base. Read at boot; unset would leave the
-      // delegation unwired and the completion route refusing.
-      { name: 'PORTAL_EGRESS_URL', value: egressBaseUrl }
-      // helix_portal DSN. The portal runtime reads PORTAL_DATABASE_URL and (in
-      // production) refuses the DATABASE_URL owner fallback (ADR-0002,
-      // resolvePortalRuntimeUrl). Migrations run as the admin out-of-band.
-      { name: 'PORTAL_DATABASE_URL', secretRef: 'portal-database-url' }
-      { name: 'PORTAL_SECRET', secretRef: 'portal-secret' }
-      { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
-      { name: 'HELIX_EXCHANGE_SECRET', secretRef: 'helix-exchange-secret' }
-    ]
+        'portal-database-url': {
+          keyVaultUrl: '${platformSecretsUri}portal-database-url'
+          identity: identity.outputs.portalIdentityId
+        }
+        'portal-secret': {
+          keyVaultUrl: '${platformSecretsUri}portal-secret'
+          identity: identity.outputs.portalIdentityId
+        }
+        // ADR-0003: the portal verifies edge->portal internal tokens and mints
+        // portal->egress exchange tokens, so it holds both bilateral keys.
+        'helix-internal-secret': {
+          keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
+          identity: identity.outputs.portalIdentityId
+        }
+        'helix-exchange-secret': {
+          keyVaultUrl: '${platformSecretsUri}helix-exchange-secret'
+          identity: identity.outputs.portalIdentityId
+        }
+      },
+      // The jobs wire-up: the jobs endpoint + the portal delivery root this app
+      // mints jobs instructions with, plus the credential-free catalogue
+      // separately — never an edge hop root, never a database URL.
+      deployJobs ? { 'jobs-config': { value: portalJobsConfig } } : {}
+    )
+    envVars: concat(
+      [
+        { name: 'NODE_ENV', value: 'production' }
+        { name: 'LOG_LEVEL', value: logLevel }
+        // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
+        // leaves `startTelemetry` inert — the platform's documented default state,
+        // not a broken one.
+        {
+          name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
+          value: deployTelemetry ? appsCollector!.outputs.otlpEndpoint : ''
+        }
+        { name: 'PORTAL_PORT', value: '3001' }
+        { name: 'HOST', value: '0.0.0.0' }
+        { name: 'BLOB_CONTAINER', value: blobContainerName }
+        // Blob writes via managed identity (issue #15) — no account key. AZURE_CLIENT_ID
+        // selects the user-assigned identity for DefaultAzureCredential.
+        { name: 'AZURE_CLIENT_ID', value: identity.outputs.portalIdentityClientId }
+        { name: 'AZURE_STORAGE_BLOB_ENDPOINT', value: storage.outputs.blobEndpoint }
+        { name: 'PORTAL_OIDC_ISSUER', value: oidcIssuer }
+        { name: 'PORTAL_OIDC_AUDIENCE', value: portalOidcAudience }
+        { name: 'PORTAL_ADMIN_GROUP_ID', value: portalAdminGroupId }
+        { name: 'AZX_CLI_CLIENT_ID', value: azxCliClientId }
+        { name: 'AZX_WEB_CLIENT_ID', value: azxWebClientId }
+        // Operator visibility policy — the authoring half of the pair (the edge
+        // holds the serving half). visibilityPolicy.ts parses strictly `=== "true"`,
+        // so emit the lowercase literal, NOT string(bool) — ARM renders that as
+        // 'True', which reads as false.
+        { name: 'PORTAL_ALLOW_PUBLIC_APPS', value: allowPublicApps ? 'true' : 'false' }
+        { name: 'PORTAL_ALLOW_PASSWORD_APPS', value: allowPasswordApps ? 'true' : 'false' }
+        // Repo-backed deploys (ADR-0051). Lowercase literals for the same reason as
+        // the visibility pair; the portal refuses any other value at boot.
+        { name: 'PORTAL_REPO_DEPLOY_ENABLED', value: repoDeployEnabled ? 'true' : 'false' }
+        { name: 'PORTAL_GITHUB_OIDC_ISSUER', value: githubOidcIssuer }
+        // Servable-model policy (ADR-0047) — semantics on the llmModel* params.
+        // The portal parses an empty/whitespace string as "unset", which is what
+        // makes the foundryModels auto-derivation skippable by an explicit list.
+        { name: 'PORTAL_LLM_MODEL_ALLOWLIST', value: join(effectiveModelAllowlist, ',') }
+        { name: 'PORTAL_LLM_MODEL_BLOCKLIST', value: join(llmModelBlocklist, ',') }
+        // Deployment topology, served to the prebuilt portal SPA at runtime by
+        // GET /api/v1/config — the bundle is baked into this image, so anything it
+        // burned in at build time would be wrong in every environment but one.
+        { name: 'APP_PUBLIC_BASE', value: 'https://${appsDomain}' }
+        // Empty when the opt-in dev gateway isn't deployed; the portal reads that
+        // as "not enabled" and the SPA hides the dev-mode API base accordingly.
+        {
+          name: 'DEV_API_PUBLIC_BASE'
+          value: deployDevGateway ? 'https://dev-api.${appsDomain}' : ''
+        }
+        { name: 'PLATFORM_MONTHLY_USD_CAP', value: string(platformMonthlyUsdCap) }
+        { name: 'DEPLOY_MAX_FILE_MB', value: string(deployMaxFileMb) }
+        { name: 'DEPLOY_MAX_BUNDLE_MB', value: string(deployMaxBundleMb) }
+        { name: 'AZURE_KEY_VAULT_URL', value: connectionsVaultUri }
+        // The OAuth callback delegates the vendor code
+        // exchange to egress over this base. Read at boot; unset would leave the
+        // delegation unwired and the completion route refusing.
+        { name: 'PORTAL_EGRESS_URL', value: egressBaseUrl }
+        // helix_portal DSN. The portal runtime reads PORTAL_DATABASE_URL and (in
+        // production) refuses the DATABASE_URL owner fallback (ADR-0002,
+        // resolvePortalRuntimeUrl). Migrations run as the admin out-of-band.
+        { name: 'PORTAL_DATABASE_URL', secretRef: 'portal-database-url' }
+        { name: 'PORTAL_SECRET', secretRef: 'portal-secret' }
+        { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
+        { name: 'HELIX_EXCHANGE_SECRET', secretRef: 'helix-exchange-secret' }
+      ],
+      // PORTAL_JOBS_CONFIG — the jobs document in the secret above, and the
+      // credential-free catalogue (serving state + types) as a plain value.
+      deployJobs
+        ? [
+            { name: 'PORTAL_JOBS_CONFIG', secretRef: 'jobs-config' }
+            { name: 'PORTAL_JOBS_CATALOGUE', value: portalJobsCatalogue }
+          ]
+        : []
+    )
   }
   dependsOn: [
     rbac
@@ -1389,7 +1558,7 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
   name: 'app-dev-gateway'
   params: {
     location: location
-    name: '${namePrefix}-dev-gateway'
+    name: devGatewayAppName
     environmentId: appsEnv.outputs.environmentId
     userAssignedIdentityId: identity.outputs.devIdentityId
     image: '${imageRegistry}/helix-edge:${imageTag}'
@@ -1408,22 +1577,207 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
           }
         ]
       : []
+    secretValues: union(
+      {
+        'edge-dev-database-url': {
+          keyVaultUrl: '${platformSecretsUri}edge-dev-database-url'
+          identity: identity.outputs.devIdentityId
+        }
+        'helix-instruction-secret': {
+          keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
+          identity: identity.outputs.devIdentityId
+        }
+        // Same keys the edge image holds (it IS the edge image): the instruction
+        // key and the edge->portal internal key — never the portal<->egress
+        // exchange key, which the dev-gateway has no half of.
+        'helix-internal-secret': {
+          keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
+          identity: identity.outputs.devIdentityId
+        }
+      },
+      // The jobs wire-up — the same document the edge gets: the jobs endpoint +
+      // the two edge hop roots, never the portal root or a database URL.
+      deployJobs ? { 'jobs-config': { value: edgeJobsConfig } } : {}
+    )
+    envVars: concat(
+      [
+        { name: 'NODE_ENV', value: 'production' }
+        { name: 'LOG_LEVEL', value: logLevel }
+        // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
+        // leaves `startTelemetry` inert — the platform's documented default state,
+        // not a broken one.
+        {
+          name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
+          value: deployTelemetry ? appsCollector!.outputs.otlpEndpoint : ''
+        }
+        { name: 'HOST', value: '0.0.0.0' }
+        { name: 'EDGE_DEV_GATEWAY_PORT', value: '8082' }
+        // The per-plane opt-in; the dev-gateway entrypoint exits unless this is true.
+        { name: 'EDGE_ALLOW_DEV_MODE', value: 'true' }
+        { name: 'EDGE_BASE_DOMAIN', value: appsDomain }
+        // Same LLM upstream wiring as the edge (ADR-0046).
+        { name: 'EDGE_LLM_ENDPOINT', value: llm.anthropicEndpoint }
+        { name: 'EDGE_LLM_ANTHROPIC_PATH', value: llm.anthropicPath }
+        { name: 'EDGE_LLM_ANTHROPIC_CONNECTION', value: llm.anthropicConnection }
+        { name: 'EDGE_LLM_OPENAI_ENDPOINT', value: llm.openaiEndpoint }
+        { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
+        { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
+        { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
+        { name: 'EDGE_FETCH_MAX_BODY_BYTES', value: fetchMaxBodyBytes }
+        // The dev-gateway's consent surface consults the portal
+        // over this base, same as the edge.
+        { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
+        // Inherits the same trust-proxy residual as the edge (dev-mode §5.4): the
+        // dev throttle keys on the real client IP behind ingress too.
+        { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
+        // The one DSN it holds — the least-privilege helix_dev role.
+        { name: 'EDGE_DEV_DATABASE_URL', secretRef: 'edge-dev-database-url' }
+        { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
+        { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
+      ],
+      // EDGE_JOBS_CONFIG — the jobs document in the secret above.
+      deployJobs ? [{ name: 'EDGE_JOBS_CONFIG', secretRef: 'jobs-config' }] : []
+    )
+  }
+  dependsOn: [
+    rbac
+    platformSecrets
+  ]
+}
+
+// ---------------------------------------------------------------------------
+// The one jobs server map, and its three consumer documents (ADR-0045)
+// ---------------------------------------------------------------------------
+// One map is the single source (the JobsDeploymentConfig shape in
+// packages/shared/src/jobsDeployment.ts); each consumer gets only its custody
+// subset (ADR-0008): the edge and the dev-gateway the two edge hop roots, the
+// portal the portal root and the credential-free catalogue, and the jobs
+// service its own three roots and its own DSN.
+
+var jobsAppName = '${namePrefix}-jobs'
+var devGatewayAppName = '${namePrefix}-dev-gateway'
+// The jobs endpoint is computed, not read off the jobs module's output: the
+// jobs app consumes the edge's and dev-gateway's outputs for its callbacks, so
+// feeding the jobs app's own output back into the edge would close a dependency
+// cycle. ACA's internal-ingress FQDN form is
+// <app>.internal.<environment default domain>.
+var jobsEndpoint = 'https://${jobsAppName}.internal.${appsEnv.outputs.defaultDomain}'
+
+// prod jobs call back to the edge; dev jobs to the dev-gateway. A dev
+// callback never falls back to the edge: with the dev surface off, the dev
+// destination is the dev-gateway's would-be host, which answers nothing, so a
+// dev-tier callback fails rather than reaching the production plane.
+var jobsEdgeProdCallbackUrl = 'https://${edgeApp.?outputs.fqdn ?? ''}'
+var jobsEdgeDevCallbackUrl = 'https://${devGatewayApp.?outputs.fqdn ?? '${devGatewayAppName}.${appsEnv.outputs.defaultDomain}'}'
+
+// The map entry the three consumer documents project from. It references no
+// container app's output: the edge, the dev-gateway and the portal consume
+// those documents, so a callback URL in here would make each app's wiring
+// depend on its own (or a peer's) output — the cycle described above.
+var jobsServerConfig = {
+  server: 'jobs'
+  endpoint: jobsEndpoint
+  state: jobsServerState
+  accepting: jobsServerState == 'serving' && jobsIntakeOpen
+  types: ['jobs:fetch']
+  databaseUrl: jobsDbConn
+  roots: jobsRoots
+}
+var jobsServers = deployJobs ? { jobs: jobsServerConfig } : {}
+
+var edgeJobsConfig = string({
+  servers: toObject(items(jobsServers), e => e.key, e => {
+    endpoint: e.value.endpoint
+    edgeToJobsRoot: e.value.roots.edgeToJobs
+    jobsToEdgeRoot: e.value.roots.jobsToEdge
+  })
+})
+var portalJobsConfig = string({
+  servers: toObject(items(jobsServers), e => e.key, e => {
+    endpoint: e.value.endpoint
+    portalToJobsRoot: e.value.roots.portalToJobs
+  })
+})
+var portalJobsCatalogue = string({
+  servers: toObject(items(jobsServers), e => e.key, e => {
+    state: e.value.state
+    types: e.value.types
+  })
+})
+
+// The full entry the jobs service itself runs from: the config above plus its
+// two callback destinations, which no other consumer's document carries.
+var jobsServer = union(jobsServerConfig, {
+  edgeProdCallbackUrl: jobsEdgeProdCallbackUrl
+  edgeDevCallbackUrl: jobsEdgeDevCallbackUrl
+})
+
+module jobsApp 'modules/containerapp.bicep' = if (deployApps && deployJobs) {
+  name: 'app-jobs'
+  params: {
+    location: location
+    name: jobsAppName
+    environmentId: appsEnv.outputs.environmentId
+    // No identity: the jobs service holds no Azure credential and no Key
+    // Vault data-plane access (ADR-0008). The image pulls anonymously from
+    // public GHCR; every secret below is an inline value.
+    image: '${imageRegistry}/helix-jobs:${imageTag}'
+    targetPort: 3003
+    // Environment-scoped internal ingress: reachable from the edge, the
+    // dev-gateway and the portal in this environment, never from the public LB.
+    // This is the apps environment's network posture, not a jobs-only sandbox:
+    // jobs inherits the apps subnet's outbound allowances.
+    external: false
+    // The rollout envelope (design §6): one replica, and with a Single-revision
+    // rollout at most two worker processes while revisions overlap.
+    minReplicas: 1
+    maxReplicas: 1
+    // /health answers 200 in every state — the body carries the degradation (a
+    // storage outage, an incompatible schema, a stopped worker) — so these
+    // probes only detect a process that stopped answering, and never restart a
+    // replica that is reporting a degraded store; the body-aware alerting
+    // reads the degradation.
+    probes: [
+      {
+        type: 'Startup'
+        httpGet: {
+          path: '/health'
+          port: 3003
+          scheme: 'HTTP'
+        }
+        initialDelaySeconds: 1
+        periodSeconds: 5
+        timeoutSeconds: 3
+        failureThreshold: 24
+      }
+      {
+        type: 'Liveness'
+        httpGet: {
+          path: '/health'
+          port: 3003
+          scheme: 'HTTP'
+        }
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+      }
+      {
+        type: 'Readiness'
+        httpGet: {
+          path: '/health'
+          port: 3003
+          scheme: 'HTTP'
+        }
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+      }
+    ]
     secretValues: {
-      'edge-dev-database-url': {
-        keyVaultUrl: '${platformSecretsUri}edge-dev-database-url'
-        identity: identity.outputs.devIdentityId
-      }
-      'helix-instruction-secret': {
-        keyVaultUrl: '${platformSecretsUri}helix-instruction-secret'
-        identity: identity.outputs.devIdentityId
-      }
-      // Same keys the edge image holds (it IS the edge image): the instruction
-      // key and the edge->portal internal key — never the portal<->egress
-      // exchange key, which the dev-gateway has no half of.
-      'helix-internal-secret': {
-        keyVaultUrl: '${platformSecretsUri}helix-internal-secret'
-        identity: identity.outputs.devIdentityId
-      }
+      'jobs-database-url': { value: jobsServer.databaseUrl }
+      'jobs-edge-to-jobs-root': { value: jobsServer.roots.edgeToJobs }
+      'jobs-jobs-to-edge-root': { value: jobsServer.roots.jobsToEdge }
+      'jobs-portal-to-jobs-root': { value: jobsServer.roots.portalToJobs }
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
@@ -1435,36 +1789,21 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
         name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
         value: deployTelemetry ? appsCollector!.outputs.otlpEndpoint : ''
       }
+      { name: 'JOBS_PORT', value: '3003' }
       { name: 'HOST', value: '0.0.0.0' }
-      { name: 'EDGE_DEV_GATEWAY_PORT', value: '8082' }
-      // The per-plane opt-in; the dev-gateway entrypoint exits unless this is true.
-      { name: 'EDGE_ALLOW_DEV_MODE', value: 'true' }
-      { name: 'EDGE_BASE_DOMAIN', value: appsDomain }
-      // Same LLM upstream wiring as the edge (ADR-0046).
-      { name: 'EDGE_LLM_ENDPOINT', value: llm.anthropicEndpoint }
-      { name: 'EDGE_LLM_ANTHROPIC_PATH', value: llm.anthropicPath }
-      { name: 'EDGE_LLM_ANTHROPIC_CONNECTION', value: llm.anthropicConnection }
-      { name: 'EDGE_LLM_OPENAI_ENDPOINT', value: llm.openaiEndpoint }
-      { name: 'EDGE_LLM_OPENAI_PATH', value: llm.openaiPath }
-      { name: 'EDGE_LLM_OPENAI_CONNECTION', value: llm.openaiConnection }
-      { name: 'EDGE_EGRESS_URL', value: egressBaseUrl }
-      { name: 'EDGE_FETCH_MAX_BODY_BYTES', value: fetchMaxBodyBytes }
-      // The dev-gateway's consent surface consults the portal
-      // over this base, same as the edge.
-      { name: 'EDGE_PORTAL_URL', value: portalBaseUrl }
-      // Inherits the same trust-proxy residual as the edge (dev-mode §5.4): the
-      // dev throttle keys on the real client IP behind ingress too.
-      { name: 'EDGE_TRUST_PROXY', value: effectiveEdgeTrustProxy }
-      // The one DSN it holds — the least-privilege helix_dev role.
-      { name: 'EDGE_DEV_DATABASE_URL', secretRef: 'edge-dev-database-url' }
-      { name: 'HELIX_INSTRUCTION_SECRET', secretRef: 'helix-instruction-secret' }
-      { name: 'HELIX_INTERNAL_SECRET', secretRef: 'helix-internal-secret' }
+      { name: 'JOBS_SERVER_ID', value: 'jobs' }
+      // config.ts parses JOBS_ACCEPTING strictly ("true" or "false", anything
+      // else fails boot), and ARM's string(bool) renders 'True'/'False' — so
+      // emit the lowercase literal, as for the visibility pair above.
+      { name: 'JOBS_ACCEPTING', value: jobsServerConfig.accepting ? 'true' : 'false' }
+      { name: 'JOBS_EDGE_PROD_URL', value: jobsServer.edgeProdCallbackUrl }
+      { name: 'JOBS_EDGE_DEV_URL', value: jobsServer.edgeDevCallbackUrl }
+      { name: 'JOBS_DATABASE_URL', secretRef: 'jobs-database-url' }
+      { name: 'JOBS_EDGE_TO_JOBS_SECRET', secretRef: 'jobs-edge-to-jobs-root' }
+      { name: 'JOBS_JOBS_TO_EDGE_SECRET', secretRef: 'jobs-jobs-to-edge-root' }
+      { name: 'JOBS_PORTAL_TO_JOBS_SECRET', secretRef: 'jobs-portal-to-jobs-root' }
     ]
   }
-  dependsOn: [
-    rbac
-    platformSecrets
-  ]
 }
 
 // ---------------------------------------------------------------------------
@@ -1507,7 +1846,7 @@ module certbot 'modules/certbot.bicep' = if (deployApps && deployCertbot && !emp
     portalAppName: portalExternal ? '${namePrefix}-portal' : ''
     // Likewise the dev-gateway on dev-api.<appsDomain> — its own external
     // ingress needs its own binding or it serves the ACA default cert.
-    devGatewayAppName: deployDevGateway ? '${namePrefix}-dev-gateway' : ''
+    devGatewayAppName: deployDevGateway ? devGatewayAppName : ''
     image: '${imageRegistry}/helix-certbot:${imageTag}'
     acmeEmail: acmeEmail
     acmeServer: acmeServer
@@ -1547,6 +1886,30 @@ module migrateJob 'modules/migrate-job.bicep' = if (deployApps) {
   ]
 }
 
+// The jobs database's own migration job (background-jobs design §8) — the
+// separately executed path that owns the jobs store's schema and policy,
+// running the helix-jobs image under the migration identity's DSN. Manual,
+// like the platform's: it never runs on its own. Gated on deployJobs so a
+// fully-disabled install omits it (and the two DSN secrets) entirely; the
+// jobs database itself is NOT gated — an apply can never delete the store.
+// The migration DSN lives in kv-platform only when this gate is on, so the
+// job depends on platformSecrets the same way the platform's job does.
+module jobsMigrateJob 'modules/jobs-migrate-job.bicep' = if (deployApps && deployJobs) {
+  name: 'jobs-migrate-job'
+  params: {
+    location: location
+    namePrefix: namePrefix
+    acaEnvId: appsEnv.outputs.environmentId
+    platformVaultName: keyvault.outputs.platformVaultName
+    platformVaultUri: keyvault.outputs.platformVaultUri
+    image: '${imageRegistry}/helix-jobs:${imageTag}'
+  }
+  dependsOn: [
+    // The DSN must be in the vault before the job could successfully run.
+    platformSecrets
+  ]
+}
+
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
@@ -1554,6 +1917,7 @@ module migrateJob 'modules/migrate-job.bicep' = if (deployApps) {
 output appsEnvStaticIp string = appsEnv.outputs.staticIp
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output migrateJobName string = migrateJob.?outputs.jobName ?? ''
+output jobsMigrateJobName string = jobsMigrateJob.?outputs.jobName ?? ''
 output connectionsVaultUri string = connectionsVaultUri
 output delegatedVaultUri string = delegatedVaultUri
 output dnsNameServers array = dns.outputs.nameServers
@@ -1561,6 +1925,10 @@ output edgeFqdn string = edgeApp.?outputs.fqdn ?? ''
 output egressFqdn string = egressApp.?outputs.fqdn ?? ''
 output portalFqdn string = portalApp.?outputs.fqdn ?? ''
 output devGatewayFqdn string = devGatewayApp.?outputs.fqdn ?? ''
+output jobsFqdn string = jobsApp.?outputs.fqdn ?? ''
+
+@description('The jobs endpoint the edge and the portal are configured with (EDGE_JOBS_CONFIG / PORTAL_JOBS_CONFIG), or empty when the plane is not deployed. Computed in-template rather than read off the jobs app, so after an apply it must equal `https://` + jobsFqdn — the edge\'s `jobs_reachability` health check reports a mismatch as unreachable.')
+output jobsEndpoint string = deployApps && deployJobs ? jobsEndpoint : ''
 
 @description('False when alert rules deployed but reach nobody (alertEmails was empty) — the state that looks like coverage and is not. Read it after every deploy that touches alerting.')
 output alertsNotify bool = anyAlerting && !empty(alertEmails)

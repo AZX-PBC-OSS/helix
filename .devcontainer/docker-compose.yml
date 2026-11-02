@@ -192,14 +192,24 @@ services:
 
   db:
     image: postgres:18
+    # The integration suites run their scratch stores in parallel (each jobs
+    # suite composes a pg-boss instance plus several 2-connection pools, and
+    # the boot suites spawn whole service processes); the default 100-slot
+    # cluster peaks within a few connections of exhaustion and fails
+    # whichever suite asks for a slot at the peak ("remaining connection
+    # slots are reserved"). 300 holds the whole parallel run with headroom.
+    command: ["postgres", "-c", "max_connections=300"]
     environment:
       POSTGRES_USER: helix
       POSTGRES_PASSWORD: helix
       POSTGRES_DB: helix
     volumes:
       - pgdata:/var/lib/postgresql
-      # App-data design §2.1: create the helix_edge/helix_portal runtime roles on
-      # first init (empty data dir only). Recreate the pgdata volume to re-run.
+      # App-data design §2.1 + background-jobs design §8: create the runtime
+      # roles, the jobs database and the PUBLIC-CONNECT hardening on first init
+      # (empty data dir only). db-init/01-roles.sql is idempotent — an older
+      # volume is upgraded in place by re-running it:
+      #   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f .devcontainer/db-init/01-roles.sql
       - ./db-init:/docker-entrypoint-initdb.d:ro
     ports:
       # Randomized host port to avoid collisions with other local stacks.

@@ -158,22 +158,40 @@ describe("PgSessionStore as helix_edge (RLS-backed)", () => {
 
     // Seed an expired session in each app + a stale never-redeemed pending, as
     // the owner (the edge can't write another app's partition without its GUC).
+    // Each row gets a known id: what this test pins is that these rows —
+    // spanning both apps — are swept under the edge role, not how many rows a
+    // global sweep removes.
+    const expiredIds: string[] = [];
     for (const appId of [appA, appB]) {
+      const id = newSessionId();
+      expiredIds.push(id);
       await owner.query(
         `INSERT INTO sessions (id, "tokenHash", "appId", "userOid", "displayName", groups, "activatedAt", "refreshDueAt", "expiresAt")
-           VALUES (gen_random_uuid(), $1, $2, 'u', 'U', '[]'::jsonb, now(), now() - interval '2 day', now() - interval '2 day')`,
-        [`expired-${appId}`, appId],
+           VALUES ($1, $2, $3, 'u', 'U', '[]'::jsonb, now(), now() - interval '2 day', now() - interval '2 day')`,
+        [id, `expired-${appId}`, appId],
       );
     }
+    const pendingId = newSessionId();
     await owner.query(
       `INSERT INTO sessions (id, "appId", "userOid", "displayName", groups, "refreshDueAt", "expiresAt", "createdAt")
-         VALUES (gen_random_uuid(), $1, 'u', 'U', '[]'::jsonb, now() + interval '1 hour', now() + interval '1 hour', now() - interval '20 minutes')`,
-      [appA],
+         VALUES ($1, $2, 'u', 'U', '[]'::jsonb, now() + interval '1 hour', now() + interval '1 hour', now() - interval '20 minutes')`,
+      [pendingId, appA],
     );
 
-    const removed = await s.sweep();
-    // 2 expired + 1 stale pending.
-    expect(removed).toBeGreaterThanOrEqual(3);
+    await s.sweep();
+
+    // The sweep is deliberately global across apps, and the test database is
+    // shared with the sibling sessions file whose own sweep test runs
+    // concurrently — between seeding and sweeping, one of this same
+    // function's concurrent invocations may collect the rows first, so the
+    // global removed-count is not this test's observable (the sibling asserts
+    // by id for the same reason). The RLS claim is that every seeded row, in
+    // either app's partition, is gone — the edge role's sweep sees across
+    // apps — and the live session survives.
+    const seeded = await owner.query(`SELECT count(*)::int AS n FROM sessions WHERE id = ANY($1)`, [
+      [...expiredIds, pendingId],
+    ]);
+    expect((seeded.rows[0] as { n: number }).n).toBe(0);
 
     // The live session from the first test survives (counted as owner).
     const live = await owner.query(

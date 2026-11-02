@@ -280,9 +280,13 @@ describe("PgUsageStore", () => {
       await store.record({ ...base, outcome: "error" });
       await store.record({ ...base, outcome: "quota_blocked" });
       await store.record({ ...base, outcome: "forbidden" });
+      // A body known to be over the cap before minting: refused pre-egress.
+      await store.record({ ...base, outcome: "too_large", statusCode: 413 });
+      // A streamed upload that tripped the cap after egress was dialled.
+      await store.record({ ...base, outcome: "refusal", statusCode: 413 });
 
-      // ok + error count; quota_blocked + forbidden do not.
-      expect(await store.fetchRequestsToday(budgetAppId, "prod")).toBe(2);
+      // ok + error + the streamed 413 count; the three pre-egress refusals do not.
+      expect(await store.fetchRequestsToday(budgetAppId, "prod")).toBe(3);
     } finally {
       await pool.query(`DELETE FROM gateway_calls WHERE "appId" = $1`, [budgetAppId]);
     }

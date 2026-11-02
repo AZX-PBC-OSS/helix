@@ -41,7 +41,8 @@ param azxCliClientId = readEnvironmentVariable('HELIX_AZX_CLI_CLIENT_ID', '')
 param azxWebClientId = readEnvironmentVariable('HELIX_AZX_WEB_CLIENT_ID', '')
 
 // Phase gate. Leave false for the first apply (infra only), flip to true once the
-// three images are published to GHCR by CI (see README step 3).
+// images are published to GHCR (CI builds edge / portal / egress / certbot /
+// jobs — see README step 3).
 param deployApps = false
 // GHCR registry + owner for the CI-built images. Override for a fork.
 param imageRegistry = readEnvironmentVariable('HELIX_IMAGE_REGISTRY', 'ghcr.io/azx-pbc-oss')
@@ -51,6 +52,14 @@ param imageTag = readEnvironmentVariable('HELIX_IMAGE_TAG', 'latest')
 // (with deployApps) to stand up dev-api.<appsDomain>. Needs devDbPassword + the
 // helix_dev role (README step 4) and the pre-deploy riders in the feature doc.
 param deployDevGateway = false
+// Opt-in background-jobs plane (ADR-0045, README "Background jobs"). Off by
+// default; flip to true (with deployApps) to deploy it. Needs the jobs roles
+// (README step 4); the first true apply also needs the HELIX_JOBS_* passwords
+// and signing roots, and from then on the jobs az.getSecret() lines in
+// main.bicepparam. The apply refuses to run without them.
+param deployJobs = false
+// param jobsServerState = 'serving'   // 'retiring' withdraws the jobs types from new grants and closes intake (README "Background jobs")
+// param jobsIntakeOpen = true          // false closes intake on a serving server (README "Background jobs")
 
 // Egress firewall (ADR-0001/0005). true = deploy the Azure Firewall that enforces
 // the egress-only network zone (the PRIMARY SSRF/egress control). Secure default.
@@ -161,6 +170,16 @@ param edgeDbPassword = readEnvironmentVariable('HELIX_EDGE_DB_PASSWORD', '')
 param egressDbPassword = readEnvironmentVariable('HELIX_EGRESS_DB_PASSWORD', '')
 // helix_dev runtime role — only consumed when deployDevGateway=true.
 param devDbPassword = readEnvironmentVariable('HELIX_DEV_DB_PASSWORD', '')
+// The jobs plane's two identities — the runtime role, and the separate
+// migration identity, which is never installed in a runtime image
+// (background-jobs design §8). Only consumed when deployJobs=true.
+param jobsDbPassword = readEnvironmentVariable('HELIX_JOBS_DB_PASSWORD', '')
+param jobsMigrateDbPassword = readEnvironmentVariable('HELIX_JOBS_MIGRATE_DB_PASSWORD', '')
+// The jobs server's three directional signing roots — independently generated
+// (`openssl rand -base64 32` each); only consumed when deployJobs=true.
+param jobsEdgeToJobsRoot = readEnvironmentVariable('HELIX_JOBS_EDGE_TO_JOBS_ROOT', '')
+param jobsJobsToEdgeRoot = readEnvironmentVariable('HELIX_JOBS_JOBS_TO_EDGE_ROOT', '')
+param jobsPortalToJobsRoot = readEnvironmentVariable('HELIX_JOBS_PORTAL_TO_JOBS_ROOT', '')
 param edgeAuthSecret = readEnvironmentVariable('HELIX_EDGE_AUTH_SECRET', '')
 param portalSecret = readEnvironmentVariable('HELIX_PORTAL_SECRET', '')
 param instructionSecret = readEnvironmentVariable('HELIX_INSTRUCTION_SECRET', '')

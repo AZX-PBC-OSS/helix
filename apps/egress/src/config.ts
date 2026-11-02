@@ -5,6 +5,8 @@
  * secret (to verify what the edge minted), a secret-store custody config, and
  * SSRF/limit knobs.
  */
+import { resolveServicePort } from "@azx-pbc/shared/lifecycle";
+
 import { DEFAULT_STATEMENT_TIMEOUT_MS } from "./pool.js";
 /**
  * One `EGRESS_MANAGED_IDENTITY_CONNECTIONS` entry. `connection` is the
@@ -217,7 +219,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): EgressConfig {
   }
 
   return {
-    port: Number(env.EGRESS_PORT ?? env.PORT ?? 8081),
+    port: resolveServicePort(env, ["EGRESS_PORT", "PORT"], 8081),
     host: env.HOST ?? "0.0.0.0",
     databaseUrl,
     statementTimeoutMs: Number(env.EGRESS_STATEMENT_TIMEOUT_MS ?? DEFAULT_STATEMENT_TIMEOUT_MS),

@@ -7,6 +7,7 @@ import {
   maxRisk,
   parseFetchOriginKey,
   touchedAreas,
+  unavailableJobTypeAdds,
   type Capabilities,
   type Delta,
   type ManifestUpdateResult,
@@ -22,6 +23,7 @@ import { capabilitiesFromRow, toManifest } from "../db/mappers.js";
 import { manifestWithBindings, providerBindingStatuses } from "../connections/bindings.js";
 import { AppError } from "../plugins/errors.js";
 import { casPolicyWrite } from "../policy/policyWrite.js";
+import { resolveAdvertisedJobTypes } from "../deployment.js";
 
 /**
  * Shared approvals plumbing (docs/design/approvals.md §2). The write-gate routes
@@ -291,6 +293,36 @@ async function restampStaleBindings(
 }
 
 /**
+ * Installed-type eligibility (ADR-0001): a qualified job type this deployment
+ * does not offer — no serving server installs it — cannot be **newly**
+ * granted. A type the grant already holds is being kept, not added, so saved
+ * withdrawn types survive unrelated saves, and a removal is always available.
+ * The deployment's answer comes from the catalogue source read at write time
+ * (the same projection the capability catalogue advertises), so a type can
+ * never be granted on a portal that does not advertise it. Refusing here, at
+ * the shared write-gate, keeps every capability write path honest without a
+ * jobs-specific approval API.
+ */
+export function assertNoUnavailableJobTypeAdds(effective: unknown, requested: unknown): void {
+  const eff = CapabilitiesSchema.parse(effective ?? {});
+  const req = CapabilitiesSchema.parse(requested ?? {});
+  const advertised = resolveAdvertisedJobTypes().map((entry) => entry.id);
+  const violations = unavailableJobTypeAdds({
+    effectiveTypes: eff.jobs?.types ?? [],
+    requestedTypes: req.jobs?.types ?? [],
+    advertisedTypes: advertised,
+  });
+  if (violations.length > 0) {
+    throw new AppError(
+      "validation_failed",
+      `job type${violations.length === 1 ? "" : "s"} ${violations
+        .map((type) => `"${type}"`)
+        .join(", ")} ${violations.length === 1 ? "is" : "are"} not available on this deployment`,
+    );
+  }
+}
+
+/**
  * The capability write-gate (docs/design/approvals.md §3): split a requested
  * capability change into baseline deltas (committed now) and elevated deltas
  * (bundled into one pending request), in a single transaction. Shared by the
@@ -327,6 +359,9 @@ export async function applyCapabilityChange(
     const row = await tx.app.findUniqueOrThrow({ where: { id: opts.appId } });
     const effective = capabilitiesFromRow(row);
     const requested = opts.mutate(effective);
+    // Refuse an ungrantable job type before classifying or writing anything:
+    // no baseline commit, no request.
+    assertNoUnavailableJobTypeAdds(effective, requested);
     // Refuse an invalid binding before classifying or writing anything: no
     // baseline commit, no request.
     await validateProviderBindings(tx, requested);

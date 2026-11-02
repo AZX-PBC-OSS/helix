@@ -109,3 +109,59 @@ export async function withSpan<T>(
     }
   });
 }
+
+/**
+ * A nested span around one sub-step of an operation — failed-and-ended like
+ * {@link withSpan}, but INTERNAL kind (it is not an entry point) and the fn
+ * does not need the span: everything it records is known before the step runs.
+ * `attributes` may be omitted, which is the whole difference from passing
+ * them through `withSpan`.
+ */
+export function inChildSpan<T>(
+  name: string,
+  fn: () => Promise<T>,
+  attributes?: Attributes,
+): Promise<T> {
+  return tracer.startActiveSpan(name, { attributes }, async (span) => {
+    try {
+      return await fn();
+    } catch (err) {
+      span.recordException(err instanceof Error ? err : new Error(String(err)));
+      span.setStatus({ code: SpanStatusCode.ERROR });
+      throw err;
+    } finally {
+      span.end();
+    }
+  });
+}
+
+/**
+ * A fresh **root** consumer span around one unit of background work — the
+ * supervised loops' shape (the delivery sender, like the jobs service's
+ * execution/recovery spans). Background work has no inbound request context
+ * to continue: nothing is extracted, and `root: true` keeps a stray ambient
+ * context from choosing this trace's parentage (the portal is inject-only,
+ * ADR-0037 decision 7). Failed-and-ended like {@link withSpan}; the work's
+ * own disposition sets its outcome on the span.
+ */
+export function withConsumerSpan<T>(
+  name: string,
+  attributes: Attributes,
+  fn: (span: Span) => Promise<T>,
+): Promise<T> {
+  return tracer.startActiveSpan(
+    name,
+    { root: true, kind: SpanKind.CONSUMER, attributes },
+    async (span) => {
+      try {
+        return await fn(span);
+      } catch (err) {
+        span.recordException(err instanceof Error ? err : new Error(String(err)));
+        span.setStatus({ code: SpanStatusCode.ERROR });
+        throw err;
+      } finally {
+        span.end();
+      }
+    },
+  );
+}

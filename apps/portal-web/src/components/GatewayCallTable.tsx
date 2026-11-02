@@ -31,7 +31,24 @@ export const OUT_META: Record<GatewayOutcome, [Tone, string]> = {
   quota_blocked: ["warn", "quota"],
   conflict: ["warn", "conflict"],
   forbidden: ["bad", "forbidden"],
+  too_large: ["warn", "too large"],
 };
+
+/**
+ * Jobs rows are recorded submission requests (ADR-0004), so a plain `ok` would
+ * read as an execution success — and nothing else in the shared vocabulary
+ * claims one, which is why only the 202 label moves. A failed or lost response
+ * keeps the ordinary `error` badge: the row's detail carries the uncertainty,
+ * and the audit page keeps jobs out of its "Not delivered" count.
+ */
+const JOBS_OUT_META: Partial<Record<GatewayOutcome, [Tone, string]>> = {
+  ok: ["live", "Successful submission request"],
+};
+
+function outcomeMeta(r: GatewayCall): [Tone, string] {
+  const jobs = r.capability === "jobs" ? JOBS_OUT_META[r.outcome] : undefined;
+  return jobs ?? OUT_META[r.outcome];
+}
 
 /**
  * Cap on the model/origin cell. Its values are curated model ids,
@@ -66,13 +83,13 @@ export function GatewayCallTable({
           {showApp && <Table.Th>App</Table.Th>}
           <Table.Th>User</Table.Th>
           <Table.Th>Capability</Table.Th>
-          <Table.Th>Model / target</Table.Th>
+          <Table.Th>Model / target / job type</Table.Th>
           <Table.Th style={{ textAlign: "right" }}>Outcome</Table.Th>
         </Table.Tr>
       </Table.Thead>
       <Table.Tbody>
         {rows.map((r) => {
-          const [tone, label] = OUT_META[r.outcome];
+          const [tone, label] = outcomeMeta(r);
           const open = expanded.has(r.id);
           return (
             <Fragment key={r.id}>
@@ -142,9 +159,12 @@ export function GatewayCallTable({
                   />
                 </Table.Td>
                 <Table.Td>{r.capability}</Table.Td>
-                {/* Model for `llm`, origin for `fetch`, verb for `data`.
-                    The request line that used to share this cell renders
-                    in the expanded record, where there is room for it. */}
+                {/* Model for `llm`, origin for `fetch`, verb for `data`, and
+                    the bounded qualified type for `jobs` — with the environment
+                    tier beside it, because production and development jobs are
+                    independent namespaces and the type alone cannot say which
+                    one the request went to. The request line that used to share
+                    this cell renders in the expanded record. */}
                 <Table.Td style={{ maxWidth: MODEL_CELL_MAX }}>
                   <Text
                     component="div"
@@ -152,9 +172,15 @@ export function GatewayCallTable({
                     fz={12}
                     c="dark.2"
                     truncate
-                    title={r.model}
+                    title={r.capability === "jobs" ? `${r.model} · ${r.env}` : r.model}
                   >
                     {r.model}
+                    {r.capability === "jobs" && (
+                      <Text span c="dark.3">
+                        {" "}
+                        · {r.env}
+                      </Text>
+                    )}
                   </Text>
                 </Table.Td>
                 <Table.Td style={{ textAlign: "right" }}>
@@ -202,6 +228,11 @@ export function GatewayCallTable({
  * app-scoped feed nulls it for non-admin owners — apps/edge/src/gateway/llm.ts),
  * and any affordance that interpreted them as markup would be an XSS sink on the
  * control plane.
+ *
+ * Jobs rows are recorded submission requests, so their record explains the
+ * request-level reading (ADR-0004: a 202 may be a replay; a failed or missing
+ * response may still have accepted work) and omits the token/cost accounting,
+ * which would read as usage metering a jobs submission does not carry.
  */
 function CallDetail({ r }: { r: GatewayCall }) {
   const cache = [
@@ -212,6 +243,7 @@ function CallDetail({ r }: { r: GatewayCall }) {
   ]
     .filter((s) => s !== null)
     .join(" · ");
+  const jobs = r.capability === "jobs";
   return (
     // Unframed on purpose: the theme's Card default (`withBorder: true`) turns
     // any boxed detail into a panel with a margin, which reads as floating
@@ -220,9 +252,20 @@ function CallDetail({ r }: { r: GatewayCall }) {
     // past the chevron.
     <Box p="2px 14px 16px 60px">
       <Stack gap={10}>
+        {jobs && (
+          <Box>
+            <Eyebrow mb={6}>Jobs request</Eyebrow>
+            <Text fz={12} c="dark.1" lh={1.5}>
+              This is a recorded submission request, not a job outcome. A successful submission may
+              have recovered an existing job.
+              {r.outcome === "error" &&
+                " A failed or lost response does not prove no job was created. If the response was lost, retry using the original key and input."}
+            </Text>
+          </Box>
+        )}
         {r.errorDetail != null && (
           <Box>
-            <Eyebrow mb={6}>Why it failed</Eyebrow>
+            <Eyebrow mb={6}>{jobs ? "Why the request failed" : "Why it failed"}</Eyebrow>
             {/* The edge caps this at ~300 chars at write time, so the block
                 wraps rather than scrolls; `anywhere` because upstream errors
                 can carry long unbroken tokens. The bg is overridden because
@@ -269,23 +312,27 @@ function CallDetail({ r }: { r: GatewayCall }) {
               </Text>
             </Box>
           )}
-          <Box>
-            <Eyebrow mb={4}>Tokens</Eyebrow>
-            <Text className="az-mono" fz={12} c="dark.1">
-              {r.inputTokens.toLocaleString()} in · {r.outputTokens.toLocaleString()} out
-            </Text>
-            {cache && (
-              <Text className="az-mono" fz={11} c="dark.3">
-                {cache}
+          {!jobs && (
+            <Box>
+              <Eyebrow mb={4}>Tokens</Eyebrow>
+              <Text className="az-mono" fz={12} c="dark.1">
+                {r.inputTokens.toLocaleString()} in · {r.outputTokens.toLocaleString()} out
               </Text>
-            )}
-          </Box>
-          <Box>
-            <Eyebrow mb={4}>Cost</Eyebrow>
-            <Text className="az-mono" fz={12} c="dark.1">
-              {fmtUsd(r.costUsd)}
-            </Text>
-          </Box>
+              {cache && (
+                <Text className="az-mono" fz={11} c="dark.3">
+                  {cache}
+                </Text>
+              )}
+            </Box>
+          )}
+          {!jobs && (
+            <Box>
+              <Eyebrow mb={4}>Cost</Eyebrow>
+              <Text className="az-mono" fz={12} c="dark.1">
+                {fmtUsd(r.costUsd)}
+              </Text>
+            </Box>
+          )}
           <Box>
             <Eyebrow mb={4}>Latency</Eyebrow>
             <Text className="az-mono" fz={12} c="dark.1">

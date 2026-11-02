@@ -54,6 +54,19 @@ describe("formatCapabilities", () => {
       "https://dev.example.com/<slug>",
     );
   });
+
+  it("lists the grantable job types, and tells disabled apart from none offered", () => {
+    expect(text).toContain("types:            not deployed");
+    expect(
+      formatCapabilities({
+        ...CATALOGUE,
+        jobs: { types: [{ id: "jobs:fetch", displayName: "Outbound fetch job" }] },
+      }),
+    ).toContain("jobs:fetch (Outbound fetch job)");
+    expect(formatCapabilities({ ...CATALOGUE, jobs: { types: [] } })).toContain(
+      "types:            (none offered)",
+    );
+  });
 });
 
 describe("renderCapabilities", () => {

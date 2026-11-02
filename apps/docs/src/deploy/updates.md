@@ -38,7 +38,7 @@ Keep the full apply a rare, high-privilege operation run by hand — see
 
 ## What CI publishes
 
-Every push to the default branch and every `v*` tag builds four images and
+Every push to the default branch and every `v*` tag builds five images and
 pushes them to `ghcr.io/<owner>`:
 
 | Image | Runs as |
@@ -47,6 +47,7 @@ pushes them to `ghcr.io/<owner>`:
 | `helix-portal` | `<namePrefix>-portal`, and the `<namePrefix>-migrate` job |
 | `helix-egress` | `<namePrefix>-egress` |
 | `helix-certbot` | `<namePrefix>-certbot` job |
+| `helix-jobs` | `<namePrefix>-jobs`, the `<namePrefix>-jobs-migrate` job, and the `<namePrefix>-jobs-health-relay` job |
 
 Each build is tagged four ways: `sha-<short>`, the branch name, `latest` (on
 the default branch), and the semver for a `v*` tag.
@@ -61,15 +62,19 @@ TAG=$(crane ls ghcr.io/<owner>/helix-edge | grep '^sha-' | tail -1)
 TAG=sha-$(git rev-parse --short=7 HEAD)
 ```
 
-Before rolling, confirm all four tags exist — a partially-published build is
+Before rolling, confirm all five tags exist — a partially-published build is
 the normal result of a CI run that failed in the `images` matrix:
 
 ```bash
-for img in edge portal egress certbot; do
+for img in edge portal egress certbot jobs; do
   docker manifest inspect "ghcr.io/<owner>/helix-$img:$TAG" >/dev/null \
     && echo "ok   $img" || echo "MISSING $img"
 done
 ```
+
+(An install parked with `deployJobs=false` creates neither the jobs app, the
+jobs migrate job nor the need for the `helix-jobs` image; the jobs line is
+noise there.)
 
 ## If you build a release pipeline
 
@@ -137,6 +142,14 @@ Two things that look like reasons to skip it, and are not:
   no-op with nothing to apply, so it doubles as a cheap proof that the
   credential path still works.
 
+**On an install with the jobs plane enabled, the `<namePrefix>-jobs-migrate`
+job runs the same routine** for the jobs store's own schema — same shape
+(`job update` to the new tag, `job start`, read the execution), its own
+credential and identity, and the same "run before the apps" rule. The two
+migrate jobs own different databases, so their order doesn't matter. The
+pre-flight check above is what confirms the `helix-jobs` tag exists. See
+[Database & migrations](/deploy/database#the-jobs-database).
+
 ### 2. Roll the apps
 
 ```bash
@@ -148,10 +161,18 @@ done
 # if the dev gateway is deployed — it runs the edge image
 az containerapp update -g <rg> -n <namePrefix>-dev-gateway \
   --image "ghcr.io/<owner>/helix-edge:$TAG"
+
+# if the jobs plane is enabled (the default) — after its migrate job succeeded
+az containerapp update -g <rg> -n <namePrefix>-jobs \
+  --image "ghcr.io/<owner>/helix-jobs:$TAG"
 ```
 
 The certbot job is rolled the same way, with `job update`. It is a scheduled
-job, so a new image takes effect at its next run.
+job, so a new image takes effect at its next run. With the jobs plane and
+alerts on, so is `<namePrefix>-jobs-health-relay`, which runs the jobs image;
+keep it on the same tag as the jobs app. The jobs-specific procedures —
+enabling on an existing install, closing intake, retiring, re-enabling — are
+in [Operating background jobs](/deploy/jobs).
 
 ### 3. Confirm the new code is actually live
 
@@ -292,7 +313,7 @@ pass:
 
 ```bash
 az deployment group create -g <rg> -f main.bicep -p main.bicepparam \
-  --parameters postgresAdminPassword="$NEW_PASSWORD"
+  --parameters postgresAdminPassword="<new-password>"
 ```
 
 A role password (`helix_edge` &c.) rotates the other way around: change it in
@@ -317,6 +338,14 @@ them:
   planes fails every attested edge→egress call for the duration. Write the
   vault, then force a new revision on **both** apps back-to-back so the window
   is seconds, not half an hour.
+- **The jobs service's secrets are not vault references.** The jobs app has no
+  managed identity, so its database DSN and its three signing roots — and the
+  jobs documents the edge, dev gateway and portal hold — are written into the
+  apps by the template. Writing the vault alone changes nothing that is
+  running: rotate a jobs root or the `helix_jobs` password with a full apply
+  that carries the new value (`--parameters jobsEdgeToJobsRoot=…`, or the
+  rebuilt `jobsDatabaseUrl`), which rolls every app that holds it in the same
+  pass and updates the vault copy the next apply reads.
 
 ## When you do need a full apply
 

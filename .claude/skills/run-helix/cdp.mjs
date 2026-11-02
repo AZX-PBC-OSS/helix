@@ -22,7 +22,11 @@ export function findChrome() {
   if (!existsSync(root)) return null;
   for (const dir of readdirSync(root)) {
     if (!dir.startsWith("chromium")) continue;
-    for (const rel of ["chrome-linux/chrome", "chrome-linux/headless_shell"]) {
+    for (const rel of [
+      "chrome-linux/chrome",
+      "chrome-linux/headless_shell",
+      "chrome-linux-arm64/chrome",
+    ]) {
       const p = join(root, dir, rel);
       if (existsSync(p)) return p;
     }

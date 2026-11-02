@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { QualifiedJobTypeSchema, strictWireObject } from "./jobs.js";
 import { ProviderRefSchema } from "./providers.js";
 import { VisibilitySchema } from "./visibility.js";
 
@@ -222,6 +223,34 @@ export const ShimCapabilitySchema = z.object({
 export type ShimCapability = z.infer<typeof ShimCapabilitySchema>;
 
 /**
+ * The background-jobs capability (ADR-0001): the qualified job types — exactly
+ * `<server>:<localType>` — the app may submit through the jobs gateway. The
+ * grant matches the complete string, so `{types: ["jobs:fetch"]}` never
+ * authorizes `fetch` on another server: there is no bare-type alias, no
+ * wildcard, and no default server, and a jobs block is present only while it
+ * names at least one type — removing the last type removes the grant (the
+ * classifier's apply path drops the block; the parse refuses an empty one).
+ *
+ * **Strict**: like `FetchConnectionSchema`, unknown keys are rejected, not
+ * stripped — there is deliberately no `jobsPerDay`, per-app capacity setting
+ * or jobs-budget approval field (platform defaults bound jobs resources), and
+ * a manifest declaring one must fail the parse rather than shed it into a
+ * grant the platform never approved. Built on the jobs contract's
+ * `strictWireObject` so an own `__proto__` key is refused with the rest.
+ *
+ * Types are **syntax-validated only** — deliberately not checked against the
+ * production catalogue here. A saved type the deployment no longer offers (a
+ * retiring server's) must keep parsing so unrelated saves preserve it and it
+ * stays removable; validating *additions* against the installed catalogue is
+ * the portal write path's job, not a parse-level rule that would refuse the
+ * preserved state it exists to protect.
+ */
+export const JobsCapabilitySchema = strictWireObject({
+  types: z.array(QualifiedJobTypeSchema).min(1),
+});
+export type JobsCapability = z.infer<typeof JobsCapabilitySchema>;
+
+/**
  * Is `scope` a legal service-worker scope prefix (ADR-0035 §3)? Exported so the
  * edge can re-run the identical rule when it re-parses the grant fail-closed.
  *
@@ -302,6 +331,7 @@ export type Capabilities = {
   fetch?: FetchCapability;
   offline?: OfflineCapability;
   shim?: ShimCapability;
+  jobs?: JobsCapability;
 };
 
 export const CapabilitiesSchema = z
@@ -318,6 +348,8 @@ export const CapabilitiesSchema = z
     offline: OfflineCapabilitySchema.optional(),
     /** Injected platform helpers — the first-class shim grant. */
     shim: ShimCapabilitySchema.optional(),
+    /** Platform-authored background work the app may submit (ADR-0001). */
+    jobs: JobsCapabilitySchema.optional(),
   })
   /**
    * Legacy shim-alias normalization: `capabilities.fetch.shim`

@@ -81,6 +81,59 @@ describe("the telemetry vocabulary", () => {
     ]);
   });
 
+  it("keeps the delivery outcome vocabulary bounded, duplicate-free, and disjoint from the receiver's", () => {
+    // The sender's hop outcomes and the receiver's apply outcomes ride the
+    // same `helix.outcome` attribute on one trace (the delivery span and the
+    // lifecycle route span are its two ends) — a word that means both would
+    // make a sender's stale_ack and a receiver's stale confusable in every
+    // span search, so the two vocabularies must never share a value.
+    const delivery: string[] = [...telemetry.JOBS_LIFECYCLE_DELIVERY_OUTCOMES];
+    expect(delivery).toEqual([
+      "acknowledged",
+      "stale_ack",
+      "refused",
+      "unreachable",
+      "invalid_response",
+    ]);
+    expect(new Set(delivery).size).toBe(delivery.length);
+    for (const outcome of telemetry.JOBS_LIFECYCLE_OUTCOMES) {
+      expect(delivery.includes(outcome), outcome).toBe(false);
+    }
+  });
+
+  it("keeps the reachability probe outcome vocabulary bounded and duplicate-free", () => {
+    // The edge's probe counter's dimension — the forwarding seam's own endings
+    // for the reachability hop, shared deliberately with the delivery
+    // vocabulary (different instruments, so no confusability above). The
+    // closed set is what a body-aware alert groups on: a fourth word here is
+    // a vocabulary the health body never emits, and a dropped one orphans a
+    // dashboard's series.
+    expect([...telemetry.JOBS_REACHABILITY_PROBE_OUTCOMES]).toEqual([
+      "reachable",
+      "unreachable",
+      "invalid_response",
+    ]);
+    expect(new Set(telemetry.JOBS_REACHABILITY_PROBE_OUTCOMES).size).toBe(
+      telemetry.JOBS_REACHABILITY_PROBE_OUTCOMES.length,
+    );
+  });
+
+  it("keeps the intake apply's outcome vocabulary bounded and duplicate-free", () => {
+    // The jobs service's intake applier's own endings on the
+    // `helix.jobs.intake` span: opened/closed are the designed answers,
+    // refused and unavailable are the failure exits the span grades ERROR
+    // on. A word outside the set is a vocabulary no alert can group on.
+    expect([...telemetry.JOBS_INTAKE_OUTCOMES]).toEqual([
+      "opened",
+      "closed",
+      "refused",
+      "unavailable",
+    ]);
+    expect(new Set(telemetry.JOBS_INTAKE_OUTCOMES).size).toBe(
+      telemetry.JOBS_INTAKE_OUTCOMES.length,
+    );
+  });
+
   it("orders the duration buckets ascending and covers past a slow LLM stream", () => {
     const buckets = [...telemetry.DURATION_BUCKETS_MS];
     expect(buckets).toEqual([...buckets].sort((a, b) => a - b));

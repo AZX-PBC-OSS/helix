@@ -50,15 +50,25 @@ const OUT = mkdtempSync(join(tmpdir(), "helix-smoke-"));
  * the dev stack's, so a run can never kill `pnpm dev:*` or write to the dev
  * database. `--offset 0` opts back into the shared dev ports.
  */
+if (has("--offset") && argv[argv.indexOf("--offset") + 1] === undefined) {
+  console.error("--offset requires a value — a trailing --offset resolves the dev stack");
+  process.exit(2);
+}
 const OFFSET = argv.includes("--offset")
-  ? Number(argv[argv.indexOf("--offset") + 1])
-  : Number(process.env.HELIX_PORT_OFFSET ?? 1000);
-const STACK = resolveStack({ offset: OFFSET });
+  ? argv[argv.indexOf("--offset") + 1]
+  : (process.env.HELIX_PORT_OFFSET ?? "1000");
+const NO_JOBS = has("--no-jobs");
+// The resolution owns the parse: a garbage offset is its refusal (naming the
+// value), never a silent fall-back to the dev stack's ports.
+const STACK = resolveStack({
+  offset: OFFSET,
+  ...(NO_JOBS ? { env: { ...process.env, HELIX_JOBS_ENABLED: "false" } } : {}),
+});
 /** Env every service in THIS stack boots with. */
 const SVC_ENV = { ...process.env, ...STACK.env };
 const PORTS = Object.values(STACK.ports);
 
-const GROUPS = ["idp", "portal", "edge", "egress", "spa", "browser", "cli"];
+const GROUPS = ["idp", "portal", "edge", "egress", "jobs", "spa", "browser", "cli"];
 const wanted = (g) => !only || only === g;
 
 // ── result tracking ───────────────────────────────────────────────────────
@@ -114,11 +124,27 @@ const SERVICES = [
     health: `http://localhost:${STACK.ports.egress}/health`,
   },
   {
+    name: "dev-gateway",
+    script: "dev:devgw",
+    port: STACK.ports.devGateway,
+    health: `https://${BASE_DOMAIN}:${STACK.ports.devGateway}/health`,
+  },
+  {
     name: "edge",
     script: "dev:edge",
     port: STACK.ports.edge,
     health: `https://${BASE_DOMAIN}:${STACK.ports.edge}/health`,
   },
+  ...(STACK.jobs.enabled
+    ? [
+        {
+          name: "jobs",
+          script: "dev:jobs",
+          port: STACK.ports.jobs,
+          health: `http://localhost:${STACK.ports.jobs}/health`,
+        },
+      ]
+    : []),
 ];
 const procs = [];
 
@@ -509,6 +535,103 @@ async function checkEgress() {
   });
 }
 
+/**
+ * Poll a health body until a predicate holds — bounded, with the last body
+ * attached to the failure so a stuck service reports its own state.
+ */
+async function pollHealthBody(url, want, timeoutMs = 75_000) {
+  const deadline = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < deadline) {
+    try {
+      const { status, body } = await jget(url);
+      if (status === 200 && want(body)) return body;
+      last = { status, body };
+    } catch (e) {
+      last = { error: e.message };
+    }
+    await sleep(1000);
+  }
+  throw new Error(`condition not reached on ${url}\n--- last body ---\n${JSON.stringify(last)}`);
+}
+
+async function checkJobs() {
+  group("jobs");
+  console.log(
+    "\n\x1b[1mjobs\x1b[0m — the background-jobs service in the ordinary local composition",
+  );
+
+  const JOBS = `http://localhost:${STACK.ports.jobs}`;
+  const EDGE_HEALTH = `https://${BASE_DOMAIN}:${STACK.ports.edge}/health`;
+
+  if (!STACK.jobs.enabled) {
+    // The fully disabled arm: the ordinary stack starts with no jobs credential
+    // anywhere, and every consumer reads dark. Asserted only where THIS driver
+    // resolved the stack — at offset 0 the developer's .env.local files are the
+    // jobs configuration and the driver cannot see them.
+    skip(
+      "jobs service boots storage-ready",
+      STACK.offset === 0
+        ? "offset 0 shares the developer's stack — its jobs posture is their own configuration"
+        : "--no-jobs (fully disabled composition)",
+    );
+    if (STACK.offset === 0) {
+      skip(
+        "fully disabled: the portal advertises no jobs capability",
+        "offset 0 shares the developer's stack — its jobs posture is their own configuration",
+      );
+      return;
+    }
+    await check("fully disabled: the portal advertises no jobs capability", async () => {
+      const { status, body } = await jget(`${PORTAL}/api/v1/capabilities`, { headers: auth });
+      eq(status, 200, "status");
+      assert(body.jobs === undefined, `expected no jobs block, got ${JSON.stringify(body.jobs)}`);
+    });
+    await check("fully disabled: the edge carries no jobs reachability check", async () => {
+      const { body } = await jget(EDGE_HEALTH);
+      assert(
+        !body.checks?.some((c) => c.name === "jobs_reachability"),
+        "the edge reports a jobs dependency on a disabled install",
+      );
+    });
+    return;
+  }
+
+  // /health answers 200 in every state, so the boot check above proves nothing
+  // about storage — the BODY does. The migration ran in the prep step; poll
+  // until the service's own roll-up says ok.
+  await check("jobs service is storage-ready (health body ok)", async () => {
+    const body = await pollHealthBody(`${JOBS}/health`, (b) => b.status === "ok");
+    const store = body.checks?.find((c) => c.name === "jobs_database");
+    assert(store, "the jobs_database check is missing from the body");
+    eq(store.status, "ok", "jobs_database");
+    return `${store.metrics?.probes ?? 1} probe(s)`;
+  });
+
+  await check("portal advertises the jobs catalogue (credential-free projection)", async () => {
+    // The capability catalogue sits behind the portal's bearer chain.
+    const { status, body } = await jget(`${PORTAL}/api/v1/capabilities`, { headers: auth });
+    eq(status, 200, "status");
+    assert(body.jobs, "no jobs block on the capabilities catalogue");
+    assert(
+      body.jobs.types.some((t) => t.id === "jobs:fetch"),
+      `jobs:fetch not advertised: ${JSON.stringify(body.jobs)}`,
+    );
+    for (const entry of body.jobs.types) {
+      eq(Object.keys(entry).sort().join(","), "displayName,id", "catalogue entry fields");
+    }
+    return `${body.jobs.types.length} type(s)`;
+  });
+
+  await check("edge observes the jobs server (jobs_reachability ok)", async () => {
+    const body = await pollHealthBody(EDGE_HEALTH, (b) =>
+      b.checks?.some((c) => c.name === "jobs_reachability" && c.status === "ok"),
+    );
+    const reach = body.checks.find((c) => c.name === "jobs_reachability");
+    eq(reach.status, "ok", "jobs_reachability");
+  });
+}
+
 async function checkIdp() {
   group("idp");
   console.log("\n\x1b[1mdev-idp\x1b[0m — oidc-provider authorization_code + PKCE");
@@ -758,15 +881,26 @@ async function main() {
   console.log(
     STACK.offset === 0
       ? `\x1b[33m! offset 0 — sharing the dev stack's ports and database\x1b[0m\n`
-      : `\x1b[2misolated stack: offset ${STACK.offset}, ports ${PORTS.join(" ")}, db ${STACK.database}\x1b[0m\n`,
+      : `\x1b[2misolated stack: offset ${STACK.offset}, ports ${PORTS.join(" ")}, db ${STACK.database}, jobs ${
+          STACK.jobs.enabled
+            ? `on :${STACK.ports.jobs}`
+            : "disabled (--no-jobs or HELIX_JOBS_ENABLED)"
+        }\x1b[0m\n`,
   );
 
   // Own database, so the throwaway app row and the shared rate-limit/login
   // counters never land in the dev database. Idempotent; only the first run
-  // pays for the migrate.
+  // pays for the migrate. With jobs enabled, the stack's private jobs database
+  // is prepared in the same pass — provisioned from the one roles definition
+  // and migrated through the migration identity (never the runtime role).
   if (STACK.offset !== 0) {
     try {
-      const { name, created } = ensureDatabase(SVC_ENV.DATABASE_URL, { quiet: true });
+      const { name, created } = ensureDatabase(SVC_ENV.DATABASE_URL, {
+        quiet: true,
+        ...(STACK.jobs.enabled && SVC_ENV.JOBS_DATABASE_URL
+          ? { jobsDsn: SVC_ENV.JOBS_DATABASE_URL }
+          : {}),
+      });
       console.log(`  \x1b[2m${created ? "created" : "reusing"} database ${name}\x1b[0m`);
     } catch (err) {
       console.error(`\n\x1b[31mcould not prepare the smoke database: ${err.message}\x1b[0m`);
@@ -798,6 +932,7 @@ async function main() {
       if (wanted("portal")) await checkPortal();
       if (wanted("edge")) await checkEdge();
       if (wanted("egress")) await checkEgress();
+      if (wanted("jobs")) await checkJobs();
       if (wanted("spa")) await checkSpa();
       if (wanted("browser")) await checkBrowser();
       if (wanted("cli")) await checkCli();

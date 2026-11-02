@@ -1,6 +1,6 @@
 # 0045. App-triggered durable jobs: a platform-owned plane behind an HTTP contract
 
-**Status:** Accepted _(proposed 2026-09-11; amended 2026-10-13; production implementation pending)_
+**Status:** Accepted _(proposed 2026-09-11; amended 2026-10-13; implemented 2026-10-21, production rollout pending)_
 
 **Current reading:** the [2026-10-13 named-services amendment](#amendment-2026-10-13-named-job-services-and-pg-boss-first),
 the [2026-10-07 capacity amendment](#amendment-2026-10-07-capacity-controls-and-local-retry-identity),

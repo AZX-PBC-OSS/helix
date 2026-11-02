@@ -83,6 +83,17 @@ if [ -f /workspace/package.json ] || [ -f /workspace/pnpm-workspace.yaml ]; then
       || echo "   geo:fetch failed — run 'pnpm --filter @azx-pbc/portal geo:fetch' later"
   fi
 
+  # The jobs plane's private database (ADR-0045). A fresh volume gets the roles
+  # and the database from db-init; re-running the roles file upgrades an older
+  # volume in place. The schema is created by the separate migration identity,
+  # never the runtime role. Both steps are idempotent. Non-fatal: without them
+  # helix-jobs reports jobs_database as unavailable and the rest of the stack runs.
+  echo "── Preparing the jobs database ──"
+  { psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -f /workspace/.devcontainer/db-init/01-roles.sql \
+    && JOBS_MIGRATE_DATABASE_URL=postgresql://helix_jobs_migrate:helix_jobs_migrate@db:5432/helix_jobs \
+       pnpm --filter @azx-pbc/jobs db:migrate; } \
+    || echo "   jobs database prep failed — see apps/jobs/README.md to run it by hand"
+
   echo "── Pre-caching Playwright browser ──"
   npx -y playwright@latest install chromium
 else

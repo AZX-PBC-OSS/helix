@@ -76,7 +76,7 @@ const VISIBILITY_ROWS: Array<{ mode: AccessState; icon: IconName; label: string;
     mode: "archived",
     icon: "x",
     label: "Archived",
-    desc: "Takes the app offline: the address stops serving and each visitor's stored data for it is cleared from their browser. The subdomain is never handed to another app. Unarchive puts it back exactly as it was.",
+    desc: "Takes the app offline: the address stops serving and each visitor's stored data for it is cleared from their browser. The subdomain is never handed to another app. Unarchive puts serving and access back exactly as they were — but background jobs it cancelled stay cancelled.",
   },
 ];
 
@@ -110,6 +110,9 @@ export function AccessTab({ app }: { app: App }) {
   const [runError, setRunError] = useState<string | null>(null);
   // The last public request opened an approval (result.pending is the id).
   const [requested, setRequested] = useState(false);
+  // The last completed operation was an archive whose feedback is still shown —
+  // worded as the request it established, never completed cancellation.
+  const [archiveApplied, setArchiveApplied] = useState(false);
 
   /**
    * Selecting a row. Clicking the drafted row again collapses it and discards
@@ -121,6 +124,7 @@ export function AccessTab({ app }: { app: App }) {
     setGroupIds(currentGroupIds);
     setReason("");
     setRequested(false);
+    setArchiveApplied(false);
   };
   const select = (mode: AccessState) => {
     if (running) return;
@@ -132,6 +136,7 @@ export function AccessTab({ app }: { app: App }) {
     setGroupIds(currentGroupIds);
     setReason("");
     setRequested(false);
+    setArchiveApplied(false);
   };
 
   // Operator policy: hide an open-surface row when the deployment forbids that
@@ -180,6 +185,7 @@ export function AccessTab({ app }: { app: App }) {
       if (result?.pending != null) setRequested(true);
       setConfirmOpen(false);
       setReason("");
+      setArchiveApplied(target === "archived" && result?.pending == null);
       // A pending approval changed nothing — rest on the state that still is.
       setDraft(result?.pending != null ? current : target);
     } catch (e) {
@@ -206,21 +212,40 @@ export function AccessTab({ app }: { app: App }) {
 
     if (draft === "archived") {
       return (
-        <Text size="sm" c="dark.2" lh={1.5}>
-          {slugMono} stops serving immediately, and each visitor&apos;s stored data for it is
-          cleared from their browser. This is reversible — unarchive puts the app back exactly as it
-          was.
-        </Text>
+        <Stack gap={10}>
+          <Text size="sm" c="dark.2" lh={1.5}>
+            {slugMono} stops serving immediately, and each visitor&apos;s stored data for it is
+            cleared from their browser. This is reversible — unarchive puts the app back exactly as
+            it was.
+          </Text>
+          <Text size="sm" c="dark.2" lh={1.5}>
+            Archiving also requests cancellation of queued and running jobs in both environments
+            across configured job services. Cancellation happens asynchronously; work may continue
+            while the request is being delivered. Already sent external effects cannot be undone.
+            Unarchiving does not resume these jobs.
+          </Text>
+        </Stack>
       );
     }
 
     if (current === "archived") {
-      if (plan.steps.length === 1) {
+      // The unarchive-alone plan is the one whose single step is the unarchive
+      // itself. The public-from-archive plan is ALSO one step — the approval-
+      // opening visibility request — so branch on what that step does, not on
+      // how many there are: a step count made the approval dialog claim the
+      // app was resuming serving.
+      if (plan.steps[0]?.kind === "setArchived") {
         return (
-          <Text size="sm" c="dark.2" lh={1.5}>
-            The app resumes serving exactly as it was — {visibilityLabel(app.visibility)} — within
-            about a minute.
-          </Text>
+          <Stack gap={10}>
+            <Text size="sm" c="dark.2" lh={1.5}>
+              The app resumes serving exactly as it was — {visibilityLabel(app.visibility)} — within
+              about a minute.
+            </Text>
+            <Text size="sm" c="dark.2" lh={1.5}>
+              New jobs become available after the lifecycle change reaches the relevant jobs
+              service. Previously cancelled jobs do not resume.
+            </Text>
+          </Stack>
         );
       }
       if (draft === "public") {
@@ -232,7 +257,9 @@ export function AccessTab({ app }: { app: App }) {
               opens an approval request rather than applying now.
             </Text>
             <Text size="sm" c="dark.2" lh={1.5}>
-              The app stays archived until the approval lands — unarchive after it is approved.
+              The app stays archived until the approval lands — unarchive after it is approved. New
+              jobs become available after the lifecycle change reaches the relevant jobs service.
+              Previously cancelled jobs do not resume.
             </Text>
           </Stack>
         );
@@ -247,6 +274,10 @@ export function AccessTab({ app }: { app: App }) {
                 ? "group-restricted"
                 : "shared-password"}{" "}
             access. Serving resumes within about a minute of confirming.
+          </Text>
+          <Text size="sm" c="dark.2" lh={1.5}>
+            New jobs become available after the lifecycle change reaches the relevant jobs service.
+            Previously cancelled jobs do not resume.
           </Text>
           {draft === "group" && (
             <>
@@ -610,6 +641,17 @@ export function AccessTab({ app }: { app: App }) {
             <Hint icon="shield" tone="violet">
               Request opened — going public is awaiting admin approval. The app stays as it is until
               a reviewer approves.
+            </Hint>
+          </Box>
+        )}
+        {archiveApplied && (
+          <Box mt={12}>
+            {/* Acknowledges exactly what the archive established: the registry
+                change and the cancellation request. Completion is asynchronous
+                and per-server, so the feedback must not read "jobs stopped". */}
+            <Hint icon="x" tone="neutral">
+              App archived. Cancellation was requested for its queued and running jobs — the request
+              is still being delivered, and work may continue until it lands.
             </Hint>
           </Box>
         )}

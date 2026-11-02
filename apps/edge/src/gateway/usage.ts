@@ -249,12 +249,16 @@ export interface UsageStore {
   /**
    * Count of admitted fetch-proxy calls today (fetch-proxy design §7) — the
    * per-app `requestsPerDay` budget window. "Admitted" means everything we
-   * recorded except **the platform's own pre-egress refusals** (`quota_blocked`
-   * and `forbidden`), so a flood of failing calls still counts against the cap.
+   * recorded except **the platform's own pre-egress refusals** (`quota_blocked`,
+   * `forbidden` and `too_large`), so a flood of failing calls still counts
+   * against the cap.
    *
    * The budget prices work done on the app's behalf at the egress boundary: an
-   * `error` or `refusal` row dialled egress, a `forbidden` row (allowlist
-   * denial) mints no instruction and costs no third party. Counting denials
+   * `error` or `refusal` row dialled egress, while a `forbidden` row (allowlist
+   * denial) or a `too_large` row (a body known to be over the cap before
+   * minting) mints no instruction and costs no third party. An upload that
+   * trips the cap only while streaming is a `refusal` and does count: its
+   * instruction was already presented to egress. Counting denials
    * would also be pointless as a bound — the allowlist check returns *before*
    * this gate, so a denial loop never reaches it and writes rows either way;
    * counting them would only starve the app's legitimate traffic.
@@ -339,7 +343,7 @@ export class PgUsageStore implements UsageStore {
         `SELECT COUNT(*)::int AS n
          FROM gateway_calls
          WHERE "appId" = $1 AND env = $2 AND capability = 'fetch'
-           AND outcome NOT IN ('quota_blocked', 'forbidden')
+           AND outcome NOT IN ('quota_blocked', 'forbidden', 'too_large')
            AND "createdAt" >= date_trunc('day', now())`,
         [appId, env],
       );
@@ -429,8 +433,8 @@ export function meterGatewayCall(call: {
     [ATTR_APP_ID]: call.appId,
   });
 
-  // **Only when the call actually measured a round trip.** `quota_blocked` and
-  // `forbidden` are refused before anything is dialled, and the app-data path
+  // **Only when the call actually measured a round trip.** `quota_blocked`,
+  // `forbidden` and `too_large` are refused before anything is dialled, and the app-data path
   // does not time itself — recording `0` for those would drag every percentile
   // toward zero and make the histogram say the platform is fast when what it
   // really did was refuse. That is the same failure ADR-0037 decision 5 names

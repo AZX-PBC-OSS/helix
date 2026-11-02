@@ -32,6 +32,8 @@ function call(over: Partial<GatewayCall> = {}): GatewayCall {
     userEmail: "alice@azx.dev",
     userKind: "user",
     capability: "llm",
+    // The caller's resolved partition — prod for a signed-in user.
+    env: "prod",
     model: "claude-opus-4-8",
     inputTokens: 10 * seq,
     outputTokens: 5,
@@ -246,6 +248,169 @@ describe("AuditPage failure detail", () => {
     // Same `!== "ok"` stance as the count itself, so the two can't drift.
     expect(await screen.findByText("2 error · 1 quota")).toBeDefined();
     expect(screen.getByText("3")).toBeDefined();
+  });
+});
+
+describe("AuditPage jobs requests", () => {
+  /**
+   * A jobs ledger row, as the edge's submission route writes it (ADR-0004):
+   * capability `jobs`, the requested qualified type in the model field, zero
+   * token/cost accounting, and the caller-facing status.
+   */
+  function jobsRow(over: Partial<GatewayCall> = {}): GatewayCall {
+    return call({
+      capability: "jobs",
+      model: "jobs:fetch",
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+      statusCode: 202,
+      stopReason: null,
+      path: null,
+      method: null,
+      outcome: "ok",
+      ...over,
+    });
+  }
+
+  it("labels a jobs 202 as a successful submission request, not a job outcome", async () => {
+    stubFetch([jobsRow()]);
+    renderAudit();
+    // The design's request-level label: a 202 may be a replay, so it never
+    // reads as "job succeeded" or as a unique-job claim.
+    expect(await screen.findByText("Successful submission request")).toBeDefined();
+    expect(screen.queryByText(/^ok$/)).toBeNull();
+  });
+
+  it("keeps the ordinary ok label on a row of any other capability", async () => {
+    // The override is gated on the capability being `jobs`. The gate's positive
+    // side is pinned above; this is the negative: the same gate must not
+    // relabel every other capability's ok row, or the audit log starts calling
+    // ordinary gateway calls submission requests.
+    stubFetch([call()]);
+    renderAudit();
+    expect(await screen.findByText("ok")).toBeDefined();
+    expect(screen.queryByText("Successful submission request")).toBeNull();
+  });
+
+  it("shows the environment tier beside the qualified type, for jobs rows only", async () => {
+    stubFetch([jobsRow({ env: "dev" }), call()]);
+    renderAudit();
+    expect(await screen.findByText("jobs:fetch")).toBeDefined();
+    // The design's column label now names what a jobs row carries.
+    expect(screen.getByText("Model / target / job type")).toBeDefined();
+    // The tier renders beside the type (production and development jobs are
+    // independent namespaces) and on the cell's title.
+    expect(screen.getByText("· dev")).toBeDefined();
+    expect(document.querySelector('[title="jobs:fetch · dev"]')).not.toBeNull();
+    // An llm row's model cell carries no tier — the env display is owned by the
+    // jobs wording, not a new audit-log column.
+    expect(screen.getByTitle("claude-opus-4-8")).toBeDefined();
+    expect(screen.queryByText("· prod")).toBeNull();
+  });
+
+  it("keeps jobs rows out of Not delivered and aggregates them as recorded submission requests", async () => {
+    stubFetch([
+      call({ outcome: "error", errorDetail: "upstream 500" }),
+      jobsRow(),
+      jobsRow({ outcome: "error", statusCode: 503, errorDetail: "unreachable" }),
+    ]);
+    renderAudit();
+    // The uncertain jobs row is NOT counted as "not delivered" — a failed
+    // submission request may still have accepted work (ADR-0004).
+    expect(await screen.findByText("1")).toBeDefined();
+    expect(screen.getByText("1 error")).toBeDefined();
+    // The design's aggregate label, over the two recorded attempts, with the
+    // attempts-not-jobs caveat as its sub.
+    expect(screen.getByText("Recorded jobs submission requests")).toBeDefined();
+    expect(screen.getByText("2")).toBeDefined();
+    expect(screen.getByText("Attempts shown, not unique jobs or execution outcomes")).toBeDefined();
+    // The page head's accounting promise stays scoped — jobs rows never carry
+    // one, so an unscoped "token/cost accounting" would promise what the rows
+    // below cannot show.
+    expect(
+      screen.getByText(/where the capability carries them, token\/cost accounting/),
+    ).toBeDefined();
+  });
+
+  it("omits the jobs aggregate card when no jobs rows are shown", async () => {
+    stubFetch([call(), call({ outcome: "error", errorDetail: "boom" })]);
+    renderAudit();
+    expect((await screen.findAllByText("Alice Anders")).length).toBe(2);
+    expect(screen.queryByText("Recorded jobs submission requests")).toBeNull();
+  });
+
+  it("explains the request-level reading in the jobs detail, without token accounting", async () => {
+    stubFetch([jobsRow({ outcome: "error", statusCode: 503, errorDetail: "unreachable" })]);
+    renderAudit();
+    await screen.findByText("jobs:fetch");
+    await userEvent.click(screen.getByRole("button", { name: "Show call detail" }));
+    expect(screen.getByText("Jobs request")).toBeDefined();
+    expect(screen.getByText(/recorded submission request, not a job outcome/i)).toBeDefined();
+    expect(screen.getByText(/does not prove no job was created/i)).toBeDefined();
+    // The uncertain ending's guidance is the design's recovery line.
+    expect(screen.getByText(/retry using the original key and input/i)).toBeDefined();
+    // The jobs error word is a request failure, not "why it failed".
+    expect(screen.getByText("Why the request failed")).toBeDefined();
+    expect(screen.queryByText("Why it failed")).toBeNull();
+    // Submissions carry no usage metering — "0 in · 0 out" and a zero cost
+    // would read as accounting this route does not do. (The page-level Tokens
+    // stat is a different element; assert on the detail's accounting line.)
+    expect(screen.queryByText(/in · /)).toBeNull();
+    expect(screen.queryByText("$0.0000")).toBeNull();
+    expect(screen.getByText("Subject")).toBeDefined();
+  });
+
+  it("does not offer the lost-response guidance on a successful submission", async () => {
+    stubFetch([jobsRow()]);
+    renderAudit();
+    await screen.findByText("jobs:fetch");
+    await userEvent.click(screen.getByRole("button", { name: "Show call detail" }));
+    expect(screen.getByText(/recorded submission request, not a job outcome/i)).toBeDefined();
+    // The per-row replay disclosure — a 202 may have recovered an existing
+    // job (ADR-0004) — is the only statement of the idempotent-retry reading
+    // this row makes; the aggregate's attempts caveat and the badge's
+    // "request" word do not carry it.
+    expect(screen.getByText(/recovered an existing job/i)).toBeDefined();
+    expect(screen.queryByText(/retry using the original key and input/i)).toBeNull();
+  });
+
+  it("keeps a definitive refusal in the ordinary outcome vocabulary, without the lost-response uncertainty", async () => {
+    // A 4xx the jobs service answered — a 403 here, and likewise refusal,
+    // quota_blocked and conflict — is definitive: the response was received,
+    // so the platform knows no job was created and the uncertainty claim,
+    // scoped to `error` endings, must not blanket it. And only the 202 label
+    // moves: every other outcome keeps the shared vocabulary's ordinary word.
+    stubFetch([
+      jobsRow({
+        outcome: "forbidden",
+        statusCode: 403,
+        errorDetail: "jobs service refused: principal not permitted",
+      }),
+    ]);
+    renderAudit();
+    expect(await screen.findByText("forbidden")).toBeDefined();
+    await userEvent.click(screen.getByRole("button", { name: "Show call detail" }));
+    // The row still reads as a recorded submission request, and its refusal
+    // text renders under the jobs failure heading.
+    expect(screen.getByText(/recorded submission request, not a job outcome/i)).toBeDefined();
+    expect(screen.getByText("Why the request failed")).toBeDefined();
+    expect(screen.getByText(/principal not permitted/)).toBeDefined();
+    // …but neither the uncertainty nor the recovery line appears.
+    expect(screen.queryByText(/does not prove no job was created/i)).toBeNull();
+    expect(screen.queryByText(/retry using the original key and input/i)).toBeNull();
+  });
+
+  it("matches a jobs row's environment tier in the filter box", async () => {
+    stubFetch([
+      jobsRow({ env: "dev", userName: "Bob Builder", userEmail: null }),
+      jobsRow({ env: "prod", userName: "Carol Cena", userEmail: null }),
+    ]);
+    renderAudit();
+    expect(await screen.findByText("Bob Builder")).toBeDefined();
+    await userEvent.type(screen.getByPlaceholderText(/Filter by app/i), "dev");
+    expect(screen.getByText("Bob Builder")).toBeDefined();
+    expect(screen.queryByText("Carol Cena")).toBeNull();
   });
 });
 

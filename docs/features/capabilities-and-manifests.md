@@ -30,6 +30,7 @@ Capabilities = {
             shim: boolean                                     // serve-time fetch/XHR shim
             requestsPerDay?: int }
   offline?: { scope: string }          // platform-owned service worker, confined to this prefix
+  jobs?:  { types: string[] }          // qualified background-job types (`jobs:fetch`), min 1
 }
 
 AppManifest = { app: slug; visibility: Visibility; capabilities: Capabilities }
@@ -58,6 +59,27 @@ slash, and its first segment may not begin with `_` (validated on write by
 response header). It buys cold boot and nothing more. See
 [ADR-0035](../adr/0035-offline-capability-platform-service-worker.md) and
 [edge-serving.md](./edge-serving.md).
+
+`jobs` grants **background jobs**: the qualified job types — exactly `<server>:<localType>`, e.g.
+`jobs:fetch` — whose submission the app may request. The grant matches the complete string, so
+there is no bare-type alias, no wildcard, and no default server; the block is strict (no
+`jobsPerDay` or capacity field exists — platform defaults bound jobs resources) and a block with no
+types does not parse: removing the last type drops the grant. The parse validates qualified syntax
+only — a saved type the deployment no longer offers still parses, so unrelated saves preserve it
+and it stays removable. **Additions** are checked against the deployment at the write entry points
+(app create and the manifest PUT, via the shared write-gate): a type no serving server installs
+cannot be newly granted, while keeping or removing a saved type never consults the deployment.
+The catalogue advertises the installed types of serving servers
+(`GET /api/v1/capabilities`, `jobs.types`), derived from the deployment's server map
+(`PORTAL_JOBS_CATALOGUE` on the portal — a credential-free projection: state + installed types,
+never a destination or secret); a fully disabled deployment omits the block, and an all-retiring
+one advertises an empty list. The edge projects the effective grant on both serving surfaces and
+refuses a submission whose qualified type the grant does not name with 403 `forbidden` before
+anything is forwarded; a malformed stored grant projects to no grant. The capability editor's
+Background jobs card keeps saved types the deployment no longer offers visible and removable, and
+offers Retry when discovery fails. The app-author behavior of the four job operations is the
+[Background jobs guide](../../apps/docs/src/apps/jobs.md); the design is
+`docs/design/background-jobs-plane.md`.
 
 `Visibility` is a discriminated union — `internal` | `group` (+ `groupId`) | `password` |
 `public` — stored flattened in the DB (`visibilityMode` + `visibilityGroupIds`, an any-of array) and reassembled
@@ -98,6 +120,14 @@ holds only effective state, "requested state" is just the set of open `ApprovalR
 the whole system ships without touching the edge's security-sensitive code (except the independent
 CSP `report-to` / `externalOrigins` loop).
 
+**Known gap, reported not resolved:** the write-gate covers *edits*. App **creation**
+(`POST /api/v1/apps`) accepts a full capabilities payload and stores it with no classification —
+so every elevated class (an `mcp` server, an `externalOrigins` entry, a `fetch.origins` origin, an
+over-baseline budget) can be born granted with no approval request. Whether births are gated, or
+creation's payload is restricted to baseline-shaped grants, is an open operator decision (see the
+initiative's decision log); the jobs slice of this hole is closed — an uninstalled type cannot be
+born granted at all, and an installed one is baseline by definition.
+
 **Baseline vs. elevated.** A pure classifier in `@azx-pbc/shared` (`classifyChange`,
 `classifyVisibilityChange`) diffs the requested capabilities against effective state and splits the
 change into a typed list of **deltas**, each tagged baseline or elevated:
@@ -122,6 +152,7 @@ SPA's pre-submit warning never drift:
 | externalOrigins | — | any origin added | med |
 | fetch.origins | — | any proxied origin (secret-bound = high) | med / high |
 | offline | giving up the grant | taking it, or moving the scope | med |
+| jobs.types | adding **or** removing a qualified type (removing the last drops the grant) | — | med / low |
 | visibility | internal / group / password | **→ public** | high |
 
 The per-delta risk travels on the delta itself (`Delta.risk`), and the admin queue renders it: one

@@ -83,6 +83,7 @@ function toCallRow(
     userEmail: r.userEmail,
     userKind: r.userKind,
     capability: r.capability,
+    env: r.env,
     model: r.model,
     inputTokens: r.inputTokens,
     outputTokens: r.outputTokens,

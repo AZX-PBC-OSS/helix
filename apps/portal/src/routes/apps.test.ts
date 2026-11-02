@@ -7,6 +7,7 @@ import {
   uniqueSlug,
   type TestApp,
 } from "../test/harness.js";
+import { SERVING_JOBS_CATALOGUE, withEnv } from "../test/env.js";
 
 let t: TestApp;
 
@@ -57,6 +58,67 @@ describe("POST /api/v1/apps", () => {
     const res = await createApp({ slug: "Bad Slug", displayName: "X" });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe("validation_failed");
+  });
+
+  it("grants an installed jobs type at creation, and refuses an uninstalled one", async () => {
+    const slug = uniqueSlug();
+    await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+      const created = await createApp({
+        slug,
+        displayName: "Born with jobs",
+        capabilities: { jobs: { types: ["jobs:fetch"] } },
+      });
+      expect(created.statusCode).toBe(201);
+      // The create response carries no capability body — read the manifest.
+      const got = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(got.json().capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
+    });
+
+    const uninstalled = uniqueSlug();
+    await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+      const refused = await createApp({
+        slug: uninstalled,
+        displayName: "Ungrantable",
+        capabilities: { jobs: { types: ["jobs:report"] } },
+      });
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json().error.code).toBe("validation_failed");
+    });
+    // The refused app does not exist — the refusal precedes any write.
+    const got = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${uninstalled}`,
+      headers: authHeader(),
+    });
+    expect(got.statusCode).toBe(404);
+  });
+
+  it("refuses a jobs grant at creation while jobs is fully disabled, and creates no app", async () => {
+    // The disabled posture is the deployment's live default until the
+    // catalogue-source wiring lands: even the production type is ungrantable
+    // at birth, because the empty pre-image makes every requested type an
+    // addition.
+    const slug = uniqueSlug();
+    await withEnv({ PORTAL_JOBS_CATALOGUE: undefined }, async () => {
+      const refused = await createApp({
+        slug,
+        displayName: "Born disabled",
+        capabilities: { jobs: { types: ["jobs:fetch"] } },
+      });
+      expect(refused.statusCode).toBe(400);
+      expect(refused.json().error.code).toBe("validation_failed");
+      expect(refused.json().error.message).toContain("jobs:fetch");
+    });
+    const got = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}`,
+      headers: authHeader(),
+    });
+    expect(got.statusCode).toBe(404);
   });
 
   it("creates with an optional description and round-trips it on read", async () => {
@@ -292,6 +354,38 @@ describe("manifest (capabilities) GET/PUT", () => {
     expect(got.json().capabilities).toEqual({ mcp: [], externalOrigins: [] });
   });
 
+  it("births elevated-shaped grants with no approval request — the create route runs no classifier", async () => {
+    // The known gap the create route's comment records: unlike the manifest
+    // PUT, creation classifies nothing, so every elevated capability class
+    // (an mcp server, a direct-CSP origin, a fetch origin, an over-baseline
+    // budget) commits verbatim. This pins the gap's exact shape at the route
+    // level — the existing storage test uses an under-baseline grant — so a
+    // change here (closing the gap, or gating only part of it) cannot land
+    // without touching this test and the marker beside the route together.
+    const slug = uniqueSlug();
+    const created = await createApp({
+      slug,
+      displayName: "Born elevated",
+      capabilities: {
+        mcp: ["pagerduty"],
+        externalOrigins: ["https://one.example"],
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const got = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: authHeader(),
+    });
+    expect(got.json().capabilities.mcp).toEqual(["pagerduty"]);
+    expect(got.json().capabilities.externalOrigins).toEqual(["https://one.example"]);
+    // No pending request exists for the elevated classes the PUT would queue.
+    const reqs = await t.prisma.approvalRequest.findMany({
+      where: { appId: created.json().id },
+    });
+    expect(reqs).toHaveLength(0);
+  });
+
   it("replaces grants via PUT (auth required) and audits the change", async () => {
     const slug = uniqueSlug();
     const created = await createApp({ slug, displayName: "Editable" });
@@ -364,6 +458,366 @@ describe("manifest (capabilities) GET/PUT", () => {
       payload: { capabilities: { llm: { models: ["m"] } } },
     });
     expect(res.statusCode).toBe(404);
+  });
+
+  // The jobs grant rides the existing write-gate: type additions are baseline
+  // (nothing queues) and the delta path is the ordinary array-membership one.
+  describe("jobs grants (background jobs)", () => {
+    const putManifest = (slug: string, capabilities: unknown) =>
+      t.app.inject({
+        method: "PUT",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+        payload: { capabilities },
+      });
+
+    it("adds a qualified type as a baseline change through the real write path", async () => {
+      const slug = uniqueSlug();
+      const created = await createApp({ slug, displayName: "Jobs App" });
+      // The deployment offers the fetch type; the add commits immediately.
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        const put = await putManifest(slug, { jobs: { types: ["jobs:fetch"] } });
+        expect(put.statusCode).toBe(200);
+        const body = put.json();
+        expect(body.pending).toBeNull();
+        expect(body.applied.map((d: { path: string }) => d.path)).toEqual([
+          "jobs.types[+jobs:fetch]",
+        ]);
+        expect(body.manifest.capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
+      });
+
+      const events = await t.prisma.auditEvent.findMany({ where: { appId: created.json().id } });
+      expect(events.map((e: { action: string }) => e.action)).toContain("app.manifest.set");
+    });
+
+    it("refuses a type no serving server installs, and a grant while jobs is fully disabled", async () => {
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      // An installed-looking type the deployment does not offer — the write
+      // gate checks additions against the catalogue source at write time.
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        const unavailable = await putManifest(slug, { jobs: { types: ["jobs:report"] } });
+        expect(unavailable.statusCode).toBe(400);
+        expect(unavailable.json().error.code).toBe("validation_failed");
+        expect(unavailable.json().error.message).toContain("jobs:report");
+      });
+      // Fully disabled — even the fetch type is not grantable.
+      const disabled = await putManifest(slug, { jobs: { types: ["jobs:fetch"] } });
+      expect(disabled.statusCode).toBe(400);
+      expect(disabled.json().error.code).toBe("validation_failed");
+      // Nothing was written by either refused attempt.
+      const got = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(got.json().capabilities.jobs).toBeUndefined();
+    });
+
+    it("a removed withdrawn type cannot be re-added", async () => {
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      await t.prisma.app.update({
+        where: { slug },
+        data: { capabilities: { jobs: { types: ["legacy:thing"] } } },
+      });
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        const removed = await putManifest(slug, { data: { user: true } });
+        expect(removed.statusCode).toBe(200);
+        expect(removed.json().manifest.capabilities.jobs).toBeUndefined();
+
+        const reAdded = await putManifest(slug, {
+          data: { user: true },
+          jobs: { types: ["legacy:thing"] },
+        });
+        expect(reAdded.statusCode).toBe(400);
+        expect(reAdded.json().error.code).toBe("validation_failed");
+      });
+    });
+
+    it("preserves a saved withdrawn type through an unrelated save, and stays removable", async () => {
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      // A grant saved while a now-retired server still offered `legacy:thing`:
+      // seeded directly, because the write path refuses *new* grants of types
+      // no serving server installs — which is exactly why the preservation
+      // path must never re-validate a saved type. The PUT below runs with the
+      // catalogue source configured, so the withdrawn type passes the addition
+      // check as a keep, not an add.
+      await t.prisma.app.update({
+        where: { slug },
+        data: { capabilities: { jobs: { types: ["jobs:fetch", "legacy:thing"] } } },
+      });
+
+      // An unrelated save — a data grant — round-trips the withdrawn type
+      // untouched, with no jobs delta manufactured for it.
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        const unrelated = await putManifest(slug, {
+          data: { user: true },
+          jobs: { types: ["jobs:fetch", "legacy:thing"] },
+        });
+        expect(unrelated.statusCode).toBe(200);
+        expect(unrelated.json().applied.map((d: { path: string }) => d.path)).toEqual([
+          "data.user",
+        ]);
+        expect(unrelated.json().manifest.capabilities.jobs).toEqual({
+          types: ["jobs:fetch", "legacy:thing"],
+        });
+
+        // Removing the last type removes the grant — the block goes, not an
+        // empty one.
+        const removed = await putManifest(slug, { data: { user: true } });
+        expect(removed.statusCode).toBe(200);
+        expect(removed.json().applied.map((d: { path: string }) => d.path)).toEqual([
+          "jobs.types[-jobs:fetch]",
+          "jobs.types[-legacy:thing]",
+        ]);
+        expect(removed.json().manifest.capabilities.jobs).toBeUndefined();
+      });
+    });
+
+    it("a saved withdrawn type survives an unrelated save and stays removable while jobs is fully disabled", async () => {
+      // The disabled posture is the deployment's live default until the
+      // catalogue-source wiring lands, and apps may already hold grants from
+      // a retired server. The gate must treat a kept type as a keep even when
+      // the deployment advertises nothing at all — a gate that refused every
+      // requested type on a disabled deployment would brick every manifest
+      // save for the apps holding those grants.
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      await t.prisma.app.update({
+        where: { slug },
+        data: { capabilities: { jobs: { types: ["legacy:thing"] } } },
+      });
+      await withEnv({ PORTAL_JOBS_CATALOGUE: undefined }, async () => {
+        // The save that KEEPS the type (a full replace still carrying it):
+        const kept = await putManifest(slug, {
+          data: { user: true },
+          jobs: { types: ["legacy:thing"] },
+        });
+        expect(kept.statusCode).toBe(200);
+        expect(kept.json().manifest.capabilities.jobs).toEqual({ types: ["legacy:thing"] });
+
+        // The save that REMOVES it — removal never consults the deployment:
+        const removed = await putManifest(slug, { data: { user: true } });
+        expect(removed.statusCode).toBe(200);
+        expect(removed.json().manifest.capabilities.jobs).toBeUndefined();
+
+        // …and once removed, the disabled deployment re-refuses the re-add.
+        const reAdded = await putManifest(slug, {
+          data: { user: true },
+          jobs: { types: ["legacy:thing"] },
+        });
+        expect(reAdded.statusCode).toBe(400);
+        expect(reAdded.json().error.code).toBe("validation_failed");
+        expect(reAdded.json().error.message).toContain("legacy:thing");
+      });
+    });
+
+    it("an origin grant preserves a saved withdrawn type and files no jobs delta, with the catalogue source configured", async () => {
+      // The origin-grant route's safety rests on its `mutate` spreading the
+      // effective capabilities — the withdrawn type is a keep, never an add,
+      // and the relative append must not rebuild the blob without it. A
+      // mutate that stopped spreading would silently strip saved grants from
+      // every one-click origin grant.
+      const slug = uniqueSlug();
+      const created = await createApp({ slug, displayName: "Origins" });
+      await t.prisma.app.update({
+        where: { slug },
+        data: { capabilities: { jobs: { types: ["legacy:thing"] } } },
+      });
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        const grant = await t.app.inject({
+          method: "POST",
+          url: `/api/v1/apps/${slug}/access/origin`,
+          headers: authHeader(),
+          payload: { origin: "https://one.example" },
+        });
+        expect(grant.statusCode).toBe(200);
+        // The origin waits for approval — the elevated-only shape.
+        expect(grant.json().applied).toEqual([]);
+        expect(grant.json().pending).not.toBeNull();
+        // The withdrawn type survived the grant…
+        expect(grant.json().manifest.capabilities.jobs).toEqual({ types: ["legacy:thing"] });
+        // …and the filed request carries the origin alone.
+        const reqs = await t.prisma.approvalRequest.findMany({
+          where: { appId: created.json().id },
+        });
+        expect(reqs).toHaveLength(1);
+        expect(reqs.flatMap((r) => (r.deltas as { path: string }[]).map((d) => d.path))).toEqual([
+          "externalOrigins[+https://one.example]",
+        ]);
+      });
+      const got = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(got.json().capabilities.jobs).toEqual({ types: ["legacy:thing"] });
+    });
+
+    it("a duplicated type at creation is stored verbatim and persists until the block is removed", async () => {
+      // `JobsCapabilitySchema` is syntax-only — no set rule — and creation
+      // stores the parsed payload verbatim, so a duplicated qualified type is
+      // born into the blob. The write path's array deltas are set-based and
+      // `applyArray`'s add never dedupes an existing array, so the duplicate
+      // survives every save short of removing the block. Membership semantics
+      // are unaffected everywhere (the gate, classifier and edge all treat the
+      // grant as a set); this pins the stored shape's actual lifetime so the
+      // schema fix that dedupes it lands knowing what it changes.
+      const slug = uniqueSlug();
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        const created = await createApp({
+          slug,
+          displayName: "Duplicate born",
+          capabilities: { jobs: { types: ["jobs:fetch", "jobs:fetch"] } },
+        });
+        expect(created.statusCode).toBe(201);
+        const got = await t.app.inject({
+          method: "GET",
+          url: `/api/v1/apps/${slug}/manifest`,
+          headers: authHeader(),
+        });
+        expect(got.json().capabilities.jobs).toEqual({ types: ["jobs:fetch", "jobs:fetch"] });
+
+        // The no-op save commits no jobs delta (the classifier diffs a set)
+        // and does not normalize the stored array.
+        const noOp = await putManifest(slug, {
+          jobs: { types: ["jobs:fetch", "jobs:fetch"] },
+        });
+        expect(noOp.statusCode).toBe(200);
+        expect(noOp.json().applied).toEqual([]);
+        expect(noOp.json().manifest.capabilities.jobs).toEqual({
+          types: ["jobs:fetch", "jobs:fetch"],
+        });
+
+        // Removing the block clears every copy at once.
+        const removed = await putManifest(slug, {});
+        expect(removed.statusCode).toBe(200);
+        expect(removed.json().manifest.capabilities.jobs).toBeUndefined();
+      });
+    });
+
+    it("refuses a bare alias, a wildcard and a jobs budget field with 400", async () => {
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      for (const jobs of [
+        { types: ["fetch"] },
+        { types: ["jobs:*"] },
+        { types: ["jobs:fetch"], jobsPerDay: 5 },
+      ]) {
+        const res = await putManifest(slug, { jobs });
+        expect(res.statusCode, JSON.stringify(jobs)).toBe(400);
+        expect(res.json().error.code).toBe("validation_failed");
+      }
+      // Nothing was written by any of the refused attempts.
+      const got = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(got.json().capabilities.jobs).toBeUndefined();
+    });
+
+    it("a misconfigured catalogue source at write time is a platform failure (500), never a client 400", async () => {
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      // The gate reads the catalogue source per write; a delivery that is not
+      // a valid projection is the platform's failure, so it must surface as
+      // the internal 500 exactly as the catalogue read route does — a 400
+      // here would read as the caller's mistake.
+      await withEnv({ PORTAL_JOBS_CATALOGUE: "not json" }, async () => {
+        const put = await putManifest(slug, { data: { user: true } });
+        expect(put.statusCode).toBe(500);
+        expect(put.json().error.code).toBe("internal");
+      });
+      const got = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(got.json().capabilities.data).toBeUndefined();
+    });
+
+    it("a type a retiring server still installs is refused as a new grant", async () => {
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      // The retiring entry keeps its installed list, but retirement closes
+      // catalogue additions: the write gate derives the advertised set from
+      // the serving entries only, so a new grant of the installed type is
+      // refused even though the configuration still names it.
+      await withEnv(
+        {
+          PORTAL_JOBS_CATALOGUE: '{"servers":{"jobs":{"state":"retiring","types":["jobs:fetch"]}}}',
+        },
+        async () => {
+          const put = await putManifest(slug, { jobs: { types: ["jobs:fetch"] } });
+          expect(put.statusCode).toBe(400);
+          expect(put.json().error.code).toBe("validation_failed");
+          expect(put.json().error.message).toContain("jobs:fetch");
+        },
+      );
+      const got = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(got.json().capabilities.jobs).toBeUndefined();
+    });
+
+    it("an unavailable jobs add refuses the whole save — even when the rest queues for approval", async () => {
+      const slug = uniqueSlug();
+      const created = await createApp({ slug, displayName: "Jobs App" });
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        // The mcp grant alone is an elevated change that files a request; the
+        // unavailable jobs add must refuse before classification, so the save
+        // lands as neither a baseline write nor a pending request.
+        const mixed = await putManifest(slug, {
+          data: { user: true },
+          mcp: ["pagerduty"],
+          jobs: { types: ["jobs:report"] },
+        });
+        expect(mixed.statusCode).toBe(400);
+        expect(mixed.json().error.code).toBe("validation_failed");
+        expect(mixed.json().error.message).toContain("jobs:report");
+      });
+      const reqs = await t.prisma.approvalRequest.findMany({
+        where: { appId: created.json().id },
+      });
+      expect(reqs).toHaveLength(0);
+      const got = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(got.json().capabilities.mcp).toEqual([]);
+      expect(got.json().capabilities.data).toBeUndefined();
+      expect(got.json().capabilities.jobs).toBeUndefined();
+    });
+
+    it("names every unavailable type in one refusal, not just the first", async () => {
+      const slug = uniqueSlug();
+      await createApp({ slug, displayName: "Jobs App" });
+      // Two unavailable types in one save — one uninstalled, one synthetic:
+      // the refusal is the author's only feedback, so it must report each
+      // offending id. A gate that stopped at the first violation would leave
+      // the author fixing one type at a time with no signal about the rest.
+      await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+        const put = await putManifest(slug, {
+          jobs: { types: ["jobs:report", "legacy:thing"] },
+        });
+        expect(put.statusCode).toBe(400);
+        expect(put.json().error.code).toBe("validation_failed");
+        expect(put.json().error.message).toContain("jobs:report");
+        expect(put.json().error.message).toContain("legacy:thing");
+      });
+      const got = await t.app.inject({
+        method: "GET",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: authHeader(),
+      });
+      expect(got.json().capabilities.jobs).toBeUndefined();
+    });
   });
 });
 

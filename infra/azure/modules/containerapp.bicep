@@ -32,8 +32,8 @@ param name string
 @description('Managed environment id.')
 param environmentId string
 
-@description('User-assigned managed identity resource id.')
-param userAssignedIdentityId string
+@description('User-assigned managed identity resource id. Empty = no managed identity: the app holds no Azure credential at all (the jobs service).')
+param userAssignedIdentityId string = ''
 
 @description('Container image reference (registry/repo:tag), e.g. ghcr.io/azx-pbc-oss/helix-edge:latest.')
 param image string
@@ -68,6 +68,9 @@ param registries array = []
 
 @description('Container start command override (replaces the image CMD). Empty = use the image default. Used to run the edge image as the dev-gateway (`start:devgw`).')
 param command array = []
+
+@description('ACA container probes ({ type: \'Startup\'|\'Liveness\'|\'Readiness\', httpGet: { path, port }, ... }). Empty = the image runs on ACA\'s defaults (no explicit probes), which keeps existing apps byte-identical.')
+param probes array = []
 
 // Typed so a wrong bindingType ('SNIEnabled', say) is a `bicep build` failure
 // here, not a deploy-time ARM failure on the edge app — for a template whose
@@ -114,12 +117,14 @@ var ingressConfig = union(
 resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: name
   location: location
-  identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${userAssignedIdentityId}': {}
-    }
-  }
+  identity: empty(userAssignedIdentityId)
+    ? { type: 'None' }
+    : {
+        type: 'UserAssigned'
+        userAssignedIdentities: {
+          '${userAssignedIdentityId}': {}
+        }
+      }
   properties: {
     managedEnvironmentId: environmentId
     configuration: {
@@ -141,7 +146,10 @@ resource containerApp 'Microsoft.App/containerApps@2024-03-01' = {
             env: envVars
           },
           // Only override the image CMD when a command is supplied (dev-gateway).
-          empty(command) ? {} : { command: command }
+          empty(command) ? {} : { command: command },
+          // Only add probes when supplied (the jobs app); omitting them keeps
+          // ACA's implicit probe defaults for every other app.
+          empty(probes) ? {} : { probes: probes }
         )
       ]
       scale: {

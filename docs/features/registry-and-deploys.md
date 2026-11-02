@@ -108,7 +108,9 @@ primitive, not an observability sink).
 ## Schema (Prisma — `apps/portal/prisma/schema.prisma`)
 
 - **`apps`** — slug, displayName, `description?` (plain text ≤ 500 chars), `visibilityMode` +
-  `visibilityGroupIds`, `currentVersionId` (1:1 → live version), `capabilities` JSON, `archivedAt`.
+  `visibilityGroupIds`, `currentVersionId` (1:1 → live version), `capabilities` JSON, `archivedAt`,
+  `jobsGeneration` (the jobs lifecycle generation — bumped in the archive/unarchive transaction;
+  the edge projection carries it as a canonical decimal string).
 - **`versions`** — `(appId, number)` unique, `blobPrefix`, `status`.
 - **`sessions`** — edge-owned session state (portal owns the migration); see
   [authentication.md](./authentication.md).

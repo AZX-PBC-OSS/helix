@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import type { TokenVerifier } from "../plugins/auth.js";
 import { Prisma, type PrismaClient } from "../db/client.js";
 import { buildTestApp, createTestPrisma, uniqueSlug, type TestApp } from "../test/harness.js";
+import { SERVING_JOBS_CATALOGUE, withEnv } from "../test/env.js";
 
 // Two actors: an app owner (no admin group) and a platform admin.
 const OWNER = "owner@azx.io";
@@ -198,6 +199,56 @@ describe("approve", () => {
       url: `/api/v1/apps/${slug}/manifest`,
       headers: owner,
     });
+    expect(manifest.json().capabilities.mcp).toEqual(["pagerduty"]);
+  });
+
+  it("preserves a baseline jobs grant committed while the request was pending", async () => {
+    // The stale-snapshot check covers only the areas the request's own deltas
+    // touch (mcp here), and the apply re-bases on the effective row read inside
+    // the approve transaction. So an unrelated save that lands a baseline grant
+    // in another area meanwhile must neither bounce the approve nor be clobbered
+    // by it. The failure shapes this pins: applying the elevated deltas to the
+    // filing-time state instead of the current row (the jobs grant vanishes), or
+    // treating the untouched area's change as a moved snapshot (auto-bounce).
+    const { slug, requestId } = await appWithPendingRequest();
+
+    // The save runs with the catalogue source configured — the fetch type is
+    // an available addition, so the baseline commit goes through.
+    await withEnv({ PORTAL_JOBS_CATALOGUE: SERVING_JOBS_CATALOGUE }, async () => {
+      const jobsPut = await t.app.inject({
+        method: "PUT",
+        url: `/api/v1/apps/${slug}/manifest`,
+        headers: owner,
+        payload: { capabilities: { jobs: { types: ["jobs:fetch"] } } },
+      });
+      expect(jobsPut.statusCode).toBe(200);
+      // The unrelated save commits its own baseline delta and files nothing —
+      // the pending request stays open, untouched.
+      expect(jobsPut.json().applied.map((d: { path: string }) => d.path)).toEqual([
+        "jobs.types[+jobs:fetch]",
+      ]);
+      expect(jobsPut.json().pending).toBeNull();
+      // The pending mcp grant was never applied, so it is absent here.
+      expect(jobsPut.json().manifest.capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
+      expect(jobsPut.json().manifest.capabilities.mcp).toEqual([]);
+    });
+
+    const res = await t.app.inject({
+      method: "POST",
+      url: `/api/v1/approvals/${requestId}/approve`,
+      headers: admin,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe("approved");
+
+    // Both grants live: the approved mcp delta applied on top of the row the
+    // jobs save wrote, which still carries the jobs block.
+    const manifest = await t.app.inject({
+      method: "GET",
+      url: `/api/v1/apps/${slug}/manifest`,
+      headers: owner,
+    });
+    expect(manifest.json().capabilities.jobs).toEqual({ types: ["jobs:fetch"] });
     expect(manifest.json().capabilities.mcp).toEqual(["pagerduty"]);
   });
 
@@ -911,8 +962,14 @@ describe("concurrent decisions on one approval request", () => {
       expect({ status: row.status, mcp }).not.toEqual({ status: "withdrawn", mcp: ["pagerduty"] });
       expect({ status: row.status, mcp }).toEqual({ status: "approved", mcp: ["pagerduty"] });
 
-      // Exactly one decision in the ledger — the bug recorded both.
-      const events = await t.prisma.auditEvent.findMany({ where: { appId: appRow.id } });
+      // Exactly one decision in the ledger — the bug recorded both. The
+      // assertion reads chronologically: without an orderBy the read returns
+      // whatever plan Postgres picked (a uuid-PK index scan once returned the
+      // approve first), so the order the assertion means is stated explicitly.
+      const events = await t.prisma.auditEvent.findMany({
+        where: { appId: appRow.id },
+        orderBy: { createdAt: "asc" },
+      });
       expect(events.map((e) => e.action).filter((a) => a.startsWith("approval."))).toEqual([
         "approval.request",
         "approval.approve",
