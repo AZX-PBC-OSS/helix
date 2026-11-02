@@ -267,8 +267,16 @@ async function sessionIn(slug: string, email: string): Promise<AppSession> {
   return session;
 }
 
-/** How many requests the edge→jobs relay has carried so far. */
-const jobsForwards = (): number => link.forwarded.length;
+/**
+ * How many job operations the edge→jobs relay has carried so far. The edge's
+ * and dev gateway's reachability probes reach jobs through the same relay
+ * (`GET /health`, every second in the harness) and are not operations.
+ */
+const jobsForwards = (): number =>
+  link.forwarded.filter((e) => !(e.method === "GET" && e.path === "/health")).length;
+
+/** The relay log's current length, as a `.slice()` start for the entries that follow. */
+const forwardIndex = (): number => link.forwarded.length;
 
 // ── request shapes ───────────────────────────────────────────────────────────
 
@@ -851,7 +859,7 @@ describe("the assembled jobs trust boundary, through the real stack", () => {
       // edge must mint its OWN instruction from the session — none of the
       // caller's values may survive the forward.
       const body = JSON.stringify({ url: `${origin.origin}/s1?token=${QUERY_SECRET}` });
-      const forwardsBefore = jobsForwards();
+      const forwardsBefore = forwardIndex();
       const smuggled: Record<string, string> = {
         [INSTRUCTION_HEADER]: SMUGGLED_INSTRUCTION,
         traceparent: PLANTED_TRACEPARENT,
@@ -1043,7 +1051,7 @@ describe("the assembled jobs trust boundary, through the real stack", () => {
 
       // A fresh snapshot token, captured from the edge's own forward of one
       // bobA status read — the interception material an on-path attacker has.
-      const captureForwards = jobsForwards();
+      const captureForwards = forwardIndex();
       const captureRead = seen(await bobA.api("GET", statusPath(jobId)));
       expect(captureRead.status, "the snapshot capture read").toBe(200);
       const snapEntries = link.forwarded
@@ -1510,7 +1518,7 @@ describe("the assembled jobs trust boundary, through the real stack", () => {
       // her own job, and the suite captures the instruction the edge minted
       // for it: her ownerOid feeds test 8's personal-identity scan.
       const danaBody = JSON.stringify({ url: `${origin.origin}/dana` });
-      const forwardsBefore = jobsForwards();
+      const forwardsBefore = forwardIndex();
       const submitted = await submitJob(danaA.api, K2, danaBody, edgeAttempts);
       expect(submitted.status, "dana's submission").toBe(202);
       const danaJobId = JobAcceptedSchema.parse(submitted.json()).jobId;
@@ -1591,7 +1599,7 @@ describe("the assembled jobs trust boundary, through the real stack", () => {
           return snap.status === 403 ? snap : undefined;
         },
       );
-      const afterRevoke = jobsForwards();
+      const afterRevoke = forwardIndex();
       const refusedSubmit = await submitJob(danaA.api, randomUUID(), danaBody, edgeAttempts);
       // The edge throttles 10 submissions a minute per app (refusals count):
       // the suite stays well inside it so no answer above was a throttle's.
