@@ -121,6 +121,12 @@ export const ATTR_JOBS_TYPE = "helix.jobs.type";
  */
 export const ATTR_JOBS_ATTEMPT = "helix.jobs.attempt";
 /**
+ * How many times one attempt's begin waited for the execution store to answer
+ * before it started or gave up. Set on `helix.jobs.execute` only when nonzero.
+ * A bounded count; a span attribute, never a metric dimension.
+ */
+export const ATTR_JOBS_BEGIN_DEFERRALS = "helix.jobs.begin_deferrals";
+/**
  * The job's public reference id — a bounded opaque server-local string, as a
  * span attribute so an operator can join a trace to the snapshot the app
  * polls. Never a metric dimension.

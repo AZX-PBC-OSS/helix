@@ -318,6 +318,19 @@ on — the attempt's retry decision reads the runner row's own policy.
   gate's own deadline or cancellation write), the worker also cancels the
   claim's runner row with a fenced `cancel`. A `fail` would re-queue a type
   that permits retries, only for every retry to be refused again.
+- **A begin the store cannot answer keeps its claim.** When the begin
+  transaction fails on the store (missing grants during an upgrade, a
+  failover, a refused connection), the worker holds the claim and retries the
+  begin on a 1 s backoff doubling to 30 s, logging `jobs.execution.begin_deferred`
+  once and `jobs.execution.begin_resumed` when it goes ahead. Failing the
+  claim instead would spend one of the job's attempts on an outage the job
+  never saw, and a short grants window could exhaust a job's retries. pg-boss
+  keeps the claim's heartbeat fresh while the handler waits; the wait ends
+  with the claim (its per-attempt bound, a lost heartbeat, the worker
+  stopping), and only then is the attempt `unavailable` and failed through the
+  retry policy. A stopped execution store and a claim with no wrapper record
+  fail at once, because waiting cannot fix either. The span carries
+  `helix.jobs.begin_deferrals` when the begin waited.
 - **The attempt projection.** Begin writes `running` at the attempt number
   (`retryCount + 1`), resets the progress and clears the previous attempt's
   error; a handler reports bounded progress (`{step, of, label}`, validated at

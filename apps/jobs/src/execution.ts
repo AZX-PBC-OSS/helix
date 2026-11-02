@@ -1,3 +1,5 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { SpanStatusCode, type Span } from "@opentelemetry/api";
 import type { Db, JobWithMetadata, PgBoss, WorkOptions } from "pg-boss";
 import type { Pool, PoolClient } from "pg";
@@ -20,6 +22,7 @@ import {
 import {
   ATTR_APP_ID,
   ATTR_JOBS_ATTEMPT,
+  ATTR_JOBS_BEGIN_DEFERRALS,
   ATTR_JOBS_JOB_ID,
   ATTR_JOBS_TYPE,
   ATTR_OUTCOME,
@@ -187,6 +190,32 @@ export class JobsStoreUnavailable extends Error {
     this.name = "JobsStoreUnavailable";
   }
 }
+
+/** The execution store was stopped on purpose; nothing it is asked will answer again. */
+export class JobsExecutionStoreStopped extends Error {
+  constructor() {
+    super("the execution store is not running");
+    this.name = "JobsExecutionStoreStopped";
+  }
+}
+
+/**
+ * A claim with no wrapper record. The acceptance transaction commits both or
+ * neither, so this is corruption, and waiting for the store cannot fix it.
+ */
+export class JobsRecordMissing extends Error {
+  constructor(runnerJobId: string) {
+    super(
+      `no wrapper record is joined to runner job "${runnerJobId}" — the acceptance transaction commits both or neither`,
+    );
+    this.name = "JobsRecordMissing";
+  }
+}
+
+/** First wait before a deferred begin retries; doubles per retry. */
+const BEGIN_RETRY_INITIAL_MS = 1_000;
+/** Longest wait between begin retries. */
+const BEGIN_RETRY_MAX_MS = 30_000;
 
 /**
  * A pg-boss settle call answered without a numeric `affected` count. The
@@ -515,7 +544,7 @@ export class JobsExecutionStore {
   async beginAttempt(runnerJobId: string, attempt: number): Promise<BeginAttemptVerdict> {
     const pool = this.pool;
     if (this.stopped || !pool) {
-      throw new Error("the execution store is not running");
+      throw new JobsExecutionStoreStopped();
     }
     return withJobsClient(pool, async (client) => {
       await client.query("BEGIN");
@@ -533,9 +562,7 @@ export class JobsExecutionStore {
           // runner row together, and only the physical cleanup removes them —
           // together. A claim with no record is corruption; nothing honest
           // can be projected for it.
-          throw new Error(
-            `no wrapper record is joined to runner job "${runnerJobId}" — the acceptance transaction commits both or neither`,
-          );
+          throw new JobsRecordMissing(runnerJobId);
         }
         const status = publicStatus(row.status);
 
@@ -659,7 +686,7 @@ export class JobsExecutionStore {
   ): Promise<"persisted" | "refused"> {
     const pool = this.pool;
     if (this.stopped || !pool) {
-      throw new Error("the execution store is not running");
+      throw new JobsExecutionStoreStopped();
     }
     const parsed = JobProgressSchema.safeParse(progress);
     if (!parsed.success) {
@@ -765,7 +792,7 @@ export class JobsExecutionStore {
   ): Promise<JobsOutcomeVerdict> {
     const pool = this.pool;
     if (this.stopped || !pool) {
-      throw new Error("the execution store is not running");
+      throw new JobsExecutionStoreStopped();
     }
     return withJobsClient(pool, async (client) => {
       await client.query("BEGIN");
@@ -973,21 +1000,59 @@ export class JobsExecution {
 
   private async attempt(boss: PgBoss, job: JobWithMetadata<unknown>, span: Span): Promise<void> {
     // ── the start gate and the attempt's projection ────────────────────────
-    let begun: BeginAttemptVerdict;
-    try {
-      begun = await this.store.beginAttempt(job.id, job.retryCount + 1);
-    } catch (error) {
-      this.log.error(
-        { event: "jobs.execution.unavailable", runnerJobId: job.id, err: error },
-        "the execution store could not begin the attempt",
+    // A begin the store cannot answer keeps the claim and retries instead of
+    // failing the attempt: failing would spend one of the job's attempts on
+    // an outage the job never saw (a grants window during an upgrade, a
+    // failover). pg-boss keeps refreshing the claim's heartbeat while the
+    // handler waits, and `job.signal` aborts when the claim ends (its
+    // per-attempt bound, a lost heartbeat) or the worker stops, so the wait
+    // is bounded by the same limit as any running attempt. A stopped store
+    // and a claim with no record fail at once: neither recovers by waiting.
+    let begun: BeginAttemptVerdict | undefined;
+    let deferrals = 0;
+    while (begun === undefined) {
+      try {
+        begun = await this.store.beginAttempt(job.id, job.retryCount + 1);
+      } catch (error) {
+        const deferrable =
+          !(error instanceof JobsExecutionStoreStopped) &&
+          !(error instanceof JobsRecordMissing) &&
+          !job.signal.aborted;
+        if (deferrable) {
+          deferrals += 1;
+          if (deferrals === 1) {
+            this.log.warn(
+              { event: "jobs.execution.begin_deferred", runnerJobId: job.id, err: error },
+              "the execution store could not begin the attempt — the claim is kept and the begin retries",
+            );
+          }
+          const delayMs = Math.min(
+            BEGIN_RETRY_INITIAL_MS * 2 ** (deferrals - 1),
+            BEGIN_RETRY_MAX_MS,
+          );
+          const waited = await sleep(delayMs, true, { signal: job.signal }).catch(() => false);
+          if (waited) continue;
+        }
+        if (deferrals > 0) span.setAttribute(ATTR_JOBS_BEGIN_DEFERRALS, deferrals);
+        this.log.error(
+          { event: "jobs.execution.unavailable", runnerJobId: job.id, deferrals, err: error },
+          "the execution store could not begin the attempt",
+        );
+        span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsExecuteOutcome);
+        failSpan(span, error);
+        countExecution("unavailable");
+        // The controlled disposition: the runner row fails through its own
+        // retry policy, and the span's grading stays here — the wrapper's
+        // escape hatch never sees an ungraded unavailable.
+        throw new JobsStoreUnavailable({ cause: error });
+      }
+    }
+    if (deferrals > 0) {
+      span.setAttribute(ATTR_JOBS_BEGIN_DEFERRALS, deferrals);
+      this.log.info(
+        { event: "jobs.execution.begin_resumed", runnerJobId: job.id, deferrals },
+        "the execution store answered — the deferred begin went ahead on the same claim",
       );
-      span.setAttribute(ATTR_OUTCOME, "unavailable" satisfies JobsExecuteOutcome);
-      failSpan(span, error);
-      countExecution("unavailable");
-      // The controlled disposition: the runner row fails through its own
-      // retry policy, and the span's grading stays here — the wrapper's
-      // escape hatch never sees an ungraded unavailable.
-      throw new JobsStoreUnavailable({ cause: error });
     }
     if (begun.verdict === "gate_refused") {
       this.log.warn(

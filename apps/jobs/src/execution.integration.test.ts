@@ -952,6 +952,111 @@ describe("the execution seam's telemetry", () => {
     }
   });
 
+  test(
+    "a begin the store cannot answer keeps its claim and resumes on the same attempt — the outage spends none of the job's attempts",
+    { timeout: 60_000 },
+    async () => {
+      const appId = anApp();
+      await deliverGeneration(appId, "1", false);
+      // retryLimit 0: a spent attempt would end this job terminally, so a
+      // success proves the outage cost nothing.
+      const jobId = await seedJob({ appId, data: { url: "https://example.com/data.json" } });
+      currentHandler = async () => ({ ran: true });
+      const owner = new Pool({
+        connectionString: urlFor(SCRATCH_DB, "helix_jobs_migrate"),
+        max: 1,
+      });
+      const grants = `SELECT, INSERT, UPDATE, DELETE ON ${JOBS_JOB_RECORD_QUALIFIED}`;
+      const runnerState = async () =>
+        (
+          await owner.query<{ state: string; retry_count: number }>(
+            `SELECT r.state, r.retry_count FROM ${JOBS_PGBOSS_SCHEMA}.job r
+               JOIN ${JOBS_JOB_RECORD_QUALIFIED} w ON w.runner_job_id = r.id::text
+              WHERE w.job_id = $1`,
+            [jobId],
+          )
+        ).rows[0];
+      await owner.query(`REVOKE ${grants} FROM ${JOBS_RUNTIME_ROLE}`);
+      try {
+        await withWorker(async () => {
+          await waitFor("the worker to claim the job", async () => {
+            return (await runnerState())?.state === "active";
+          });
+          // Two deferred begins (1 s, then 2 s): the claim is still held and
+          // no attempt has been spent.
+          await new Promise((r) => setTimeout(r, 3_500));
+          expect(await runnerState()).toEqual({ state: "active", retry_count: 0 });
+
+          await owner.query(`GRANT ${grants} TO ${JOBS_RUNTIME_ROLE}`);
+          await waitFor("the resumed attempt to project its success", async () => {
+            return (await recordRow(jobId)).status === "succeeded";
+          });
+        });
+      } finally {
+        await owner.query(`GRANT ${grants} TO ${JOBS_RUNTIME_ROLE}`);
+        await owner.end();
+      }
+
+      const row = await recordRow(jobId);
+      expect(row.attempt).toBe(1);
+      expect((await runnerRow(jobId)).retry_count).toBe(0);
+      const span = recording
+        .spans()
+        .find(
+          (s) => s.name === "helix.jobs.execute" && s.attributes["helix.jobs.job_id"] === jobId,
+        );
+      expect(span?.attributes["helix.outcome"]).toBe("succeeded");
+      expect(Number(span?.attributes["helix.jobs.begin_deferrals"])).toBeGreaterThanOrEqual(1);
+    },
+  );
+
+  test(
+    "a deferred begin ends with its claim — when the claim's own bound passes, the attempt is unavailable and nothing is projected",
+    { timeout: 90_000 },
+    async () => {
+      const appId = anApp();
+      await deliverGeneration(appId, "1", false);
+      // A 2 s claim bound: pg-boss's maintenance expires the claim, the
+      // heartbeat finds it gone and aborts the handler's signal.
+      const jobId = await seedJob({
+        appId,
+        data: { url: "https://example.com/data.json" },
+        expireInSeconds: 2,
+      });
+      currentHandler = async () => "must never run";
+      const isDeferredUnavailable = (s: ReturnType<RecordingTelemetry["spans"]>[number]) =>
+        s.name === "helix.jobs.execute" &&
+        s.attributes["helix.outcome"] === "unavailable" &&
+        Number(s.attributes["helix.jobs.begin_deferrals"]) >= 1;
+      const owner = new Pool({
+        connectionString: urlFor(SCRATCH_DB, "helix_jobs_migrate"),
+        max: 1,
+      });
+      const grants = `SELECT, INSERT, UPDATE, DELETE ON ${JOBS_JOB_RECORD_QUALIFIED}`;
+      await owner.query(`REVOKE ${grants} FROM ${JOBS_RUNTIME_ROLE}`);
+      try {
+        await withWorker(async () => {
+          // No begin landed, so the span carries no job id (identity is
+          // set at begin); this leg's is the one deferred-and-unavailable span.
+          await waitFor("the deferred attempt's span to end", async () =>
+            recording.spans().some(isDeferredUnavailable),
+          );
+        });
+      } finally {
+        await owner.query(`GRANT ${grants} TO ${JOBS_RUNTIME_ROLE}`);
+        await owner.end();
+      }
+
+      const span = recording.spans().find(isDeferredUnavailable);
+      expect(span?.attributes["helix.outcome"]).toBe("unavailable");
+      expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+      expect(Number(span?.attributes["helix.jobs.begin_deferrals"])).toBeGreaterThanOrEqual(1);
+      const row = await recordRow(jobId);
+      expect(row.status).toBe("queued");
+      expect(row.attempt).toBeNull();
+    },
+  );
+
   test("a success the store cannot settle leaves the record mid-flight and the claim fails through the retry policy — no completed row without its result", async () => {
     const appId = anApp();
     await deliverGeneration(appId, "1", false);
