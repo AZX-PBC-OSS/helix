@@ -26,6 +26,7 @@ import { JobsRunner } from "./runner.js";
 import { createPgbossEnqueuer, JobsAcceptanceStore } from "./acceptance.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
 import { submitClaims, TEST_IDENTITY } from "./test/instructions.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The per-process execution allowance, measured (design §6, ADR-0008): one
@@ -104,7 +105,7 @@ beforeAll(async () => {
   // The admission store's enqueue rides this suite's own started instance —
   // the same borrowed-transaction adapter production composes. The worker
   // processes under measurement are separate runners, started per leg.
-  boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+  boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
   await boss.start();
   acceptance = new JobsAcceptanceStore({
     databaseUrl: RUNTIME_DSN,

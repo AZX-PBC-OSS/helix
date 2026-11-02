@@ -5,7 +5,6 @@ import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
-import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 
 import {
@@ -44,6 +43,7 @@ import {
 } from "../../edge/src/test/fakes.js";
 import { testAuthConfig, testEdgeConfig } from "../../edge/src/test/config.js";
 import { FakeBurnStore, FakeEgress } from "../../edge/src/gateway/jobsCallbackFixtures.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The production composition, as a real process: `src/server.ts` booted with
@@ -2282,7 +2282,7 @@ describe("the composed cleanup loop", () => {
 
       // A parked runner row, enqueued the way admission does, and its
       // wrapper record backdated past the thirty-day record horizon.
-      const seedBoss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+      const seedBoss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
       await seedBoss.start();
       const runnerJobId = await seedBoss.send(
         JOBS_QUEUE_NAME,
@@ -2381,7 +2381,7 @@ describe("the composed cleanup loop", () => {
       const pool = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
       try {
         const runnerJobId = await (async () => {
-          const seedBoss = new PgBoss({
+          const seedBoss = newTestBoss({
             connectionString: RUNTIME_DSN,
             ...jobsRuntimeBossOptions(),
           });

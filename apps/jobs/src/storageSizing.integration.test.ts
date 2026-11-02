@@ -25,6 +25,7 @@ import {
 import { JobsRunner, deleteRunnerJobs } from "./runner.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
 import { submitClaims, TEST_IDENTITY } from "./test/instructions.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The jobs store's physical storage per job, measured: the heap, TOAST and
@@ -84,7 +85,7 @@ let owner: Pool;
 beforeAll(async () => {
   await applyRolesProvisioning(SCRATCH_DB);
   await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
-  boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+  boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
   await boss.start();
   lifecycle = new JobsLifecycleStore({
     databaseUrl: RUNTIME_DSN,

@@ -35,6 +35,7 @@ import {
 import { deleteRunnerJobs, type JobsRunnerDeleter } from "./runner.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
 import { recordReadClaims, submitClaims, TEST_BODY, TEST_IDENTITY } from "./test/instructions.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The retention contract's physical half against the real store, the real
@@ -97,7 +98,7 @@ let direct: Pool;
 beforeAll(async () => {
   await applyRolesProvisioning(SCRATCH_DB);
   await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
-  boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+  boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
   await boss.start();
   lifecycle = new JobsLifecycleStore({
     databaseUrl: RUNTIME_DSN,

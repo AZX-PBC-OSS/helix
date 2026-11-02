@@ -33,6 +33,7 @@ import {
   jobsLifecycleDeliveryCheck,
 } from "../../portal/src/jobs/delivery.js";
 import { HttpLifecycleDelivery } from "../../portal/src/jobs/deliveryHttp.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The enablement synchronization journey end to end (ADR-0007, ADR-0009,
@@ -218,7 +219,7 @@ beforeAll(async () => {
   const scratch = await createScratchPortalDatabase("helix_portal_enablement");
   dropPortalScratch = scratch.drop;
   prisma = createPrismaClient(scratch.url);
-  boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+  boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
   await boss.start();
   direct = new Pool({ connectionString: RUNTIME_DSN, max: 1 });
   receiver = await startReceiver();

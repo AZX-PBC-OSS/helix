@@ -55,6 +55,7 @@ import {
   TEST_BODY,
   TEST_IDENTITY,
 } from "./test/instructions.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The durable intake closure against the real store, the real admission
@@ -113,7 +114,7 @@ let owner: Pool;
 beforeAll(async () => {
   await applyRolesProvisioning(SCRATCH_DB);
   await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
-  boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+  boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
   await boss.start();
   admission = new JobsAcceptanceStore({
     databaseUrl: RUNTIME_DSN,

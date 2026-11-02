@@ -19,6 +19,7 @@ import { JobsRecovery } from "./recovery.js";
 import { cancelRunnerJob, readRunnerJobState } from "./runner.js";
 import { seedRunnerJobWithRecord } from "./test/recordSeed.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The archive-cancellation recovery against the real store, the real runner
@@ -96,7 +97,7 @@ beforeAll(async () => {
     log: LOG,
   });
   lifecycle.start();
-  boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+  boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
   await boss.start();
   execution = new JobsExecution({
     databaseUrl: RUNTIME_DSN,

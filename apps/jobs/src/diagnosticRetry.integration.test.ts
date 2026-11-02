@@ -16,6 +16,7 @@ import { migrateJobsStorage } from "./migrate.js";
 import { JOBS_PGBOSS_SCHEMA, JOBS_JOB_RECORD_QUALIFIED, JOBS_RUNTIME_ROLE } from "./policy.js";
 import { seedRunnerJobWithRecord } from "./test/recordSeed.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The diagnostic type through the real store and the real runner — the
@@ -63,7 +64,7 @@ let direct: Pool;
 beforeAll(async () => {
   await applyRolesProvisioning(SCRATCH_DB);
   await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
-  boss = new PgBoss({ connectionString: RUNTIME_DSN, ...{ migrate: false, schedule: false } });
+  boss = newTestBoss({ connectionString: RUNTIME_DSN, ...{ migrate: false, schedule: false } });
   await boss.start();
   // The diagnostic composition: the installed policy set with the diagnostic
   // type, its handler registered, and the same set threaded to the store.

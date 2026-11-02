@@ -31,6 +31,7 @@ import { cancelRunnerJob, readRunnerJobState } from "./runner.js";
 import { seedRunnerJobWithRecord } from "./test/recordSeed.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
 import { cancelClaims, submitClaims, TEST_IDENTITY } from "./test/instructions.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * Adversarial legs for the owner-cancellation seam: the race windows and
@@ -86,7 +87,7 @@ let direct: Pool;
 beforeAll(async () => {
   await applyRolesProvisioning(SCRATCH_DB);
   await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
-  boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+  boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
   await boss.start();
   execution = new JobsExecution({
     databaseUrl: RUNTIME_DSN,

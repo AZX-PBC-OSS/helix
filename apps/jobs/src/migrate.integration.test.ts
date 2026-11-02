@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { PgBoss } from "pg-boss";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
@@ -26,6 +25,7 @@ import {
   jobsWorkOptions,
 } from "./policy.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The migration/configuration path against the real Postgres cluster, through
@@ -1243,7 +1243,7 @@ describe("jobs storage migration and startup compatibility", () => {
       // role the grants name — and a "compatible" verdict must mean this
       // run succeeds: pg-boss's own start, claim and settle machinery
       // exercises writes the probes never make.
-      const boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+      const boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
       const failures: unknown[] = [];
       boss.on("error", (error) => failures.push(error));
       const seen: Array<{ id: string | undefined; data: unknown }> = [];
@@ -1322,7 +1322,7 @@ describe("jobs storage migration and startup compatibility", () => {
       await asMigrateRole(
         `UPDATE ${JOBS_PGBOSS_SCHEMA}.version SET version = ${PGBOSS_SCHEMA_VERSION - 1}`,
       );
-      const boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+      const boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
       try {
         await expect(boss.start()).rejects.toThrow();
         await expect(readSchemaVersionAsRuntime()).resolves.toBe(PGBOSS_SCHEMA_VERSION - 1);

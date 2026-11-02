@@ -27,6 +27,7 @@ import { JobsRecovery } from "./recovery.js";
 import { seedRunnerJobWithRecord } from "./test/recordSeed.js";
 import { cancelClaims, recordReadClaims, TEST_IDENTITY } from "./test/instructions.js";
 import { applyRolesProvisioning } from "../../portal/src/test/provisionDatabases.js";
+import { newTestBoss } from "./test/boss.js";
 
 /**
  * The observation seam against the real store, the real runner and the real
@@ -110,7 +111,7 @@ let direct: Pool;
 beforeAll(async () => {
   await applyRolesProvisioning(SCRATCH_DB);
   await migrateJobsStorage(urlFor(SCRATCH_DB, "helix_jobs_migrate"));
-  boss = new PgBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
+  boss = newTestBoss({ connectionString: RUNTIME_DSN, ...jobsRuntimeBossOptions() });
   await boss.start();
   execution = new JobsExecution({
     databaseUrl: RUNTIME_DSN,
