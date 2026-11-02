@@ -1005,14 +1005,22 @@ describe("retained saturation and physical release", () => {
       // capacity check's own degraded reading instead.
       await stack.stop("jobs");
       await stack.start("jobs", { until: "listener" });
+      // The boot cleanup pass can measure the store before the runner has
+      // registered its worker, so wait for one body that shows both: the
+      // saturated reading and a serving worker.
+      let lastBody: HealthStatus | undefined;
       const saturated = await waitFor(
         stack,
-        "the boot cleanup pass to measure the saturated store",
+        () =>
+          `one jobs body with jobs_capacity degraded at the cap and jobs_worker ok — last: ${JSON.stringify(lastBody?.checks)}`,
         { timeoutMs: 60_000 },
         async () => {
           const body = await healthOf("jobs");
+          lastBody = body;
           const capacity = check(body, JOBS_CAPACITY_CHECK);
-          return capacity.status === "degraded" && (capacity.metrics?.retainedServer ?? 0) >= cap
+          return capacity.status === "degraded" &&
+            (capacity.metrics?.retainedServer ?? 0) >= cap &&
+            check(body, JOBS_WORKER_CHECK).status === "ok"
             ? body
             : undefined;
         },
