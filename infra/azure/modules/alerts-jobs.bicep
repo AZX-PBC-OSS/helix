@@ -186,7 +186,13 @@ var checkRules = [
 
 // KQL on one line: Bicep's ''' strings do not interpolate, and the event names
 // and check sets come from variables.
-var latestChecks = '${relayLines} | where tostring(p.event) == "${checkEvent}" | extend kind = tostring(p.kind), target = tostring(p.target), check = tostring(p.check), status = tostring(p.status), detail = tostring(p.detail), metrics = tostring(p.metrics) | summarize arg_max(TimeGenerated, status, detail, metrics) by kind, target, check'
+//
+// `kind` and `missing` are KQL keywords (`join kind=`, the `missing` operator)
+// and Log Analytics refuses them as column names, so the relay's `kind` and
+// `missing` fields land as `targetKind` and `missingChecks`, and `missing` is
+// read with bracket access. what-if cannot see this: a query that does not parse
+// fails only at apply, on the rule's PUT.
+var latestChecks = '${relayLines} | where tostring(p.event) == "${checkEvent}" | extend targetKind = tostring(p.kind), target = tostring(p.target), check = tostring(p.check), status = tostring(p.status), detail = tostring(p.detail), metrics = tostring(p.metrics) | summarize arg_max(TimeGenerated, status, detail, metrics) by targetKind, target, check'
 
 resource checkAlerts 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = [
   for rule in checkRules: {
@@ -204,7 +210,7 @@ resource checkAlerts 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = [
       criteria: {
         allOf: [
           {
-            query: '${latestChecks} | where check in (${join(map(rule.checks, c => '"${c}"'), ', ')}) | where status != "ok" | project TimeGenerated, kind, target, check, status, detail, metrics'
+            query: '${latestChecks} | where check in (${join(map(rule.checks, c => '"${c}"'), ', ')}) | where status != "ok" | project TimeGenerated, targetKind, target, check, status, detail, metrics'
             timeAggregation: 'Count'
             // One alert per server and check, so two servers (or two checks)
             // failing at once are two alerts rather than one merged one.
@@ -236,7 +242,7 @@ resource checkAlerts 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = [
 // line at all in the window (the relay is not running, its image is missing,
 // or it never reached that target) is a row here, not silence.
 var expectedTargets = join(map(targets, t => '"${t.kind}", "${t.target}"'), ', ')
-var unobservedQuery = 'let observed = ${relayLines} | where tostring(p.event) == "${observedEvent}" | extend kind = tostring(p.kind), target = tostring(p.target), outcome = tostring(p.outcome), missing = tostring(p.missing) | summarize arg_max(TimeGenerated, outcome, missing) by kind, target; datatable(kind: string, target: string) [${expectedTargets}] | join kind=leftouter observed on kind, target | extend outcome = iff(isempty(outcome), "no_observation", outcome) | where outcome != "observed" or missing != "[]" | project kind, target, outcome, missing'
+var unobservedQuery = 'let observed = ${relayLines} | where tostring(p.event) == "${observedEvent}" | extend targetKind = tostring(p.kind), target = tostring(p.target), outcome = tostring(p.outcome), missingChecks = tostring(p["missing"]) | summarize arg_max(TimeGenerated, outcome, missingChecks) by targetKind, target; datatable(targetKind: string, target: string) [${expectedTargets}] | join kind=leftouter observed on targetKind, target | extend outcome = iff(isempty(outcome), "no_observation", outcome) | where outcome != "observed" or missingChecks != "[]" | project targetKind, target, outcome, missingChecks'
 
 resource unobservedAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = {
   name: '${namePrefix}-alert-jobs-unobserved'

@@ -329,10 +329,10 @@ describe("the KQL", () => {
   });
 
   it("grades the latest reading per server and check, on anything but ok", () => {
-    // arg_max by kind, target, check: the latest reading wins, so a check that
+    // arg_max by targetKind, target, check: the latest reading wins, so a check that
     // recovers inside the window stops matching on the next evaluation.
     expect(alertsVar("latestChecks")).toMatch(
-      /arg_max\(TimeGenerated[^)]*\) by kind, target, check/,
+      /arg_max\(TimeGenerated[^)]*\) by targetKind, target, check/,
     );
 
     const inlineQuery = ALERTS.match(/query: '(.*)'/)![1]!;
@@ -353,10 +353,10 @@ describe("the missing-evidence rule", () => {
       "map(targets",
     );
     expect(expectedTargets).toContain('"${t.kind}", "${t.target}"');
-    expect(query).toContain("datatable(kind: string, target: string) [${expectedTargets}]");
+    expect(query).toContain("datatable(targetKind: string, target: string) [${expectedTargets}]");
 
     expect(query).toContain('iff(isempty(outcome), "no_observation", outcome)');
-    expect(query).toContain('where outcome != "observed" or missing != "[]"');
+    expect(query).toContain('where outcome != "observed" or missingChecks != "[]"');
   });
 
   it("names every non-observed outcome in its description", () => {
