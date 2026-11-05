@@ -164,7 +164,7 @@ catalog:
   "@fontsource-variable/hanken-grotesk": ^5.2.8
   "@fontsource-variable/jetbrains-mono": ^5.2.8
   # Portal serves the built SPA statically (project plan §1).
-  "@fastify/static": ^10.1.2
+  "@fastify/static": ^10.1.9
   # ── Dev tooling ──
   "@eslint/js": ^10.0.1
   "@types/react": ^19.2.17
