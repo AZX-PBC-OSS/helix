@@ -1,4 +1,6 @@
 // Contracts for the edge's /_api/openai routes (ADR-0054).
+import { z } from "zod";
+import { ApiErrorSchema } from "../../api.js";
 import {
   OpenAiChatCompletionRequestSchema,
   OpenAiChatCompletionResponseSchema,
@@ -55,9 +57,14 @@ export const createOpenAiChatCompletion = appRoute({
         ...media("text/event-stream", CHUNK_STREAM),
       },
     },
-    400: openAiError(
-      "The request is invalid or uses an unsupported feature (`invalid_request_error`, with " +
-        "`param` naming the field), or the upstream rejected it.",
+    // Fastify refuses a malformed JSON body before the OpenAI codec runs, so
+    // that 400 carries the platform envelope, not OpenAI's.
+    400: jsonResponse(
+      z.union([OpenAiErrorBodySchema, ApiErrorSchema]),
+      "The request is invalid or uses an unsupported feature (an OpenAI error, " +
+        "`invalid_request_error`, with `param` naming the field), or the upstream rejected " +
+        "it. A body that is not valid JSON is refused before the OpenAI-compatible layer " +
+        "runs, with the platform's `ApiError` envelope instead.",
     ),
     403: openAiError(
       "The `Origin` is not the app's own, or the app has no LLM grant " +

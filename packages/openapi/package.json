@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@azx-pbc/shared": "workspace:*",
+    "@seriousme/openapi-schema-validator": "catalog:",
     "@types/node": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",

@@ -230,6 +230,20 @@ describe("streaming", () => {
   });
 });
 
+describe("malformed JSON", () => {
+  // Fastify's parser refuses the body before the OpenAI codec runs, so the
+  // 400 carries the platform envelope. The contract declares both shapes, and
+  // the conformance recorder checks this response against it.
+  it("is a 400 in the platform's ApiError envelope", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, "{not json");
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBeTypeOf("string");
+    expect(res.json().error.type).toBeUndefined();
+  });
+});
+
 describe("non-streaming", () => {
   it("returns a chat.completion body with mapped usage", async () => {
     const edge = buildEdge();

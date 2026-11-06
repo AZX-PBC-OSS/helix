@@ -44,7 +44,7 @@ export const getAppUsage = portalRoute({
     "Aggregate counts, tokens and cost over a rolling range. Discloses no caller identity.",
   params: z.object({ slug: slugParam }),
   query: z.object({
-    range: UsageRangeSchema.catch("24h").meta({
+    range: UsageRangeSchema.catch("24h").default("24h").meta({
       description: "The rolling window. An unknown value reads as `24h`.",
     }),
   }),
@@ -108,7 +108,7 @@ export const getPlatformUsage = portalRoute({
   description:
     "A trend and per-app and per-capability breakdowns over the range, plus month-to-date totals.",
   query: z.object({
-    range: PlatformRangeSchema.catch("30d").meta({
+    range: PlatformRangeSchema.catch("30d").default("30d").meta({
       description: "The rolling window. An unknown value reads as `30d`.",
     }),
   }),

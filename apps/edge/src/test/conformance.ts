@@ -16,31 +16,21 @@ import {
  * the test that caused them, so no test case has to close its app for the
  * check to run.
  *
- * Two kinds of response are not checked, both by construction:
- *
- * - a hijacked SSE stream never reaches `onSend`;
- * - a fetch-proxy passthrough is the upstream's own response, streamed, with
- *   any status and media type. Its refusals are serialized JSON bodies and are
- *   checked.
+ * A hijacked SSE stream never reaches `onSend`, so it is not checked. A
+ * fetch-proxy passthrough is streamed: its status and media type are checked
+ * against the contract's `default` response, and its body is not.
  */
-
-const FETCH_ROUTE = "/_api/fetch/*";
 
 const recorders: ConformanceRecorder[] = [];
 const reported = new WeakMap<ConformanceRecorder, number>();
-
-function isSerialized(payload: unknown): boolean {
-  return payload === undefined || typeof payload === "string" || payload instanceof Uint8Array;
-}
 
 /** Check every response `app` sends against its route contract. Call right after building it. */
 export function recordConformance<T extends FastifyInstance>(app: T): T {
   const recorder = conformanceRecorder(appContracts);
   recorders.push(recorder);
-  app.addHook("onSend", async (req, reply, payload) => {
-    if (req.routeOptions.url === FETCH_ROUTE && !isSerialized(payload)) return payload;
-    return recorder.onSend(req as RecorderRequest, reply as RecorderReply, payload);
-  });
+  app.addHook("onSend", async (req, reply, payload) =>
+    recorder.onSend(req as RecorderRequest, reply as RecorderReply, payload),
+  );
   return app;
 }
 

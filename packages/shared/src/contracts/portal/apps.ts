@@ -67,7 +67,7 @@ export const listApps = portalRoute({
   description:
     "`scope` is a filter, not a permission gate: every signed-in caller may list all apps.",
   query: z.object({
-    scope: AppListScopeSchema.catch("mine").meta({
+    scope: AppListScopeSchema.catch("mine").default("mine").meta({
       description:
         "`mine` lists the caller's own apps; `all` lists every app. A missing or unknown value means `mine`.",
     }),

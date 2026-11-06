@@ -103,10 +103,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -258,10 +257,9 @@
         },
         "responses": {
           "200": {
-            "description": "The completion: a JSON body when `stream` is false, otherwise an event stream.",
+            "description": "The completion: a JSON body when `stream` is false, otherwise an event stream.\n\n- `application/json`: The whole completion (`stream: false`).\n- `text/event-stream`: Sent when `stream` is true (the default). Named events, each `data:` line one JSON object:\n\n- `event: delta` — `{ text }` (`LlmStreamDelta`), zero or more.\n- `event: done` — `{ stopReason, usage }` (`LlmStreamDone`), terminal on success.\n- `event: error` — `{ code, message }` (`LlmStreamError`), terminal on a failure after the stream started.\n\nA failure before the first delta is answered with an error status instead of a stream.",
             "content": {
               "application/json": {
-                "description": "The whole completion (`stream: false`).",
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -319,7 +317,6 @@
                 }
               },
               "text/event-stream": {
-                "description": "Sent when `stream` is true (the default). Named events, each `data:` line one JSON object:\n\n- `event: delta` — `{ text }` (`LlmStreamDelta`), zero or more.\n- `event: done` — `{ stopReason, usage }` (`LlmStreamDone`), terminal on success.\n- `event: error` — `{ code, message }` (`LlmStreamError`), terminal on a failure after the stream started.\n\nA failure before the first delta is answered with an error status instead of a stream.",
                 "schema": {}
               }
             }
@@ -358,10 +355,9 @@
             }
           },
           "403": {
-            "description": "The `Origin` is not the app's own, or the app has no LLM grant (`forbidden`); or the model is not on the app's allowlist or has no price (`model_not_allowed`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The `Origin` is not the app's own, or the app has no LLM grant (`forbidden`); or the model is not on the app's allowlist or has no price (`model_not_allowed`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -372,10 +368,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -694,10 +689,9 @@
         },
         "responses": {
           "200": {
-            "description": "The completion: a JSON body unless `stream` is true.",
+            "description": "The completion: a JSON body unless `stream` is true.\n\n- `application/json`: A `chat.completion` object.\n- `text/event-stream`: Sent when `stream` is true. Each event is a `data:` line holding one `chat.completion.chunk` (`OpenAiChatCompletionChunk`): the first carries `delta.role`, then one per text delta, then one with `finish_reason`. When `stream_options.include_usage` is true a final chunk with empty `choices` carries `usage`. The stream ends with `data: [DONE]`. A failure after the stream started is sent as one `data:` line holding the OpenAI error envelope, with no `[DONE]`.",
             "content": {
               "application/json": {
-                "description": "A `chat.completion` object.",
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -794,7 +788,6 @@
                 }
               },
               "text/event-stream": {
-                "description": "Sent when `stream` is true. Each event is a `data:` line holding one `chat.completion.chunk` (`OpenAiChatCompletionChunk`): the first carries `delta.role`, then one per text delta, then one with `finish_reason`. When `stream_options.include_usage` is true a final chunk with empty `choices` carries `usage`. The stream ends with `data: [DONE]`. A failure after the stream started is sent as one `data:` line holding the OpenAI error envelope, with no `[DONE]`.",
                 "schema": {}
               }
             }
@@ -813,11 +806,18 @@
             }
           },
           "400": {
-            "description": "The request is invalid or uses an unsupported feature (`invalid_request_error`, with `param` naming the field), or the upstream rejected it.",
+            "description": "The request is invalid or uses an unsupported feature (an OpenAI error, `invalid_request_error`, with `param` naming the field), or the upstream rejected it. A body that is not valid JSON is refused before the OpenAI-compatible layer runs, with the platform's `ApiError` envelope instead.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/OpenAiError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/OpenAiError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ApiError"
+                    }
+                  ]
                 }
               }
             }
@@ -833,10 +833,9 @@
             }
           },
           "403": {
-            "description": "The `Origin` is not the app's own, or the app has no LLM grant (`invalid_request_error`); or the model is not allowed (`model_not_found`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The `Origin` is not the app's own, or the app has no LLM grant (`invalid_request_error`); or the model is not allowed (`model_not_found`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -847,10 +846,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -1041,10 +1039,9 @@
             }
           },
           "403": {
-            "description": "The app has no LLM grant (`invalid_request_error`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The app has no LLM grant (`invalid_request_error`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -1055,10 +1052,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -1230,10 +1226,9 @@
             }
           },
           "403": {
-            "description": "The app has no data capability (`forbidden`), no user-scope grant, or the caller is anonymous; or the `Origin` is not the app's own.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The app has no data capability (`forbidden`), no user-scope grant, or the caller is anonymous; or the `Origin` is not the app's own.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -1244,10 +1239,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -1426,10 +1420,9 @@
             }
           },
           "403": {
-            "description": "The app has no data capability (`forbidden`), no user-scope grant, or the caller is anonymous.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The app has no data capability (`forbidden`), no user-scope grant, or the caller is anonymous.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -1440,10 +1433,9 @@
             }
           },
           "404": {
-            "description": "No value is stored under this key (`not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "No value is stored under this key (`not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               },
               "application/json": {
@@ -1589,10 +1581,9 @@
             }
           },
           "403": {
-            "description": "The app has no data capability (`forbidden`), no user-scope grant, or the caller is anonymous; or the `Origin` is not the app's own.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The app has no data capability (`forbidden`), no user-scope grant, or the caller is anonymous; or the `Origin` is not the app's own.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -1603,10 +1594,9 @@
             }
           },
           "404": {
-            "description": "No value is stored under this key (`not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "No value is stored under this key (`not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               },
               "application/json": {
@@ -1728,10 +1718,9 @@
             }
           },
           "403": {
-            "description": "The app has no data capability (`forbidden`), no user-scope grant, or the caller is anonymous.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The app has no data capability (`forbidden`), no user-scope grant, or the caller is anonymous.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -1742,10 +1731,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -1898,10 +1886,9 @@
             }
           },
           "403": {
-            "description": "The app has no data capability (`forbidden`), the collection is not declared in the manifest, or the `Origin` is not the app's own.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The app has no data capability (`forbidden`), the collection is not declared in the manifest, or the `Origin` is not the app's own.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -1912,10 +1899,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -2086,10 +2072,9 @@
             }
           },
           "403": {
-            "description": "The app has no data capability (`forbidden`), or no shared-read prefix grant covers `prefix`.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The app has no data capability (`forbidden`), or no shared-read prefix grant covers `prefix`.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -2100,10 +2085,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -2255,10 +2239,9 @@
             }
           },
           "403": {
-            "description": "The app has no data capability (`forbidden`), or the key is not shared-readable.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The app has no data capability (`forbidden`), or the key is not shared-readable.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -2269,10 +2252,9 @@
             }
           },
           "404": {
-            "description": "No value is stored under this key (`not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "No value is stored under this key (`not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               },
               "application/json": {
@@ -2463,10 +2445,9 @@
             }
           },
           "403": {
-            "description": "The app has no data capability (`forbidden`), the key is not shared-writable, or the `Origin` is not the app's own.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The app has no data capability (`forbidden`), the key is not shared-writable, or the `Origin` is not the app's own.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -2477,10 +2458,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -2668,19 +2648,17 @@
             }
           },
           "403": {
-            "description": "The navigation is not same-origin.",
+            "description": "The navigation is not same-origin.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               }
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -2814,19 +2792,17 @@
             }
           },
           "403": {
-            "description": "The `Origin` is not the app's own.",
+            "description": "The `Origin` is not the app's own.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               }
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -2959,10 +2935,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -3056,15 +3031,6 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "The upstream's response, passed through. The upstream's own status applies; any status is possible, and this entry stands for all of them.",
-            "content": {
-              "*/*": {
-                "description": "The upstream's body, streamed.",
-                "schema": {}
-              }
-            }
-          },
           "302": {
             "description": "A top-level navigation (`Sec-Fetch-Mode: navigate`, or an `Accept` that includes `text/html`) without a usable session is redirected into sign-in instead of receiving the 401.",
             "headers": {
@@ -3079,12 +3045,20 @@
             }
           },
           "400": {
-            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`).",
+            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3099,24 +3073,30 @@
             }
           },
           "403": {
-            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`). Or the upstream's own response with this status, passed through.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -3130,17 +3110,25 @@
             }
           },
           "413": {
-            "description": "The request body exceeds the size cap (`too_large`).",
+            "description": "The request body exceeds the size cap (`too_large`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "429": {
-            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`).",
+            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "schema": {
@@ -3152,8 +3140,16 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3168,17 +3164,25 @@
             }
           },
           "502": {
-            "description": "The platform's egress or the upstream call failed (`upstream_error`).",
+            "description": "The platform's egress or the upstream call failed (`upstream_error`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "503": {
-            "description": "The fetch capability is not configured on this deployment (`upstream_error`).\n\nThe edge has not loaded the app registry yet. Retry shortly.",
+            "description": "The fetch capability is not configured on this deployment (`upstream_error`). Or the upstream's own response with this status, passed through.\n\nThe edge has not loaded the app registry yet. Retry shortly.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "required": true,
@@ -3195,8 +3199,24 @@
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "The upstream's response, passed through with its own status, headers and body (streamed).\n\n- `*/*`: The upstream's body.",
+            "content": {
+              "*/*": {
+                "schema": {}
               }
             }
           }
@@ -3247,24 +3267,14 @@
         ],
         "requestBody": {
           "required": false,
-          "description": "Any body, forwarded byte for byte with its `Content-Type`. Not parsed.",
+          "description": "Any body, forwarded byte for byte with its `Content-Type`. Not parsed.\n\n- `*/*`: Passed through unchanged.",
           "content": {
             "*/*": {
-              "description": "Passed through unchanged.",
               "schema": {}
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "The upstream's response, passed through. The upstream's own status applies; any status is possible, and this entry stands for all of them.",
-            "content": {
-              "*/*": {
-                "description": "The upstream's body, streamed.",
-                "schema": {}
-              }
-            }
-          },
           "302": {
             "description": "A top-level navigation (`Sec-Fetch-Mode: navigate`, or an `Accept` that includes `text/html`) without a usable session is redirected into sign-in instead of receiving the 401.",
             "headers": {
@@ -3279,12 +3289,20 @@
             }
           },
           "400": {
-            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`).",
+            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3299,24 +3317,30 @@
             }
           },
           "403": {
-            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`). Or the upstream's own response with this status, passed through.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -3330,17 +3354,25 @@
             }
           },
           "413": {
-            "description": "The request body exceeds the size cap (`too_large`).",
+            "description": "The request body exceeds the size cap (`too_large`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "429": {
-            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`).",
+            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "schema": {
@@ -3352,8 +3384,16 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3368,17 +3408,25 @@
             }
           },
           "502": {
-            "description": "The platform's egress or the upstream call failed (`upstream_error`).",
+            "description": "The platform's egress or the upstream call failed (`upstream_error`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "503": {
-            "description": "The fetch capability is not configured on this deployment (`upstream_error`).\n\nThe edge has not loaded the app registry yet. Retry shortly.",
+            "description": "The fetch capability is not configured on this deployment (`upstream_error`). Or the upstream's own response with this status, passed through.\n\nThe edge has not loaded the app registry yet. Retry shortly.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "required": true,
@@ -3395,8 +3443,24 @@
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "The upstream's response, passed through with its own status, headers and body (streamed).\n\n- `*/*`: The upstream's body.",
+            "content": {
+              "*/*": {
+                "schema": {}
               }
             }
           }
@@ -3447,24 +3511,14 @@
         ],
         "requestBody": {
           "required": false,
-          "description": "Any body, forwarded byte for byte with its `Content-Type`. Not parsed.",
+          "description": "Any body, forwarded byte for byte with its `Content-Type`. Not parsed.\n\n- `*/*`: Passed through unchanged.",
           "content": {
             "*/*": {
-              "description": "Passed through unchanged.",
               "schema": {}
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "The upstream's response, passed through. The upstream's own status applies; any status is possible, and this entry stands for all of them.",
-            "content": {
-              "*/*": {
-                "description": "The upstream's body, streamed.",
-                "schema": {}
-              }
-            }
-          },
           "302": {
             "description": "A top-level navigation (`Sec-Fetch-Mode: navigate`, or an `Accept` that includes `text/html`) without a usable session is redirected into sign-in instead of receiving the 401.",
             "headers": {
@@ -3479,12 +3533,20 @@
             }
           },
           "400": {
-            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`).",
+            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3499,24 +3561,30 @@
             }
           },
           "403": {
-            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`). Or the upstream's own response with this status, passed through.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -3530,17 +3598,25 @@
             }
           },
           "413": {
-            "description": "The request body exceeds the size cap (`too_large`).",
+            "description": "The request body exceeds the size cap (`too_large`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "429": {
-            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`).",
+            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "schema": {
@@ -3552,8 +3628,16 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3568,17 +3652,25 @@
             }
           },
           "502": {
-            "description": "The platform's egress or the upstream call failed (`upstream_error`).",
+            "description": "The platform's egress or the upstream call failed (`upstream_error`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "503": {
-            "description": "The fetch capability is not configured on this deployment (`upstream_error`).\n\nThe edge has not loaded the app registry yet. Retry shortly.",
+            "description": "The fetch capability is not configured on this deployment (`upstream_error`). Or the upstream's own response with this status, passed through.\n\nThe edge has not loaded the app registry yet. Retry shortly.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "required": true,
@@ -3595,8 +3687,24 @@
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "The upstream's response, passed through with its own status, headers and body (streamed).\n\n- `*/*`: The upstream's body.",
+            "content": {
+              "*/*": {
+                "schema": {}
               }
             }
           }
@@ -3647,24 +3755,14 @@
         ],
         "requestBody": {
           "required": false,
-          "description": "Any body, forwarded byte for byte with its `Content-Type`. Not parsed.",
+          "description": "Any body, forwarded byte for byte with its `Content-Type`. Not parsed.\n\n- `*/*`: Passed through unchanged.",
           "content": {
             "*/*": {
-              "description": "Passed through unchanged.",
               "schema": {}
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "The upstream's response, passed through. The upstream's own status applies; any status is possible, and this entry stands for all of them.",
-            "content": {
-              "*/*": {
-                "description": "The upstream's body, streamed.",
-                "schema": {}
-              }
-            }
-          },
           "302": {
             "description": "A top-level navigation (`Sec-Fetch-Mode: navigate`, or an `Accept` that includes `text/html`) without a usable session is redirected into sign-in instead of receiving the 401.",
             "headers": {
@@ -3679,12 +3777,20 @@
             }
           },
           "400": {
-            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`).",
+            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3699,24 +3805,30 @@
             }
           },
           "403": {
-            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`). Or the upstream's own response with this status, passed through.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -3730,17 +3842,25 @@
             }
           },
           "413": {
-            "description": "The request body exceeds the size cap (`too_large`).",
+            "description": "The request body exceeds the size cap (`too_large`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "429": {
-            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`).",
+            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "schema": {
@@ -3752,8 +3872,16 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3768,17 +3896,25 @@
             }
           },
           "502": {
-            "description": "The platform's egress or the upstream call failed (`upstream_error`).",
+            "description": "The platform's egress or the upstream call failed (`upstream_error`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "503": {
-            "description": "The fetch capability is not configured on this deployment (`upstream_error`).\n\nThe edge has not loaded the app registry yet. Retry shortly.",
+            "description": "The fetch capability is not configured on this deployment (`upstream_error`). Or the upstream's own response with this status, passed through.\n\nThe edge has not loaded the app registry yet. Retry shortly.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "required": true,
@@ -3795,8 +3931,24 @@
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "The upstream's response, passed through with its own status, headers and body (streamed).\n\n- `*/*`: The upstream's body.",
+            "content": {
+              "*/*": {
+                "schema": {}
               }
             }
           }
@@ -3847,24 +3999,14 @@
         ],
         "requestBody": {
           "required": false,
-          "description": "Any body, forwarded byte for byte with its `Content-Type`. Not parsed.",
+          "description": "Any body, forwarded byte for byte with its `Content-Type`. Not parsed.\n\n- `*/*`: Passed through unchanged.",
           "content": {
             "*/*": {
-              "description": "Passed through unchanged.",
               "schema": {}
             }
           }
         },
         "responses": {
-          "200": {
-            "description": "The upstream's response, passed through. The upstream's own status applies; any status is possible, and this entry stands for all of them.",
-            "content": {
-              "*/*": {
-                "description": "The upstream's body, streamed.",
-                "schema": {}
-              }
-            }
-          },
           "302": {
             "description": "A top-level navigation (`Sec-Fetch-Mode: navigate`, or an `Accept` that includes `text/html`) without a usable session is redirected into sign-in instead of receiving the 401.",
             "headers": {
@@ -3879,12 +4021,20 @@
             }
           },
           "400": {
-            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`).",
+            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3899,24 +4049,30 @@
             }
           },
           "403": {
-            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`). Or the upstream's own response with this status, passed through.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -3930,17 +4086,25 @@
             }
           },
           "413": {
-            "description": "The request body exceeds the size cap (`too_large`).",
+            "description": "The request body exceeds the size cap (`too_large`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "429": {
-            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`).",
+            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "schema": {
@@ -3952,8 +4116,16 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -3968,17 +4140,25 @@
             }
           },
           "502": {
-            "description": "The platform's egress or the upstream call failed (`upstream_error`).",
+            "description": "The platform's egress or the upstream call failed (`upstream_error`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "503": {
-            "description": "The fetch capability is not configured on this deployment (`upstream_error`).\n\nThe edge has not loaded the app registry yet. Retry shortly.",
+            "description": "The fetch capability is not configured on this deployment (`upstream_error`). Or the upstream's own response with this status, passed through.\n\nThe edge has not loaded the app registry yet. Retry shortly.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "required": true,
@@ -3995,8 +4175,24 @@
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "The upstream's response, passed through with its own status, headers and body (streamed).\n\n- `*/*`: The upstream's body.",
+            "content": {
+              "*/*": {
+                "schema": {}
               }
             }
           }
@@ -4046,15 +4242,6 @@
           }
         ],
         "responses": {
-          "200": {
-            "description": "The upstream's response, passed through. The upstream's own status applies; any status is possible, and this entry stands for all of them.",
-            "content": {
-              "*/*": {
-                "description": "The upstream's body, streamed.",
-                "schema": {}
-              }
-            }
-          },
           "302": {
             "description": "A top-level navigation (`Sec-Fetch-Mode: navigate`, or an `Accept` that includes `text/html`) without a usable session is redirected into sign-in instead of receiving the 401.",
             "headers": {
@@ -4069,12 +4256,20 @@
             }
           },
           "400": {
-            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`).",
+            "description": "The target URL is missing, malformed, or not http(s) (`bad_target`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -4089,24 +4284,30 @@
             }
           },
           "403": {
-            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The target origin is not granted to the app, or the `Origin` is not the app's own (`forbidden`); or the grant needs a delegated connection the caller does not have (`connection_required`, with `provider`). Or the upstream's own response with this status, passed through.\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -4120,17 +4321,25 @@
             }
           },
           "413": {
-            "description": "The request body exceeds the size cap (`too_large`).",
+            "description": "The request body exceeds the size cap (`too_large`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "429": {
-            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`).",
+            "description": "The app's daily fetch budget, or the anonymous per-IP budget, is exhausted (`rate_limited`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "schema": {
@@ -4142,8 +4351,16 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
@@ -4158,17 +4375,25 @@
             }
           },
           "502": {
-            "description": "The platform's egress or the upstream call failed (`upstream_error`).",
+            "description": "The platform's egress or the upstream call failed (`upstream_error`). Or the upstream's own response with this status, passed through.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
               }
             }
           },
           "503": {
-            "description": "The fetch capability is not configured on this deployment (`upstream_error`).\n\nThe edge has not loaded the app registry yet. Retry shortly.",
+            "description": "The fetch capability is not configured on this deployment (`upstream_error`). Or the upstream's own response with this status, passed through.\n\nThe edge has not loaded the app registry yet. Retry shortly.\n\n- `application/json`: A `FetchProxyError` refusal, or the upstream's JSON body.\n- `*/*`: The upstream's body, in its own media type.",
             "headers": {
               "retry-after": {
                 "required": true,
@@ -4185,8 +4410,24 @@
               },
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FetchProxyError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/FetchProxyError"
+                    },
+                    {}
+                  ]
                 }
+              },
+              "*/*": {
+                "schema": {}
+              }
+            }
+          },
+          "default": {
+            "description": "The upstream's response, passed through with its own status, headers and body (streamed).\n\n- `*/*`: The upstream's body.",
+            "content": {
+              "*/*": {
+                "schema": {}
               }
             }
           }
@@ -4200,12 +4441,11 @@
           "Background jobs"
         ],
         "summary": "Submit a job",
-        "description": "Background jobs run platform-owned job types for the app, asynchronously. Only a signed-in user may submit or read jobs; anonymous visitors and shared-password sessions are refused with 403 `forbidden`, and a job is visible only to the user who submitted it.\n\nThe body is the job's input, forwarded byte for byte. Send an `Idempotency-Key` to make a retry safe: a repeat with the same key and input returns the original job. Submissions are charged against the app's submission budget whatever their outcome. The request must carry the app's own `Origin` (CSRF check).\n\nRefusals the jobs service makes are forwarded with their own status and a `JobRequestError` body; the statuses below list the ones a caller should expect.\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
+        "description": "Background jobs run platform-owned job types for the app, asynchronously. Only a signed-in user may submit or read jobs; anonymous visitors and shared-password sessions are refused with 403 `forbidden`, and a job is visible only to the user who submitted it.\n\nThe body is the job's input, forwarded byte for byte. Send an `Idempotency-Key` to make a retry safe: a repeat with the same key and input returns the original job. Submissions are charged against the app's submission budget whatever their outcome. The request must carry the app's own `Origin` (CSRF check).\n\nRefusals the jobs service makes are forwarded with their own status and a `JobRequestError` body; the statuses below list the ones a caller should expect.\n\nRequires the app's session.",
         "security": [
           {
             "session": []
-          },
-          {}
+          }
         ],
         "parameters": [
           {
@@ -4345,10 +4585,9 @@
             }
           },
           "403": {
-            "description": "The caller may not use jobs, the `Origin` is not the app's own, or the app's manifest does not grant this type (`forbidden`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The caller may not use jobs, the `Origin` is not the app's own, or the app's manifest does not grant this type (`forbidden`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -4359,10 +4598,9 @@
             }
           },
           "404": {
-            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "Not found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               }
             }
@@ -4448,12 +4686,11 @@
           "Background jobs"
         ],
         "summary": "Read a job's state",
-        "description": "Background jobs run platform-owned job types for the app, asynchronously. Only a signed-in user may submit or read jobs; anonymous visitors and shared-password sessions are refused with 403 `forbidden`, and a job is visible only to the user who submitted it.\n\nThe complete latest state of the job: poll this until `status` is terminal.\n\nRefusals the jobs service makes are forwarded with their own status and a `JobRequestError` body; the statuses below list the ones a caller should expect.\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
+        "description": "Background jobs run platform-owned job types for the app, asynchronously. Only a signed-in user may submit or read jobs; anonymous visitors and shared-password sessions are refused with 403 `forbidden`, and a job is visible only to the user who submitted it.\n\nThe complete latest state of the job: poll this until `status` is terminal.\n\nRefusals the jobs service makes are forwarded with their own status and a `JobRequestError` body; the statuses below list the ones a caller should expect.\n\nRequires the app's session.",
         "security": [
           {
             "session": []
-          },
-          {}
+          }
         ],
         "parameters": [
           {
@@ -4662,10 +4899,9 @@
             }
           },
           "403": {
-            "description": "The caller may not use jobs, or the job's type is no longer granted (`forbidden`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The caller may not use jobs, or the job's type is no longer granted (`forbidden`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -4676,10 +4912,9 @@
             }
           },
           "404": {
-            "description": "No job matches this reference for this caller (`job_not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "No job matches this reference for this caller (`job_not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               },
               "application/json": {
@@ -4738,12 +4973,11 @@
           "Background jobs"
         ],
         "summary": "Request a job's cancellation",
-        "description": "Background jobs run platform-owned job types for the app, asynchronously. Only a signed-in user may submit or read jobs; anonymous visitors and shared-password sessions are refused with 403 `forbidden`, and a job is visible only to the user who submitted it.\n\nRecords the request durably; the job may still finish first. The request must carry the app's own `Origin` (CSRF check).\n\nRefusals the jobs service makes are forwarded with their own status and a `JobRequestError` body; the statuses below list the ones a caller should expect.\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
+        "description": "Background jobs run platform-owned job types for the app, asynchronously. Only a signed-in user may submit or read jobs; anonymous visitors and shared-password sessions are refused with 403 `forbidden`, and a job is visible only to the user who submitted it.\n\nRecords the request durably; the job may still finish first. The request must carry the app's own `Origin` (CSRF check).\n\nRefusals the jobs service makes are forwarded with their own status and a `JobRequestError` body; the statuses below list the ones a caller should expect.\n\nRequires the app's session.",
         "security": [
           {
             "session": []
-          },
-          {}
+          }
         ],
         "parameters": [
           {
@@ -4836,10 +5070,9 @@
             }
           },
           "403": {
-            "description": "The caller may not use jobs, the `Origin` is not the app's own, or the job's type is no longer granted (`forbidden`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The caller may not use jobs, the `Origin` is not the app's own, or the job's type is no longer granted (`forbidden`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -4850,10 +5083,9 @@
             }
           },
           "404": {
-            "description": "No job matches this reference for this caller (`job_not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "No job matches this reference for this caller (`job_not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               },
               "application/json": {
@@ -4924,12 +5156,11 @@
           "Background jobs"
         ],
         "summary": "Read a finished job's result",
-        "description": "Background jobs run platform-owned job types for the app, asynchronously. Only a signed-in user may submit or read jobs; anonymous visitors and shared-password sessions are refused with 403 `forbidden`, and a job is visible only to the user who submitted it.\n\nThe result of a succeeded job, until it expires.\n\nRefusals the jobs service makes are forwarded with their own status and a `JobRequestError` body; the statuses below list the ones a caller should expect.\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
+        "description": "Background jobs run platform-owned job types for the app, asynchronously. Only a signed-in user may submit or read jobs; anonymous visitors and shared-password sessions are refused with 403 `forbidden`, and a job is visible only to the user who submitted it.\n\nThe result of a succeeded job, until it expires.\n\nRefusals the jobs service makes are forwarded with their own status and a `JobRequestError` body; the statuses below list the ones a caller should expect.\n\nRequires the app's session.",
         "security": [
           {
             "session": []
-          },
-          {}
+          }
         ],
         "parameters": [
           {
@@ -4955,10 +5186,9 @@
         ],
         "responses": {
           "200": {
-            "description": "The job's result: any JSON value, `null` included, as the job produced it.",
+            "description": "The job's result: any JSON value, `null` included, as the job produced it.\n\n- `application/json`: The raw JSON result. For `jobs:fetch`, see `FetchJobResult`.",
             "content": {
               "application/json": {
-                "description": "The raw JSON result. For `jobs:fetch`, see `FetchJobResult`.",
                 "schema": {}
               }
             }
@@ -4994,10 +5224,9 @@
             }
           },
           "403": {
-            "description": "The caller may not use jobs, or the job's type is no longer granted (`forbidden`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.",
+            "description": "The caller may not use jobs, or the job's type is no longer granted (`forbidden`).\n\nThe deployment's operator policy does not allow apps with this app's visibility mode.\n\n- `text/plain`: `Forbidden`",
             "content": {
               "text/plain": {
-                "description": "`Forbidden`",
                 "schema": {}
               },
               "application/json": {
@@ -5008,10 +5237,9 @@
             }
           },
           "404": {
-            "description": "No job matches this reference for this caller (`job_not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.",
+            "description": "No job matches this reference for this caller (`job_not_found`).\n\nNot found. The request was not made on an app host, the app does not exist or has no live version, or this capability is not configured on this deployment. The reasons are deliberately indistinguishable.\n\n- `text/plain`: `Not found`",
             "content": {
               "text/plain": {
-                "description": "`Not found`",
                 "schema": {}
               },
               "application/json": {

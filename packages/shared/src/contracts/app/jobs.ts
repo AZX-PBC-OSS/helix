@@ -59,6 +59,10 @@ const jobsDisabled = jobsError(
 
 export const submitJob = appRoute({
   id: "submitJob",
+  // A signed-in user is required even on a public app; the caller is still
+  // resolved through the gateway, so the visibility-mode refusal applies.
+  auth: "session",
+  resolvesCaller: true,
   method: "POST",
   path: "/_api/jobs/:server/types/:type",
   tags,
@@ -118,6 +122,8 @@ export const submitJob = appRoute({
 
 export const getJob = appRoute({
   id: "getJob",
+  auth: "session",
+  resolvesCaller: true,
   method: "GET",
   path: "/_api/jobs/:server/:jobId",
   tags,
@@ -137,6 +143,8 @@ export const getJob = appRoute({
 
 export const getJobResult = appRoute({
   id: "getJobResult",
+  auth: "session",
+  resolvesCaller: true,
   method: "GET",
   path: "/_api/jobs/:server/:jobId/result",
   tags,
@@ -164,6 +172,8 @@ export const getJobResult = appRoute({
 
 export const cancelJob = appRoute({
   id: "cancelJob",
+  auth: "session",
+  resolvesCaller: true,
   method: "DELETE",
   path: "/_api/jobs/:server/:jobId",
   tags,

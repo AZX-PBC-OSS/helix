@@ -313,6 +313,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -584,6 +604,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -659,6 +699,26 @@
           },
           "404": {
             "description": "No blocked term has this id (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1357,6 +1417,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -1394,7 +1474,6 @@
                 "all"
               ]
             },
-            "required": true,
             "description": "`mine` lists the caller's own apps; `all` lists every app. A missing or unknown value means `mine`."
           }
         ],
@@ -2097,6 +2176,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -2332,6 +2431,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -2559,6 +2678,26 @@
           },
           "404": {
             "description": "No app has this slug (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3654,6 +3793,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -4198,6 +4357,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -4635,6 +4814,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -4775,6 +4974,26 @@
           },
           "409": {
             "description": "The app's access mode changed concurrently (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4981,6 +5200,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -5115,6 +5354,26 @@
           },
           "409": {
             "description": "Password access is not enabled, or the app's access mode changed concurrently (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5832,6 +6091,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -6198,6 +6477,26 @@
           },
           "409": {
             "description": "The request was already decided differently (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -6580,6 +6879,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -6922,6 +7241,26 @@
           },
           "409": {
             "description": "The request was already decided (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -7555,6 +7894,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -7863,6 +8222,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -7971,6 +8350,26 @@
           },
           "404": {
             "description": "No app has this slug, or the app has no such secret (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8560,6 +8959,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -8845,6 +9264,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -8930,6 +9369,26 @@
           },
           "404": {
             "description": "No global or platform secret has this id (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9070,6 +9529,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -9155,6 +9634,26 @@
           },
           "404": {
             "description": "No app has this slug (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9449,6 +9948,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -9633,6 +10152,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -9717,6 +10256,26 @@
           },
           "404": {
             "description": "No app has this slug, or the app has no such dev token (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -10045,6 +10604,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -10117,6 +10696,26 @@
           },
           "404": {
             "description": "Repo deploys are disabled on this portal, or no app has this slug (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -10634,6 +11233,26 @@
           },
           "409": {
             "description": "A provider with this ref already exists in the environment (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11209,6 +11828,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body failed validation (`validation_failed`). The zod issues are in `details`, so a form can show them on its fields.",
             "content": {
@@ -11353,6 +11992,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConfirmationRequiredError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -12249,6 +12908,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -12935,6 +13614,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body failed validation (`validation_failed`). The zod issues are in `details`, so a form can show them on its fields.",
             "content": {
@@ -13494,10 +14193,9 @@
         ],
         "responses": {
           "200": {
-            "description": "The rendered skill.",
+            "description": "The rendered skill.\n\n- `text/markdown`: The `SKILL.md` document.",
             "content": {
               "text/markdown": {
-                "description": "The `SKILL.md` document.",
                 "schema": {}
               }
             }
@@ -14197,6 +14895,16 @@
               }
             }
           },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -14688,6 +15396,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -14942,6 +15670,26 @@
           },
           "409": {
             "description": "The app is archived, or there is no earlier version (`conflict`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -15268,6 +16016,16 @@
               }
             }
           },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -15318,7 +16076,6 @@
                 "30d"
               ]
             },
-            "required": true,
             "description": "The rolling window. An unknown value reads as `24h`."
           }
         ],
@@ -16242,7 +16999,6 @@
                 "90d"
               ]
             },
-            "required": true,
             "description": "The rolling window. An unknown value reads as `30d`."
           }
         ],
@@ -16475,7 +17231,6 @@
                 "90d"
               ]
             },
-            "required": true,
             "description": "The window in calendar days. An unknown value reads as `30d`."
           }
         ],
@@ -17082,6 +17837,26 @@
               }
             }
           },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "The platform failed (`internal`).",
             "content": {
@@ -17521,7 +18296,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The exported rows.",
+            "description": "The exported rows.\n\n- `application/json`: The default format.\n- `text/csv`: With `format=csv`: one row per item, with derived columns.",
             "headers": {
               "x-helix-export-truncated": {
                 "description": "Present when the collection exceeds the export cap. Holds the cap; the oldest rows were left out.",
@@ -17547,7 +18322,6 @@
             },
             "content": {
               "application/json": {
-                "description": "The default format.",
                 "schema": {
                   "type": "object",
                   "properties": {
@@ -17655,7 +18429,6 @@
                 }
               },
               "text/csv": {
-                "description": "With `format=csv`: one row per item, with derived columns.",
                 "schema": {}
               }
             }
@@ -17794,6 +18567,26 @@
           },
           "404": {
             "description": "No app has this slug, or the collection has no item with this id (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -18533,6 +19326,26 @@
           },
           "404": {
             "description": "The caller has no connection with this id (`not_found`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeds the size limit (`bundle_invalid`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "The request body's content type is not one this route accepts (`validation_failed`).",
             "content": {
               "application/json": {
                 "schema": {

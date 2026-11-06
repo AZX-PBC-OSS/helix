@@ -70,6 +70,11 @@ export interface RouteContract<
   headers?: z.ZodObject;
   body?: B;
   responses: R;
+  /**
+   * The OpenAPI `default` response: what any status not listed in `responses`
+   * carries. For a route that passes another service's status through.
+   */
+  defaultResponse?: ResponseSpec;
   /** A link to an external reference, e.g. OpenAI's own spec. */
   externalDocs?: { url: string; description?: string };
 }

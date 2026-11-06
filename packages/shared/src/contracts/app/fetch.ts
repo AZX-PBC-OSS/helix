@@ -1,7 +1,7 @@
 // Contracts for the edge's /_api/fetch routes (ADR-0054).
 import { z } from "zod";
 import { FetchProxyErrorSchema, REQUEST_HEADER_SAFELIST } from "../../fetch.js";
-import { jsonResponse, type BodySpec, type HttpMethod, type ResponseSpec } from "../define.js";
+import { JSON_MEDIA, type BodySpec, type HttpMethod, type ResponseSpec } from "../define.js";
 import { appRoute, RetryAfterHeader } from "./common.js";
 
 const tags = ["Fetch proxy"] as const;
@@ -46,17 +46,32 @@ const headers = z.object({
     .meta({ description: "A declared body over the size cap is refused with 413 up front." }),
 });
 
+/**
+ * A status the platform uses for its own refusals. The upstream can answer with
+ * the same status, and its response is passed through unchanged, so the entry
+ * allows either: a `FetchProxyError` refusal, or the upstream's own body in any
+ * media type. Refusals carry no marker header; tell them apart by the body.
+ */
 function refusal(description: string): ResponseSpec {
-  return jsonResponse(FetchProxyErrorSchema, description);
+  return {
+    description: `${description} Or the upstream's own response with this status, passed through.`,
+    content: {
+      [JSON_MEDIA]: {
+        schema: z.union([FetchProxyErrorSchema, z.unknown()]),
+        description: "A `FetchProxyError` refusal, or the upstream's JSON body.",
+      },
+      "*/*": { description: "The upstream's body, in its own media type." },
+    },
+  };
 }
 
+const passthrough: ResponseSpec = {
+  description:
+    "The upstream's response, passed through with its own status, headers and body (streamed).",
+  content: { "*/*": { description: "The upstream's body." } },
+};
+
 const responses = {
-  200: {
-    description:
-      "The upstream's response, passed through. The upstream's own status applies; any status " +
-      "is possible, and this entry stands for all of them.",
-    content: { "*/*": { description: "The upstream's body, streamed." } },
-  },
   400: refusal("The target URL is missing, malformed, or not http(s) (`bad_target`)."),
   403: refusal(
     "The target origin is not granted to the app, or the `Origin` is not the app's own " +
@@ -93,6 +108,7 @@ function fetchRoute<const M extends HttpMethod>(method: M, withBody: boolean) {
     headers,
     ...(withBody ? { body } : {}),
     responses,
+    defaultResponse: passthrough,
   });
 }
 

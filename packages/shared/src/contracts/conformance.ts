@@ -41,7 +41,7 @@ export function checkResponse(
   if (!contract) return null;
   const where = `${contract.id} (${res.method} ${res.route}) → ${res.status}`;
 
-  const spec = contract.responses[res.status];
+  const spec = contract.responses[res.status] ?? contract.defaultResponse;
   if (!spec) {
     const declared = Object.keys(contract.responses).join(", ");
     return `${where}: status not declared (declared: ${declared})`;
@@ -58,7 +58,9 @@ export function checkResponse(
     // A stream piped without a content type, or an empty body on a typed status.
     return res.body ? `${where}: body sent without a content type` : null;
   }
-  const media = spec.content[type];
+  // An exact media type, then a `type/*` range, then `*/*`.
+  const media =
+    spec.content[type] ?? spec.content[`${type.split("/")[0]}/*`] ?? spec.content["*/*"];
   if (!media) {
     const declared = Object.keys(spec.content).join(", ");
     return `${where}: content type ${type} not declared (declared: ${declared})`;

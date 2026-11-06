@@ -68,31 +68,44 @@ the contracts, and the edge adds no response parsing on the hot path.
   that exercise `/_api`, record every response a test provokes and check its
   status, content type and JSON body against the contract. A violation fails
   the test file when its app closes. Streamed SSE replies hijack the socket and
-  are not seen; their event schemas are asserted by the LLM tests.
+  are not seen; their event schemas are asserted by the LLM tests. A streamed
+  fetch-proxy passthrough is checked for status and media type, not body.
 - **Spec freshness.** The `openapi` step of `./check-and-lint.sh` regenerates
   both documents in memory and fails when a committed file differs. `--fix`
   regenerates them.
-- **Generator checks.** `packages/openapi/src/build.test.ts` checks that ids are
-  unique, path parameters are declared, and every component reference resolves.
+- **Generator checks.** `packages/openapi/src/build.test.ts` validates both
+  documents against the official OpenAPI 3.1 JSON Schema, and checks that ids
+  are unique, path parameters are declared, every component reference
+  resolves, and a query parameter is published as required only when omitting
+  it is refused. A freshness check alone cannot catch a generator that writes
+  an invalid document.
 
 ## Request errors
 
 `parseRequest` throws `RequestValidationError`, which the portal maps to `400
 validation_failed`. Any other `ZodError` in the portal is a server-side value
 that broke its own schema, and is a `500 internal`. Fastify's own client errors
-(malformed JSON, an unsupported content type) keep their 4xx status.
+(malformed JSON, an unsupported content type, an oversized body) keep their 4xx
+status. They are recognized by their `FST_` code, not by status alone: an SDK
+error such as a Blob `RestError` also carries a 4xx status, and it is the
+platform's failure, so it stays a logged 500.
 
 ## Known gaps
 
 - **Streaming is described in prose.** OpenAPI 3.1 has no per-event schema for
   `text/event-stream`. OpenAPI 3.2's `itemSchema` would fix this once the
   generator and renderer support it.
-- **`/_api/fetch/*` has no body schema.** It passes arbitrary bodies through; the
-  spec documents the path convention, the headers the edge reads, and the
-  refusals.
+- **`/_api/fetch/*` has no body schema.** It passes the upstream's status and
+  body through, which the contract declares as its `default` response. The
+  platform's refusal statuses (400, 403, 413, 429, 502, 503) can also be the
+  upstream's own, so each allows either a `FetchProxyError` or the upstream's
+  body. Refusals carry no marker header; a client tells them apart by the body.
 - **The app API has several error envelopes.** `ApiError`, the fetch proxy's
   `{code, message}`, `JobRequestError`, the OpenAI error shape, and plain-text
   404s from host dispatch. The spec documents them as they are (see `TODO.md`).
+- **A defaulted query needs `.default()`, not only `.catch()`.** The published
+  `required` flag comes from the schema's input type, and `.catch()` alone
+  leaves it required. Use `.catch(x).default(x)`.
 - **Response transforms cannot be described.** zod-openapi cannot render the
   output of a `.transform()` inside a response schema. Use `.overwrite()` for a
   normalization that keeps the type.

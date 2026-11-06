@@ -11,6 +11,7 @@ import {
   toOpenApiPath,
   type ContractApi,
   type MediaSpec,
+  type ResponseSpec,
   type RouteContract,
 } from "@azx-pbc/shared/contracts";
 
@@ -102,17 +103,32 @@ function security(auth: RouteContract["auth"]): ZodOpenApiOperationObject["secur
   }
 }
 
-/** A media type with no schema still needs one in the document; any value is allowed. */
+/**
+ * A media type with no schema still needs one in the document; any value is
+ * allowed. OpenAPI 3.1 has no `description` on a Media Type Object, so a
+ * media description is folded into the enclosing one by {@link describe}.
+ */
 function content(specs: Record<string, MediaSpec>) {
   return Object.fromEntries(
-    Object.entries(specs).map(([type, spec]) => [
-      type,
-      {
-        schema: spec.schema ?? z.unknown(),
-        ...(spec.description === undefined ? {} : { description: spec.description }),
-      },
-    ]),
+    Object.entries(specs).map(([type, spec]) => [type, { schema: spec.schema ?? z.unknown() }]),
   );
+}
+
+/** The enclosing description, followed by one line per described media type. */
+function describe(description: string | undefined, specs: Record<string, MediaSpec> | undefined) {
+  const lines = Object.entries(specs ?? {})
+    .filter(([, spec]) => spec.description)
+    .map(([type, spec]) => `- \`${type}\`: ${spec.description}`);
+  const parts = [description, lines.length > 0 ? lines.join("\n") : undefined].filter(Boolean);
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
+function response(r: ResponseSpec) {
+  return {
+    description: describe(r.description, r.content) ?? r.description,
+    ...(r.headers ? { headers: r.headers } : {}),
+    ...(r.content ? { content: content(r.content) } : {}),
+  };
 }
 
 /**
@@ -125,16 +141,11 @@ function pathParams(params: z.ZodObject): z.ZodObject {
 }
 
 function operation(c: RouteContract): ZodOpenApiOperationObject {
-  const responses = Object.fromEntries(
-    Object.entries(c.responses).map(([status, r]) => [
-      status,
-      {
-        description: r.description,
-        ...(r.headers ? { headers: r.headers } : {}),
-        ...(r.content ? { content: content(r.content) } : {}),
-      },
-    ]),
-  );
+  const responses = {
+    ...Object.fromEntries(Object.entries(c.responses).map(([status, r]) => [status, response(r)])),
+    ...(c.defaultResponse ? { default: response(c.defaultResponse) } : {}),
+  };
+  const bodyDescription = c.body ? describe(c.body.description, c.body.content) : undefined;
   const requestParams = {
     ...(c.params ? { path: pathParams(c.params) } : {}),
     ...(c.query ? { query: c.query } : {}),
@@ -151,7 +162,7 @@ function operation(c: RouteContract): ZodOpenApiOperationObject {
           requestBody: {
             content: content(c.body.content),
             required: c.body.required ?? true,
-            ...(c.body.description ? { description: c.body.description } : {}),
+            ...(bodyDescription ? { description: bodyDescription } : {}),
           },
         }
       : {}),

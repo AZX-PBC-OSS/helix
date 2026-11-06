@@ -15,7 +15,7 @@ export const getAppVisitors = portalRoute({
     "and visitor locations.",
   params: z.object({ slug: z.string().meta({ description: "The app's slug." }) }),
   query: z.object({
-    range: VisitorRangeSchema.catch("30d").meta({
+    range: VisitorRangeSchema.catch("30d").default("30d").meta({
       description: "The window in calendar days. An unknown value reads as `30d`.",
     }),
   }),

@@ -34,6 +34,7 @@ export interface PortalRouteInput<
  * - 401 for an authenticated route;
  * - 403 when the route is admin-only or owner-only;
  * - 404 when the route is owner-only (the app must exist);
+ * - 413 and 415 from the body parser, on any method but GET;
  * - 500 always.
  *
  * A route's own entries win over these defaults.
@@ -58,6 +59,14 @@ export function portalRoute<
     );
   }
   if (owner) defaults[404] = apiError("No app has this slug (`not_found`).");
+  // Fastify's body parser answers these before the handler runs, on any
+  // method that can carry a body.
+  if (rest.method !== "GET") {
+    defaults[413] = apiError("The request body exceeds the size limit (`bundle_invalid`).");
+    defaults[415] = apiError(
+      "The request body's content type is not one this route accepts (`validation_failed`).",
+    );
+  }
   defaults[500] = apiError("The platform failed (`internal`).");
   const description = [
     rest.description,
