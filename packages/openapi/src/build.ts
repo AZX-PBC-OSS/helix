@@ -115,6 +115,15 @@ function content(specs: Record<string, MediaSpec>) {
   );
 }
 
+/**
+ * Fastify names a trailing wildcard `*`; `toOpenApiPath` writes it as `{path}`,
+ * so the parameter is renamed to match.
+ */
+function pathParams(params: z.ZodObject): z.ZodObject {
+  const { "*": wildcard, ...rest } = params.shape;
+  return wildcard === undefined ? params : z.object({ ...rest, path: wildcard });
+}
+
 function operation(c: RouteContract): ZodOpenApiOperationObject {
   const responses = Object.fromEntries(
     Object.entries(c.responses).map(([status, r]) => [
@@ -127,7 +136,7 @@ function operation(c: RouteContract): ZodOpenApiOperationObject {
     ]),
   );
   const requestParams = {
-    ...(c.params ? { path: c.params } : {}),
+    ...(c.params ? { path: pathParams(c.params) } : {}),
     ...(c.query ? { query: c.query } : {}),
     ...(c.headers ? { header: c.headers } : {}),
   };

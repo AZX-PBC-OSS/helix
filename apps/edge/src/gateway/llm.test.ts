@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { request as undiciRequest } from "undici";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { buildApp } from "../app.js";
 import { SESSION_COOKIE } from "../auth/cookies.js";
@@ -17,6 +17,9 @@ import {
   registryEntry,
 } from "../test/fakes.js";
 import { LlmProviderError } from "./provider.js";
+import { assertConformance, recordConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The `/_api/llm/chat` gateway (architecture §6.1, project plan §4 M4): authn,
@@ -60,6 +63,7 @@ function buildLlmEdge(
     llmProvider: opts.withProvider === false ? null : provider,
     usage: opts.withProvider === false ? null : usage,
   });
+  recordConformance(app);
   return { app, sessions, provider, usage };
 }
 

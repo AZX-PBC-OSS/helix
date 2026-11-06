@@ -22,6 +22,7 @@ import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
 import type { UsageStore } from "../gateway/usage.js";
 import type { JobsSubmissionThrottle } from "../gateway/jobsThrottle.js";
 import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "./config.js";
+import { recordConformance } from "./conformance.js";
 import {
   FakeBlobReader,
   FakeOidcClient,
@@ -214,6 +215,7 @@ export function buildJobsEdgeApp(
     jobsSubmissionThrottle: opts.jobsSubmissionThrottle ?? null,
     ...(opts.onRoute ? { onRoute: opts.onRoute } : {}),
   });
+  recordConformance(app);
   return { app, sessions, usage: opts.usage ?? null };
 }
 
@@ -245,6 +247,7 @@ export function buildDisabledJobsEdge(opts: JobsHarnessOpts = {}): JobsHarness {
     usage: opts.usage ?? null,
     jobsSubmissionThrottle: opts.jobsSubmissionThrottle ?? null,
   });
+  recordConformance(app);
   // The forwarder field is never consulted on this build; the type wants one.
   return { app, forwarder: new FakeJobsForwarder(), sessions, usage: opts.usage ?? null };
 }

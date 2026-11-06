@@ -179,10 +179,12 @@ export const FetchErrorProviderSchema = z.strictObject({
 });
 export type FetchErrorProvider = z.infer<typeof FetchErrorProviderSchema>;
 
-export const FetchProxyErrorSchema = z.object({
-  code: FetchErrorCodeSchema,
-  message: z.string(),
-  /** Present only on the delegated-call codes that carry it (`connection_required`, `provider_unavailable`). */
-  provider: FetchErrorProviderSchema.optional(),
-});
+export const FetchProxyErrorSchema = z
+  .object({
+    code: FetchErrorCodeSchema,
+    message: z.string(),
+    /** Present only on the delegated-call codes that carry it (`connection_required`, `provider_unavailable`). */
+    provider: FetchErrorProviderSchema.optional(),
+  })
+  .meta({ id: "FetchProxyError", description: "A fetch-proxy refusal." });
 export type FetchProxyError = z.infer<typeof FetchProxyErrorSchema>;

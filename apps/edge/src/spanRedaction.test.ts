@@ -42,6 +42,9 @@ import {
   JOBS_ORIGIN,
   seedJobsSession,
 } from "./test/jobsGateway.js";
+import { assertConformance } from "./test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * ADR-0037 decision 10's redaction case — the direct sibling of

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { buildApp } from "../app.js";
 import { encodeListCursor } from "./data.js";
@@ -16,6 +16,9 @@ import {
   FakeUsageStore,
   registryEntry,
 } from "../test/fakes.js";
+import { assertConformance, recordConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The `/_api/data/*` capability (app-data design §3/§5): per-user private KV
@@ -91,6 +94,7 @@ function buildDataEdge(
     usage,
     appData: opts.withStore === false ? null : store,
   });
+  recordConformance(app);
   return { app, sessions, store, usage };
 }
 

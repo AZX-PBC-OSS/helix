@@ -1,6 +1,11 @@
 import { type Pool } from "pg";
 
-import { type Env } from "@azx-pbc/shared";
+import {
+  type Env,
+  type SharedKeyMeta,
+  type SharedKeyPage,
+  type UserKeyMeta,
+} from "@azx-pbc/shared";
 
 import { createEdgePool, type EdgePoolOpts } from "../db/pool.js";
 import { withPartition } from "../db/partition.js";
@@ -26,29 +31,9 @@ import type { MeterIdentity } from "../auth/gate.js";
  * string interpolation into SQL.
  */
 
-export interface UserKeyMeta {
-  key: string;
-  updatedAt: string;
-}
-
-/**
- * One entry of a `shared`-scope list page (ADR-0042 decision 3). Key, version
- * and updatedAt — **never the value**: 300 records at the pilot app's measured
- * median would be a 12 MB response, so the app lists and then fetches what it
- * needs. `version` rides along so a caller can list and then CAS without a
- * second round trip per key.
- */
-export interface SharedKeyMeta {
-  key: string;
-  version: string;
-  updatedAt: string;
-}
-
-/** A page from `listShared`; `nextCursor` is present only when more keys match. */
-export interface SharedKeyPage {
-  keys: SharedKeyMeta[];
-  nextCursor?: string;
-}
+// The key-listing shapes are the wire bodies of `/_api/data/*`, so they live
+// with the route contracts in `@azx-pbc/shared` (`appDataApi.ts`).
+export type { SharedKeyMeta, SharedKeyPage, UserKeyMeta };
 
 /**
  * Fixed page size for `listShared` (ADR-0042 decision 3): the response is

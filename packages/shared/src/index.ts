@@ -19,6 +19,7 @@ export * from "./pricing.js";
 export * from "./usage.js";
 export * from "./visitors.js";
 export * from "./data.js";
+export * from "./appDataApi.js";
 export * from "./collectionTable.js";
 export * from "./secrets.js";
 export * from "./providers.js";

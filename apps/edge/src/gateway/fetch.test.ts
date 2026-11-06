@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { request as undiciRequest } from "undici";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { type JWTPayload, jwtVerify } from "jose";
 import { INSTRUCTION_AUDIENCE, INSTRUCTION_JWT_TYP, OUTCOME_HEADER } from "@azx-pbc/shared";
@@ -26,6 +26,9 @@ import {
   type EgressRequest,
   type EgressResponse,
 } from "./egressProvider.js";
+import { assertConformance, recordConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The `/_api/fetch` policy plane (fetch-proxy design §7): gate + CSRF, the
@@ -183,6 +186,7 @@ function buildFetchEdge(
     egress: opts.withEgress === false ? null : egress,
     instructionKey: opts.withEgress === false ? null : (opts.instructionKey ?? key),
   });
+  recordConformance(app);
   return { app, egress, usage };
 }
 

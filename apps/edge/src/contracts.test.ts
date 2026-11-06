@@ -1,7 +1,11 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { RouteOptions } from "fastify";
 import { appContracts } from "@azx-pbc/shared/contracts";
+import * as telemetry from "@azx-pbc/shared/telemetry";
 import { buildJobsEdge, type JobsHarness } from "./test/jobsGateway.js";
+import { assertConformance } from "./test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * Routes the edge registers that are deliberately not in the published app API
@@ -27,33 +31,7 @@ const UNPUBLISHED: Record<string, string> = {
  * Published routes not yet converted to contracts. This list only shrinks; a
  * new route goes straight into a contract.
  */
-const PENDING: string[] = [
-  "GET /_api/me",
-  "GET /_api/connections/:ref/start",
-  "POST /_api/connections/attempt/cancel",
-  "GET /_api/connections/:ref/status",
-  "POST /_api/llm/chat",
-  "POST /_api/openai/v1/chat/completions",
-  "GET /_api/openai/v1/models",
-  "PUT /_api/data/user/:key",
-  "GET /_api/data/user/:key",
-  "DELETE /_api/data/user/:key",
-  "GET /_api/data/user",
-  "POST /_api/data/collections/:name",
-  "GET /_api/data/shared",
-  "GET /_api/data/shared/:key",
-  "PUT /_api/data/shared/:key",
-  "GET /_api/fetch/*",
-  "POST /_api/fetch/*",
-  "PUT /_api/fetch/*",
-  "PATCH /_api/fetch/*",
-  "DELETE /_api/fetch/*",
-  "OPTIONS /_api/fetch/*",
-  "POST /_api/jobs/:server/types/:type",
-  "GET /_api/jobs/:server/:jobId",
-  "GET /_api/jobs/:server/:jobId/result",
-  "DELETE /_api/jobs/:server/:jobId",
-];
+const PENDING: string[] = [];
 
 let h: JobsHarness;
 const registered = new Set<string>();
@@ -92,6 +70,38 @@ describe("edge route coverage (ADR-0054)", () => {
     for (const r of [...Object.keys(UNPUBLISHED), ...PENDING]) {
       expect(registered.has(r), r).toBe(true);
       expect(contracted.has(r), r).toBe(false);
+    }
+  });
+});
+
+/**
+ * `ROUTE_*` telemetry constants that name an `/_api` path but are not a route,
+ * each with the reason. Every other one must equal a contract's path, so the
+ * `http.route` a span carries is the path the contract documents.
+ */
+const ROUTE_GROUPS: Record<string, string> = {
+  ROUTE_DATA: "one span route for all eight app-data routes; the verb is its own attribute",
+};
+
+describe("ROUTE_* telemetry constants (ADR-0054)", () => {
+  it("name contracted paths", () => {
+    const paths = new Set(appContracts.map((c) => c.path));
+    const named: [string, string][] = [];
+    for (const [name, value] of Object.entries(telemetry)) {
+      if (name.startsWith("ROUTE_") && typeof value === "string" && value.startsWith("/_api/")) {
+        named.push([name, value]);
+      }
+    }
+    expect(named.length).toBeGreaterThan(0);
+    for (const [name, path] of named) {
+      if (name in ROUTE_GROUPS) continue;
+      expect(paths.has(path), `${name} = ${path}`).toBe(true);
+    }
+  });
+
+  it("list only route groups that exist", () => {
+    for (const name of Object.keys(ROUTE_GROUPS)) {
+      expect(telemetry, name).toHaveProperty(name);
     }
   });
 });

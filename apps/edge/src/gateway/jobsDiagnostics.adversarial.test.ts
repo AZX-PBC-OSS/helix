@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { JOBS_DIAGNOSTIC_QUALIFIED_TYPE } from "@azx-pbc/shared";
 import { loadEdgeJobsConfig } from "../config.js";
 import {
@@ -10,6 +10,9 @@ import {
   JOBS_DEV_ORIGIN,
   seedJobsSession,
 } from "../test/jobsGateway.js";
+import { assertConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The production edge's diagnostic-type refusal (the config-level

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import type { HealthCheck } from "@azx-pbc/shared";
 import { JOBS_CAPACITY_DEFAULTS, JOBS_REACHABILITY_CHECK } from "@azx-pbc/shared";
@@ -6,6 +6,9 @@ import { buildApp } from "./app.js";
 import type { EdgeConfig } from "./config.js";
 import { FakeBlobReader, FakeRegistry, registryEntry } from "./test/fakes.js";
 import { TRUST_PROXY_CHECK_NAME, TRUST_PROXY_WINDOW } from "./routing/trustProxyHealth.js";
+import { assertConformance, recordConformance } from "./test/conformance.js";
+
+afterEach(assertConformance);
 
 const APP_ID = "11111111-1111-4111-8111-111111111111";
 const PREFIX = `apps/${APP_ID}/1/`;
@@ -74,6 +77,7 @@ function buildTestEdge(opts: {
     opts.registry ??
     new FakeRegistry([registryEntry({ appId: APP_ID, slug: "demo", blobPrefix: PREFIX })]);
   const app = buildApp({ config: testConfig(opts.config), registry, blob });
+  recordConformance(app);
   return { app, blob };
 }
 

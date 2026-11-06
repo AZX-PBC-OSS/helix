@@ -19,6 +19,9 @@ import {
 } from "../test/fakes.js";
 import { RoutingLlmProvider } from "./routingLlmProvider.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
+import { assertConformance, recordConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The OpenAI-compatible surface (`/_api/openai/v1/*`). It rides the exact same
@@ -75,6 +78,7 @@ function buildEdge(
     llmProvider: opts.provider ?? provider,
     usage,
   });
+  recordConformance(app);
   return { app, sessions, provider, usage };
 }
 

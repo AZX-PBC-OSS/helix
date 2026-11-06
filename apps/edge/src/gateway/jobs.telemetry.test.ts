@@ -31,6 +31,9 @@ import {
 import { FakeUsageStore } from "../test/fakes.js";
 import type { UsageStore } from "./usage.js";
 import { until, withServer } from "../test/socket.js";
+import { assertConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The submission route's outcome telemetry (ADR-0037 + the observability
