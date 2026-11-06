@@ -17,3 +17,4 @@ export * from "./sessions.js";
 export * from "./data.js";
 export * from "./directory.js";
 export * from "./connectionsMine.js";
+export * from "./openapi.js";

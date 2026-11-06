@@ -79,7 +79,11 @@ type RecipeSource = "request" | "stored";
  * normalisation.
  */
 const headerName = (from: RecipeSource) => {
-  const base = z.string().min(1);
+  // A stored name is trimmed before the length check, so a legacy
+  // whitespace-only name is unreadable (the documented degrade path) rather than
+  // parsing to "", which no later parse of the same row would accept. A request
+  // name is checked untrimmed: the token rule already refuses whitespace.
+  const base = from === "stored" ? z.string().trim().min(1) : z.string().min(1);
   return (from === "request" ? base.max(64).regex(HEADER_TOKEN, "must be an RFC 7230 token") : base)
     .transform((n) => n.trim().toLowerCase())
     .refine((n) => !FORBIDDEN_HEADER_NAMES.has(n), "reserved header name")
@@ -359,3 +363,22 @@ export type SecretRotateRequest = z.infer<typeof SecretRotateRequestSchema>;
 /** Grant a `global` secret to an app (admin-only, approval-gated — §7). */
 export const SecretGrantRequestSchema = z.object({ appSlug: z.string().min(1) });
 export type SecretGrantRequest = z.infer<typeof SecretGrantRequestSchema>;
+
+/**
+ * The two admin-managed scopes, which have no owning app. `app` secrets use the
+ * owner routes instead.
+ */
+export const ADMIN_SECRET_SCOPES = ["global", "platform"] as const;
+
+/** Admin create body: the shared create shape plus the target scope (default `global`). */
+export const AdminSecretCreateRequestSchema = SecretCreateRequestSchema.extend({
+  scope: z.enum(ADMIN_SECRET_SCOPES).default("global"),
+});
+export type AdminSecretCreateRequest = z.infer<typeof AdminSecretCreateRequestSchema>;
+
+/** A grant of a `global` secret to an app. */
+export const SecretGrantResponseSchema = z.object({
+  secretId: z.string(),
+  appSlug: z.string(),
+});
+export type SecretGrantResponse = z.infer<typeof SecretGrantResponseSchema>;

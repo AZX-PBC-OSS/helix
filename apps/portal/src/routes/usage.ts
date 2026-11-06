@@ -1,19 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import {
-  GATEWAY_OUTCOMES,
-  GatewayAuditPageSchema,
-  PLATFORM_RANGES,
-  USAGE_RANGES,
-  type PlatformRange,
-  type UsageRange,
-} from "@azx-pbc/shared";
-import {
-  actorIsAdmin,
-  authenticate,
-  ownsApp,
-  requireActor,
-  requireAdmin,
-} from "../plugins/auth.js";
+import { type PlatformRange, type UsageRange } from "@azx-pbc/shared";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
+import { actorIsAdmin, requireActor, requireAdmin } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 import { Prisma, type GatewayCall as GatewayCallModel } from "../db/client.js";
 import {
@@ -55,13 +44,6 @@ import {
  * `ORDER BY tokens DESC` makes the truncation point meaningful.
  */
 const MODEL_BREAKDOWN_LIMIT = 100;
-
-/** Clamp a `?limit=` query value to a sane positive integer. */
-function clampLimit(raw: unknown, fallback: number, max: number): number {
-  const n = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
-  if (!Number.isFinite(n) || n < 1) return fallback;
-  return Math.min(Math.trunc(n), max);
-}
 
 /**
  * The wire row for one ledger row, as both audit reads map it. `slug` is the
@@ -133,28 +115,22 @@ function seriesGrid(p: RangePlan): Prisma.Sql {
   return Prisma.sql`generate_series(${windowStart(p)}, date_trunc(${p.grain}::text, now()), make_interval(days => ${p.stepDays}, hours => ${p.stepHours}))`;
 }
 
-function pickRange<T extends string>(raw: unknown, allowed: readonly T[], fallback: T): T {
-  return typeof raw === "string" && (allowed as readonly string[]).includes(raw)
-    ? (raw as T)
-    : fallback;
-}
-
 export async function usageRoutes(app: FastifyInstance): Promise<void> {
   // Per-app usage summary over a selectable rolling range. Bearer-gated read.
-  app.get<{ Params: { slug: string }; Querystring: { range?: string } }>(
-    "/api/v1/apps/:slug/usage",
-    { preHandler: authenticate },
-    async (req) => {
-      const range = pickRange(req.query.range, USAGE_RANGES, "24h");
-      const plan = PER_APP_PLANS[range];
-      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
-      if (!row) {
-        throw new AppError("not_found", `app "${req.params.slug}" not found`);
-      }
-      const id = row.id;
-      const since = windowStart(plan);
+  contractRoute(app, portal.getAppUsage, async (req) => {
+    const {
+      params: { slug },
+      query: { range },
+    } = parseRequest(portal.getAppUsage, req);
+    const plan = PER_APP_PLANS[range];
+    const row = await app.prisma.app.findUnique({ where: { slug } });
+    if (!row) {
+      throw new AppError("not_found", `app "${slug}" not found`);
+    }
+    const id = row.id;
+    const since = windowStart(plan);
 
-      const outcomes = await app.prisma.$queryRaw<UsageOutcomeRow[]>(Prisma.sql`
+    const outcomes = await app.prisma.$queryRaw<UsageOutcomeRow[]>(Prisma.sql`
         SELECT outcome,
                COUNT(*)::int                                       AS requests,
                COALESCE(SUM("inputTokens"), 0)::bigint             AS "inputTokens",
@@ -165,22 +141,22 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         WHERE "appId" = ${id}::uuid AND "createdAt" >= ${since}
         GROUP BY outcome`);
 
-      // The one query that still groups by `model` — everything else that used to
-      // was summing the frozen cost column and threw the key away.
-      //
-      // `outcome <> 'forbidden'` is what keeps this key low-cardinality, and the
-      // rollup meaningful. Every other fetch outcome is recorded downstream of
-      // the allowlist check, so its `model` is an origin that arrived through an
-      // approved manifest revision; a `forbidden` row's origin is whatever the
-      // app put in the URL and cleared no bar at all. It also has nothing to
-      // report here — a denial spends no tokens, no dollars and never reaches
-      // egress — so it would render as an `unpriced` 0% row. `byOutcome` still
-      // counts it, in the header of this very card.
-      //
-      // Keep this predicate OUTCOME-based. The top-level `costUsd` is a reduce
-      // over these rows (`toUsageSummary`), so a predicate that could drop a
-      // charged row would silently understate spend.
-      const models = await app.prisma.$queryRaw<UsageModelRow[]>(Prisma.sql`
+    // The one query that still groups by `model` — everything else that used to
+    // was summing the frozen cost column and threw the key away.
+    //
+    // `outcome <> 'forbidden'` is what keeps this key low-cardinality, and the
+    // rollup meaningful. Every other fetch outcome is recorded downstream of
+    // the allowlist check, so its `model` is an origin that arrived through an
+    // approved manifest revision; a `forbidden` row's origin is whatever the
+    // app put in the URL and cleared no bar at all. It also has nothing to
+    // report here — a denial spends no tokens, no dollars and never reaches
+    // egress — so it would render as an `unpriced` 0% row. `byOutcome` still
+    // counts it, in the header of this very card.
+    //
+    // Keep this predicate OUTCOME-based. The top-level `costUsd` is a reduce
+    // over these rows (`toUsageSummary`), so a predicate that could drop a
+    // charged row would silently understate spend.
+    const models = await app.prisma.$queryRaw<UsageModelRow[]>(Prisma.sql`
         SELECT model,
                COUNT(*)::int                                       AS requests,
                COALESCE(SUM("inputTokens" + "outputTokens"), 0)::bigint AS tokens,
@@ -192,15 +168,15 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         ORDER BY tokens DESC
         LIMIT ${MODEL_BREAKDOWN_LIMIT}`);
 
-      // p95 upstream latency over the range (only timed calls — durationMs > 0).
-      const latency = await app.prisma.$queryRaw<Array<{ p95: number | null }>>(Prisma.sql`
+    // p95 upstream latency over the range (only timed calls — durationMs > 0).
+    const latency = await app.prisma.$queryRaw<Array<{ p95: number | null }>>(Prisma.sql`
         SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY "durationMs")::float AS p95
         FROM gateway_calls
         WHERE "appId" = ${id}::uuid AND "durationMs" > 0 AND "createdAt" >= ${since}`);
 
-      // `COUNT(gc.id)`, not `COUNT(*)`: that is what makes an empty bucket read 0
-      // rather than 1 on the LEFT JOIN, i.e. what makes the grid dense.
-      const series = await app.prisma.$queryRaw<SeriesRow[]>(Prisma.sql`
+    // `COUNT(gc.id)`, not `COUNT(*)`: that is what makes an empty bucket read 0
+    // rather than 1 on the LEFT JOIN, i.e. what makes the grid dense.
+    const series = await app.prisma.$queryRaw<SeriesRow[]>(Prisma.sql`
         SELECT d                                                            AS bucket,
                COALESCE(SUM(gc."inputTokens"), 0)::bigint                   AS "inputTokens",
                COALESCE(SUM(gc."outputTokens"), 0)::bigint                  AS "outputTokens",
@@ -213,26 +189,25 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         GROUP BY d
         ORDER BY d ASC`);
 
-      // Today-since-midnight — backs the daily-cap gauge (calendar-day). No
-      // GROUP BY, so this always returns exactly one (COALESCE'd) row.
-      const today = await app.prisma.$queryRaw<TokenCostRow[]>(Prisma.sql`
+    // Today-since-midnight — backs the daily-cap gauge (calendar-day). No
+    // GROUP BY, so this always returns exactly one (COALESCE'd) row.
+    const today = await app.prisma.$queryRaw<TokenCostRow[]>(Prisma.sql`
         SELECT COALESCE(SUM("inputTokens"), 0)::bigint             AS "inputTokens",
                COALESCE(SUM("outputTokens"), 0)::bigint            AS "outputTokens",
                COALESCE(SUM("costMicroUsd"), 0)::bigint            AS "costMicroUsd"
         FROM gateway_calls
         WHERE "appId" = ${id}::uuid AND "createdAt" >= date_trunc('day', now())`);
 
-      return toUsageSummary({
-        appId: id,
-        range,
-        outcomes,
-        models,
-        series,
-        today,
-        latencyP95: latency[0]?.p95 ?? null,
-      });
-    },
-  );
+    return toUsageSummary({
+      appId: id,
+      range,
+      outcomes,
+      models,
+      series,
+      today,
+      latencyP95: latency[0]?.p95 ?? null,
+    });
+  });
 
   // App-scoped call history — the Usage tab's owner-facing "Recent calls" card.
   // The gate follows the data (ADR-0007, amended 2026-08-10): these rows carry
@@ -248,67 +223,58 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
   // the full record remains on /admin/audit, where this card's admins link to.
   // Latest N only: no cursor, no filters — the aggregates above answer "how
   // much" and the admin log carries the older history.
-  app.get<{ Params: { slug: string }; Querystring: { limit?: string } }>(
-    "/api/v1/apps/:slug/audit",
-    { preHandler: [authenticate, ownsApp] },
-    async (req) => {
-      const includeErrorDetail = actorIsAdmin(requireActor(req));
-      const row = await app.prisma.app.findUnique({ where: { slug: req.params.slug } });
-      if (!row) {
-        throw new AppError("not_found", `app "${req.params.slug}" not found`);
-      }
-      const rows = await app.prisma.gatewayCall.findMany({
-        where: { appId: row.id },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take: clampLimit(req.query.limit, 50, 200),
-      });
-      return GatewayAuditPageSchema.parse({
-        rows: rows.map((r) => toGatewayCall(toCallRow(r, row.slug, includeErrorDetail))),
-      });
-    },
-  );
+  contractRoute(app, portal.listAppGatewayCalls, async (req) => {
+    const includeErrorDetail = actorIsAdmin(requireActor(req));
+    const {
+      params: { slug },
+      query: { limit },
+    } = parseRequest(portal.listAppGatewayCalls, req);
+    const row = await app.prisma.app.findUnique({ where: { slug } });
+    if (!row) {
+      throw new AppError("not_found", `app "${slug}" not found`);
+    }
+    const rows = await app.prisma.gatewayCall.findMany({
+      where: { appId: row.id },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit,
+    });
+    return responseBody(portal.listAppGatewayCalls, 200, {
+      rows: rows.map((r) => toGatewayCall(toCallRow(r, row.slug, includeErrorDetail))),
+    });
+  });
 
   // Gateway audit log: recent calls newest-first, cursor-paginated on createdAt.
   // Cross-app; optional ?app= (slug) and ?outcome= filters.
-  app.get<{
-    Querystring: { app?: string; outcome?: string; limit?: string; before?: string };
-  }>("/api/v1/gateway/audit", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.listGatewayAudit, async (req) => {
     // First statement, ahead of any parse or DB read — the idiom `approvals.ts`,
     // `csp.ts` and `secrets.ts` use, and what `usage.test.ts` pins. This route
     // serves captured directory claims for every app user of every app; see the
     // gating note at the top of this file for why it is admin-only.
     requireAdmin(req);
-    const limit = clampLimit(req.query.limit, 50, 200);
+    const { query } = parseRequest(portal.listGatewayAudit, req);
+    const { limit } = query;
 
     // Resolve an optional slug filter to its appId (the ledger keys on appId).
     let appId: string | undefined;
-    if (req.query.app) {
-      const appRow = await app.prisma.app.findUnique({ where: { slug: req.query.app } });
+    if (query.app) {
+      const appRow = await app.prisma.app.findUnique({ where: { slug: query.app } });
       if (!appRow) {
-        throw new AppError("not_found", `app "${req.query.app}" not found`);
+        throw new AppError("not_found", `app "${query.app}" not found`);
       }
       appId = appRow.id;
     }
 
-    const before = req.query.before ? new Date(req.query.before) : undefined;
+    const before = query.before ? new Date(query.before) : undefined;
     if (before && Number.isNaN(before.getTime())) {
       throw new AppError("validation_failed", "`before` must be an ISO-8601 timestamp");
     }
 
-    // Reject an unknown outcome rather than passing it to Prisma, where it
-    // matches nothing and renders as an empty audit log — indistinguishable
-    // from "no such calls" for anyone who mistypes a filter.
-    // `|| undefined`, not `!== undefined`: Fastify parses both `?outcome=` and a
-    // bare `?outcome` to the empty string, which used to mean "no filter" under
-    // the previous truthiness check. Rejecting that would break a scripted client
-    // that always appends the param.
-    const outcome = req.query.outcome || undefined;
-    if (outcome !== undefined && !(GATEWAY_OUTCOMES as readonly string[]).includes(outcome)) {
-      throw new AppError(
-        "validation_failed",
-        `\`outcome\` must be one of: ${GATEWAY_OUTCOMES.join(", ")}`,
-      );
-    }
+    // The contract rejects an unknown outcome rather than passing it to Prisma,
+    // where it matches nothing and renders as an empty audit log. It accepts
+    // the empty string, which Fastify parses `?outcome=` and a bare `?outcome`
+    // to, as "no filter": a scripted client that always appends the param
+    // keeps working.
+    const outcome = query.outcome || undefined;
 
     // Fetch one extra row to compute the next cursor without a count query.
     const rows = await app.prisma.gatewayCall.findMany({
@@ -335,7 +301,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
     const mapped = page.map((r) => toCallRow(r, slugById.get(r.appId) ?? null, true));
 
     const last = page.at(-1);
-    return GatewayAuditPageSchema.parse({
+    return responseBody(portal.listGatewayAudit, 200, {
       rows: mapped.map(toGatewayCall),
       ...(hasMore && last ? { nextBefore: last.createdAt.toISOString() } : {}),
     });
@@ -343,15 +309,14 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
 
   // Platform-wide rollup: a range-controlled trend + breakdowns, plus MTD KPIs.
   // Bearer-gated. Backs the admin Platform page and the workspace /usage page.
-  app.get<{ Querystring: { range?: string } }>(
-    "/api/v1/gateway/usage",
-    { preHandler: authenticate },
-    async (req) => {
-      const range = pickRange(req.query.range, PLATFORM_RANGES, "30d");
-      const plan = PLATFORM_PLANS[range];
-      const since = windowStart(plan);
+  contractRoute(app, portal.getPlatformUsage, async (req) => {
+    const {
+      query: { range },
+    } = parseRequest(portal.getPlatformUsage, req);
+    const plan = PLATFORM_PLANS[range];
+    const since = windowStart(plan);
 
-      const series = await app.prisma.$queryRaw<SeriesRow[]>(Prisma.sql`
+    const series = await app.prisma.$queryRaw<SeriesRow[]>(Prisma.sql`
         SELECT d                                                            AS bucket,
                COALESCE(SUM(gc."inputTokens"), 0)::bigint                   AS "inputTokens",
                COALESCE(SUM(gc."outputTokens"), 0)::bigint                  AS "outputTokens",
@@ -362,7 +327,7 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         GROUP BY d
         ORDER BY d ASC`);
 
-      const byApp = await app.prisma.$queryRaw<PlatformAppRow[]>(Prisma.sql`
+    const byApp = await app.prisma.$queryRaw<PlatformAppRow[]>(Prisma.sql`
         SELECT gc."appId"                                                   AS "appId",
                a.slug                                                       AS slug,
                COALESCE(SUM(gc."inputTokens"), 0)::bigint                   AS "inputTokens",
@@ -374,32 +339,32 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         WHERE gc."createdAt" >= ${since}
         GROUP BY gc."appId", a.slug`);
 
-      // MTD headline KPIs — independent of the selected range. Cost folds in here
-      // rather than into a second model-grouped query: it is summed straight from
-      // the frozen `costMicroUsd` column, so there was never anything per-model
-      // to do with it.
-      const totalsRows = await app.prisma.$queryRaw<
-        Array<{
-          tokens: bigint | number;
-          requests: number;
-          activeUsers: number;
-          costMicroUsd: bigint | number;
-        }>
-      >`
+    // MTD headline KPIs — independent of the selected range. Cost folds in here
+    // rather than into a second model-grouped query: it is summed straight from
+    // the frozen `costMicroUsd` column, so there was never anything per-model
+    // to do with it.
+    const totalsRows = await app.prisma.$queryRaw<
+      Array<{
+        tokens: bigint | number;
+        requests: number;
+        activeUsers: number;
+        costMicroUsd: bigint | number;
+      }>
+    >`
         SELECT COALESCE(SUM("inputTokens" + "outputTokens"), 0)::bigint AS tokens,
                COUNT(*)::int                                            AS requests,
                COUNT(DISTINCT "userOid")::int                           AS "activeUsers",
                COALESCE(SUM("costMicroUsd"), 0)::bigint                 AS "costMicroUsd"
         FROM gateway_calls
         WHERE "createdAt" >= date_trunc('month', now())`;
-      const totals = totalsRows[0] ?? {
-        tokens: 0,
-        requests: 0,
-        activeUsers: 0,
-        costMicroUsd: 0,
-      };
+    const totals = totalsRows[0] ?? {
+      tokens: 0,
+      requests: 0,
+      activeUsers: 0,
+      costMicroUsd: 0,
+    };
 
-      const capabilityMix = await app.prisma.$queryRaw<PlatformCapabilityRow[]>(Prisma.sql`
+    const capabilityMix = await app.prisma.$queryRaw<PlatformCapabilityRow[]>(Prisma.sql`
         SELECT capability,
                COALESCE(SUM("inputTokens"), 0)::bigint                AS "inputTokens",
                COALESCE(SUM("outputTokens"), 0)::bigint               AS "outputTokens",
@@ -408,7 +373,6 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
         WHERE "createdAt" >= ${since}
         GROUP BY capability`);
 
-      return toPlatformUsage({ range, series, byApp, totals, capabilityMix });
-    },
-  );
+    return toPlatformUsage({ range, series, byApp, totals, capabilityMix });
+  });
 }

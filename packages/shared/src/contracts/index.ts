@@ -22,6 +22,7 @@ import { sessionsContracts } from "./portal/sessions.js";
 import { dataContracts } from "./portal/data.js";
 import { directoryContracts } from "./portal/directory.js";
 import { connectionsMineContracts } from "./portal/connectionsMine.js";
+import { openapiContracts } from "./portal/openapi.js";
 import { meContracts as appMeContracts } from "./app/me.js";
 import { llmContracts as appLlmContracts } from "./app/llm.js";
 import { openaiContracts as appOpenaiContracts } from "./app/openai.js";
@@ -57,6 +58,7 @@ export const portalContracts: readonly RouteContract[] = [
   ...dataContracts,
   ...directoryContracts,
   ...connectionsMineContracts,
+  ...openapiContracts,
 ];
 
 /** Every route in the app API (`/_api/*`). */

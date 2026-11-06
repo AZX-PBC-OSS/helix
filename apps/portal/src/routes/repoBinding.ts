@@ -1,8 +1,10 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { SetRepoBindingRequestSchema, type RepoBinding } from "@azx-pbc/shared";
+import type { RepoBinding } from "@azx-pbc/shared";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
 import type { RepoBinding as RepoBindingRow } from "../db/client.js";
 import { resolveRepoDeployConfig } from "../deployment.js";
-import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
+import { requireActor } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 import { rejectArchived } from "./versions.js";
 
@@ -43,33 +45,38 @@ export async function repoBindingRoutes(app: FastifyInstance): Promise<void> {
     return row;
   };
 
-  const path = "/api/v1/apps/:slug/repo-binding";
+  const gated = { before: [requireRepoDeployEnabled] };
 
   // Owner-gated read, unlike most app reads: the binding names who can deploy.
-  app.get<{ Params: { slug: string } }>(
-    path,
-    { preHandler: [requireRepoDeployEnabled, authenticate, ownsApp] },
+  contractRoute(
+    app,
+    portal.getRepoBinding,
     async (req) => {
-      const appRow = await findApp(req.params.slug);
+      const { params } = parseRequest(portal.getRepoBinding, req);
+      const appRow = await findApp(params.slug);
       const row = await app.prisma.repoBinding.findUnique({ where: { appId: appRow.id } });
       // `details.reason` tells "no binding" apart from "no such app" or a
       // disabled feature, all of which are also 404s.
       if (!row)
         throw new AppError("not_found", "this app has no repo binding", { reason: "no_binding" });
-      return toBinding(row);
+      return responseBody(portal.getRepoBinding, 200, toBinding(row));
     },
+    gated,
   );
 
   // Create or replace. Changing the repository clears the pinned ids, so the
   // next deploy pins the new repo; changing anything else keeps them.
-  app.put<{ Params: { slug: string } }>(
-    path,
-    { preHandler: [requireRepoDeployEnabled, authenticate, ownsApp] },
+  contractRoute(
+    app,
+    portal.setRepoBinding,
     async (req) => {
       const actor = requireActor(req);
-      const appRow = await findApp(req.params.slug);
+      // An archived app is refused before the body is validated, so the slug is
+      // read through the GET contract, which declares the same params and no body.
+      const { params } = parseRequest(portal.getRepoBinding, req);
+      const appRow = await findApp(params.slug);
       rejectArchived(appRow);
-      const body = SetRepoBindingRequestSchema.parse(req.body);
+      const { body } = parseRequest(portal.setRepoBinding, req);
 
       const row = await app.prisma.$transaction(async (tx) => {
         const existing = await tx.repoBinding.findUnique({ where: { appId: appRow.id } });
@@ -103,17 +110,19 @@ export async function repoBindingRoutes(app: FastifyInstance): Promise<void> {
         });
         return saved;
       });
-      return toBinding(row);
+      return responseBody(portal.setRepoBinding, 200, toBinding(row));
     },
+    gated,
   );
 
   // Idempotent: removing a binding that isn't there is a 204 with no audit row.
-  app.delete<{ Params: { slug: string } }>(
-    path,
-    { preHandler: [requireRepoDeployEnabled, authenticate, ownsApp] },
+  contractRoute(
+    app,
+    portal.deleteRepoBinding,
     async (req, reply) => {
       const actor = requireActor(req);
-      const appRow = await findApp(req.params.slug);
+      const { params } = parseRequest(portal.deleteRepoBinding, req);
+      const appRow = await findApp(params.slug);
       await app.prisma.$transaction(async (tx) => {
         const removed = await tx.repoBinding.deleteMany({ where: { appId: appRow.id } });
         if (removed.count > 0) {
@@ -124,5 +133,6 @@ export async function repoBindingRoutes(app: FastifyInstance): Promise<void> {
       });
       reply.status(204).send();
     },
+    gated,
   );
 }

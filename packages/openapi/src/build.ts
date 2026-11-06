@@ -20,15 +20,31 @@ import {
  */
 export const SPEC_VERSION = "v1";
 
-const DOCUMENTS: Record<
-  ContractApi,
-  { title: string; description: string; contracts: readonly RouteContract[] }
-> = {
+interface DocumentSpec {
+  title: string;
+  description: string;
+  /** The deployment-specific origin, as a URL template. */
+  server: {
+    url: string;
+    description: string;
+    variables: Record<string, { default: string; description: string }>;
+  };
+  contracts: readonly RouteContract[];
+}
+
+const DOCUMENTS: Record<ContractApi, DocumentSpec> = {
   portal: {
     title: "Helix portal API",
     description:
       "The control-plane API the `helix` CLI, the portal UI and operator automation call. " +
       "Every route except the configuration bootstrap needs a bearer token.",
+    server: {
+      url: "https://{portal}",
+      description: "This deployment's portal origin (`helix capabilities` shows it).",
+      variables: {
+        portal: { default: "portal.example.com", description: "The portal host name." },
+      },
+    },
     contracts: portalContracts,
   },
   app: {
@@ -37,6 +53,15 @@ const DOCUMENTS: Record<
       "The same-origin `/_api/*` gateway a hosted app calls from the browser: identity, " +
       "LLM, app data, connected accounts, the fetch proxy, and background jobs. " +
       "Requests are made from the app's own origin and carry the `__Host-session` cookie.",
+    server: {
+      url: "https://{app}.{appsHost}",
+      description:
+        "The app's own origin. The gateway is same-origin, so an app calls `/_api/*` relative to its page.",
+      variables: {
+        app: { default: "my-app", description: "The app's slug." },
+        appsHost: { default: "apps.example.com", description: "This deployment's apps host." },
+      },
+    },
     contracts: appContracts,
   },
 };
@@ -135,7 +160,13 @@ export function buildDocument(api: ContractApi): ReturnType<typeof createDocumen
   for (const c of doc.contracts) {
     const path = toOpenApiPath(c.path);
     const item = (paths[path] ??= {});
-    const method = c.method.toLowerCase() as "get" | "post" | "put" | "patch" | "delete" | "options";
+    const method = c.method.toLowerCase() as
+      | "get"
+      | "post"
+      | "put"
+      | "patch"
+      | "delete"
+      | "options";
     if (item[method]) throw new Error(`duplicate contract for ${c.method} ${c.path}`);
     item[method] = operation(c);
   }
@@ -150,6 +181,7 @@ export function buildDocument(api: ContractApi): ReturnType<typeof createDocumen
   return createDocument({
     openapi: "3.1.0",
     info: { title: doc.title, version: SPEC_VERSION, description: doc.description },
+    servers: [doc.server],
     paths,
     components: { securitySchemes },
   });

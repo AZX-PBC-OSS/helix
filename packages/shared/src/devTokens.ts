@@ -43,7 +43,16 @@ export const DevOriginSchema = z
   // Canonicalize to the URL origin (drops a trailing slash and normalizes case)
   // so the stored form matches the browser `Origin` header the dev-gateway
   // compares against — a `https://x.example/` mint would otherwise never match.
-  .transform((o) => new URL(o).origin);
+  // `.overwrite`, not `.transform`, so the OpenAPI generator can describe the
+  // value (ADR-0054). An overwrite still runs after a failed refine, so it must
+  // not throw on an unparseable value.
+  .overwrite((o) => {
+    try {
+      return new URL(o).origin;
+    } catch {
+      return o;
+    }
+  });
 
 /** Token lifetime, shared by mint and rotate (§4.1). */
 const TtlDaysSchema = z.number().int().min(1).max(365).optional();

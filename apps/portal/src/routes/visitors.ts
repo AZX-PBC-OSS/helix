@@ -2,14 +2,13 @@ import type { FastifyInstance } from "fastify";
 import {
   VISIT_IDLE_MINUTES,
   VISITOR_LOCATION_LIMIT,
-  VISITOR_RANGES,
-  VisitorSummarySchema,
   type VisitorLocation,
   type VisitorRange,
   type VisitorSummary,
   type VisitorTotals,
 } from "@azx-pbc/shared";
-import { authenticate, ownsApp } from "../plugins/auth.js";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 import { Prisma } from "../db/client.js";
 import type { GeoResolver } from "../geo/resolver.js";
@@ -45,32 +44,28 @@ interface PrefixRow {
 }
 
 export async function visitorRoutes(app: FastifyInstance): Promise<void> {
-  app.get<{ Params: { slug: string }; Querystring: { range?: string } }>(
-    "/api/v1/apps/:slug/visitors",
-    { preHandler: [authenticate, ownsApp] },
-    async (req) => {
-      const range: VisitorRange = (VISITOR_RANGES as readonly string[]).includes(
-        req.query.range ?? "",
-      )
-        ? (req.query.range as VisitorRange)
-        : "30d";
-      const days = RANGE_DAYS[range];
-      const row = await app.prisma.app.findUnique({
-        where: { slug: req.params.slug },
-        select: { id: true },
-      });
-      if (!row) throw new AppError("not_found", `app "${req.params.slug}" not found`);
-      const id = row.id;
+  contractRoute(app, portal.getAppVisitors, async (req) => {
+    const {
+      params: { slug },
+      query: { range },
+    } = parseRequest(portal.getAppVisitors, req);
+    const days = RANGE_DAYS[range];
+    const row = await app.prisma.app.findUnique({
+      where: { slug },
+      select: { id: true },
+    });
+    if (!row) throw new AppError("not_found", `app "${slug}" not found`);
+    const id = row.id;
 
-      const currentStart = Prisma.sql`(date_trunc('day', now()) - make_interval(days => ${days - 1}))`;
-      const priorStart = Prisma.sql`(${currentStart} - make_interval(days => ${days}))`;
+    const currentStart = Prisma.sql`(date_trunc('day', now()) - make_interval(days => ${days - 1}))`;
+    const priorStart = Prisma.sql`(${currentStart} - make_interval(days => ${days}))`;
 
-      // Every load in both windows, flagged with whether it starts a visit. The
-      // inner scan reaches one idle gap further back, so `LAG` sees the load
-      // that a window's first load may be continuing; the outer filter then
-      // drops those lead-in rows. Without it, a visit already in progress at
-      // `priorStart` would be counted as starting there.
-      const loads = Prisma.sql`
+    // Every load in both windows, flagged with whether it starts a visit. The
+    // inner scan reaches one idle gap further back, so `LAG` sees the load
+    // that a window's first load may be continuing; the outer filter then
+    // drops those lead-in rows. Without it, a visit already in progress at
+    // `priorStart` would be counted as starting there.
+    const loads = Prisma.sql`
         SELECT * FROM (
           SELECT "createdAt", "visitorHash", "ipPrefix",
                  "createdAt" >= ${currentStart} AS current,
@@ -87,7 +82,7 @@ export async function visitorRoutes(app: FastifyInstance): Promise<void> {
         ) scanned
         WHERE "createdAt" >= ${priorStart}`;
 
-      const totals = await app.prisma.$queryRaw<TotalsRow[]>(Prisma.sql`
+    const totals = await app.prisma.$queryRaw<TotalsRow[]>(Prisma.sql`
         WITH loads AS (${loads})
         SELECT current,
                COUNT(*) FILTER (WHERE starts) AS visits,
@@ -95,8 +90,8 @@ export async function visitorRoutes(app: FastifyInstance): Promise<void> {
         FROM loads
         GROUP BY current`);
 
-      // `COUNT(l."createdAt")`, not `COUNT(*)`, so an empty day reads 0 on the LEFT JOIN.
-      const series = await app.prisma.$queryRaw<SeriesRow[]>(Prisma.sql`
+    // `COUNT(l."createdAt")`, not `COUNT(*)`, so an empty day reads 0 on the LEFT JOIN.
+    const series = await app.prisma.$queryRaw<SeriesRow[]>(Prisma.sql`
         WITH loads AS (${loads})
         SELECT d AS bucket,
                COUNT(l."createdAt") FILTER (WHERE l.starts) AS visits,
@@ -106,9 +101,9 @@ export async function visitorRoutes(app: FastifyInstance): Promise<void> {
         GROUP BY d
         ORDER BY d ASC`);
 
-      // A hash is derived from one IP, so it maps to exactly one prefix: summing
-      // distinct visitors per prefix into a location is exact, not an estimate.
-      const prefixes = await app.prisma.$queryRaw<PrefixRow[]>(Prisma.sql`
+    // A hash is derived from one IP, so it maps to exactly one prefix: summing
+    // distinct visitors per prefix into a location is exact, not an estimate.
+    const prefixes = await app.prisma.$queryRaw<PrefixRow[]>(Prisma.sql`
         WITH loads AS (${loads})
         SELECT "ipPrefix",
                COUNT(*) FILTER (WHERE starts) AS visits,
@@ -117,27 +112,26 @@ export async function visitorRoutes(app: FastifyInstance): Promise<void> {
         WHERE current
         GROUP BY "ipPrefix"`);
 
-      const pick = (current: boolean): VisitorTotals => {
-        const r = totals.find((t) => t.current === current);
-        return { visits: Number(r?.visits ?? 0), uniqueVisitors: Number(r?.visitors ?? 0) };
-      };
+    const pick = (current: boolean): VisitorTotals => {
+      const r = totals.find((t) => t.current === current);
+      return { visits: Number(r?.visits ?? 0), uniqueVisitors: Number(r?.visitors ?? 0) };
+    };
 
-      const summary: VisitorSummary = {
-        appId: id,
-        range,
-        current: pick(true),
-        prior: pick(false),
-        series: series.map((s) => ({
-          bucket: s.bucket.toISOString(),
-          visits: Number(s.visits),
-          uniqueVisitors: Number(s.visitors),
-        })),
-        ...rollUpLocations(prefixes, app.geo),
-        geo: app.geo.status,
-      };
-      return VisitorSummarySchema.parse(summary);
-    },
-  );
+    const summary: VisitorSummary = {
+      appId: id,
+      range,
+      current: pick(true),
+      prior: pick(false),
+      series: series.map((s) => ({
+        bucket: s.bucket.toISOString(),
+        visits: Number(s.visits),
+        uniqueVisitors: Number(s.visitors),
+      })),
+      ...rollUpLocations(prefixes, app.geo),
+      geo: app.geo.status,
+    };
+    return responseBody(portal.getAppVisitors, 200, summary);
+  });
 }
 
 /** Resolve each prefix and group by (country, region); top N, then the rest. */

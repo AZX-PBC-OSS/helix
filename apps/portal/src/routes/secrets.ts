@@ -1,18 +1,16 @@
-import { z } from "zod";
 import type { FastifyInstance } from "fastify";
 import {
-  EnvSchema,
+  ADMIN_SECRET_SCOPES,
   type InjectionRecipe,
-  SecretCreateRequestSchema,
-  SecretGrantRequestSchema,
-  SecretRotateRequestSchema,
   StoredInjectionRecipeSchema,
   type SecretMetadata,
   type SecretScope,
   validateMaterialForRecipe,
 } from "@azx-pbc/shared";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
 import type { SecretStore } from "@azx-pbc/secret-store";
-import { authenticate, ownsApp, requireActor, requireAdmin } from "../plugins/auth.js";
+import { requireActor, requireAdmin } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";
 
@@ -30,14 +28,6 @@ import { isUniqueViolation } from "../db/errors.js";
  * Binding a secret to an app is a *manifest* change and rides the approval
  * write-gate (PUT /manifest); these routes manage the credential itself.
  */
-
-/** The two admin-managed (appId-less) scopes; `app` secrets use the owner routes. */
-const ADMIN_SCOPES = ["global", "platform"] as const;
-
-/** Admin create body: the shared create shape plus the target scope (default global). */
-const AdminSecretCreateSchema = SecretCreateRequestSchema.extend({
-  scope: z.enum(ADMIN_SCOPES).default("global"),
-});
 
 /**
  * Refuse material that does not fit its recipe, **before** sealing — so a bad
@@ -230,148 +220,147 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
 
   // ── App-scoped secrets (owner) ────────────────────────────────────────────
 
-  app.get<{ Params: { slug: string } }>(
-    "/api/v1/apps/:slug/secrets",
-    { preHandler: [authenticate, ownsApp] },
-    async (req) => {
-      requireActor(req);
-      const appRow = await findApp(req.params.slug);
-      // Both tiers (dev-mode §6): each row's metadata carries `env`, so the owner
-      // sees prod + dev connection secrets side by side. Uniqueness is per-env
-      // (appId, env, name), so a name can appear once per tier.
-      const rows = await app.prisma.appSecret.findMany({
-        where: { scope: "app", appId: appRow.id },
-        orderBy: [{ env: "asc" }, { createdAt: "asc" }],
-      });
-      return rows.map((r) => toMetadata(r));
-    },
-  );
+  contractRoute(app, portal.listAppSecrets, async (req) => {
+    requireActor(req);
+    const { params } = parseRequest(portal.listAppSecrets, req);
+    const appRow = await findApp(params.slug);
+    // Both tiers (dev-mode §6): each row's metadata carries `env`, so the owner
+    // sees prod + dev connection secrets side by side. Uniqueness is per-env
+    // (appId, env, name), so a name can appear once per tier.
+    const rows = await app.prisma.appSecret.findMany({
+      where: { scope: "app", appId: appRow.id },
+      orderBy: [{ env: "asc" }, { createdAt: "asc" }],
+    });
+    return responseBody(
+      portal.listAppSecrets,
+      200,
+      rows.map((r) => toMetadata(r)),
+    );
+  });
 
-  app.post<{ Params: { slug: string } }>(
-    "/api/v1/apps/:slug/secrets",
-    { preHandler: [authenticate, ownsApp] },
-    async (req, reply) => {
-      const actor = requireActor(req);
-      const appRow = await findApp(req.params.slug);
-      const body = SecretCreateRequestSchema.parse(req.body);
-      assertMaterialFits(body.injection, body.value);
-      const material = await store().seal(body.value);
-      let row;
-      try {
-        row = await app.prisma.appSecret.create({
-          data: {
-            scope: "app",
-            appId: appRow.id,
-            env: body.env,
-            name: body.name,
-            material,
-            injection: body.injection,
-            createdBy: actor.sub,
-          },
-        });
-      } catch (err) {
-        await release(material, {
-          appId: appRow.id,
-          actor: actor.sub,
+  contractRoute(app, portal.createAppSecret, async (req, reply) => {
+    const actor = requireActor(req);
+    const { params, body } = parseRequest(portal.createAppSecret, req);
+    const appRow = await findApp(params.slug);
+    assertMaterialFits(body.injection, body.value);
+    const material = await store().seal(body.value);
+    let row;
+    try {
+      row = await app.prisma.appSecret.create({
+        data: {
           scope: "app",
+          appId: appRow.id,
           env: body.env,
           name: body.name,
-          reason: "create-rollback",
-        });
-        if (isUniqueViolation(err)) {
-          throw new AppError(
-            "conflict",
-            `${body.env} secret "${body.name}" already exists for this app`,
-          );
-        }
-        throw err;
-      }
-      await audit(appRow.id, actor.sub, "secret.created", {
+          material,
+          injection: body.injection,
+          createdBy: actor.sub,
+        },
+      });
+    } catch (err) {
+      await release(material, {
+        appId: appRow.id,
+        actor: actor.sub,
         scope: "app",
         env: body.env,
         name: body.name,
+        reason: "create-rollback",
       });
-      reply.status(201);
-      return toMetadata(row);
-    },
-  );
+      if (isUniqueViolation(err)) {
+        throw new AppError(
+          "conflict",
+          `${body.env} secret "${body.name}" already exists for this app`,
+        );
+      }
+      throw err;
+    }
+    await audit(appRow.id, actor.sub, "secret.created", {
+      scope: "app",
+      env: body.env,
+      name: body.name,
+    });
+    reply.status(201);
+    return responseBody(portal.createAppSecret, 201, toMetadata(row));
+  });
 
-  app.post<{ Params: { slug: string; name: string } }>(
-    "/api/v1/apps/:slug/secrets/:name/rotate",
-    { preHandler: [authenticate, ownsApp] },
-    async (req) => {
-      const actor = requireActor(req);
-      const appRow = await findApp(req.params.slug);
-      const { value } = SecretRotateRequestSchema.parse(req.body);
-      // `?env=prod|dev` (default prod) — the tier discriminator, since a name is
-      // unique only within a tier (dev-mode §6).
-      const env = EnvSchema.default("prod").parse((req.query as { env?: string }).env);
-      const row = await app.prisma.appSecret.findFirst({
-        where: { scope: "app", appId: appRow.id, env, name: req.params.name },
-      });
-      if (!row) throw new AppError("not_found", `secret "${req.params.name}" not found`);
-      // The recipe is immutable, so a rotation is where the material can drift away
-      // from it. The row is already in hand for the not-found check and the CAS, so
-      // this needs no extra query and no change to the rotate request schema.
-      assertMaterialFits(requireRecipe(row), value);
-      const material = await store().seal(value);
-      const updated = await rotateOrRelease(row, material, {
-        appId: appRow.id,
-        actor: actor.sub,
-        scope: "app",
-        env,
-        name: row.name,
-      });
-      await audit(appRow.id, actor.sub, "secret.rotated", { scope: "app", env, name: row.name });
-      return toMetadata(updated);
-    },
-  );
+  contractRoute(app, portal.rotateAppSecret, async (req) => {
+    const actor = requireActor(req);
+    // `?env=prod|dev` (default prod) is the tier discriminator, since a name is
+    // unique only within a tier (dev-mode §6).
+    const {
+      params,
+      query: { env },
+      body: { value },
+    } = parseRequest(portal.rotateAppSecret, req);
+    const appRow = await findApp(params.slug);
+    const row = await app.prisma.appSecret.findFirst({
+      where: { scope: "app", appId: appRow.id, env, name: params.name },
+    });
+    if (!row) throw new AppError("not_found", `secret "${params.name}" not found`);
+    // The recipe is immutable, so a rotation is where the material can drift away
+    // from it. The row is already in hand for the not-found check and the CAS, so
+    // this needs no extra query and no change to the rotate request schema.
+    assertMaterialFits(requireRecipe(row), value);
+    const material = await store().seal(value);
+    const updated = await rotateOrRelease(row, material, {
+      appId: appRow.id,
+      actor: actor.sub,
+      scope: "app",
+      env,
+      name: row.name,
+    });
+    await audit(appRow.id, actor.sub, "secret.rotated", { scope: "app", env, name: row.name });
+    return responseBody(portal.rotateAppSecret, 200, toMetadata(updated));
+  });
 
-  app.delete<{ Params: { slug: string; name: string } }>(
-    "/api/v1/apps/:slug/secrets/:name",
-    { preHandler: [authenticate, ownsApp] },
-    async (req, reply) => {
-      const actor = requireActor(req);
-      const appRow = await findApp(req.params.slug);
-      const env = EnvSchema.default("prod").parse((req.query as { env?: string }).env);
-      const row = await app.prisma.appSecret.findFirst({
-        where: { scope: "app", appId: appRow.id, env, name: req.params.name },
-      });
-      if (!row) throw new AppError("not_found", `secret "${req.params.name}" not found`);
-      await app.prisma.appSecret.delete({ where: { id: row.id } });
-      await release(row.material, {
-        appId: appRow.id,
-        actor: actor.sub,
-        scope: "app",
-        env,
-        name: row.name,
-        reason: "delete",
-      });
-      await audit(appRow.id, actor.sub, "secret.deleted", { scope: "app", env, name: row.name });
-      reply.status(204);
-    },
-  );
+  contractRoute(app, portal.deleteAppSecret, async (req, reply) => {
+    const actor = requireActor(req);
+    const {
+      params,
+      query: { env },
+    } = parseRequest(portal.deleteAppSecret, req);
+    const appRow = await findApp(params.slug);
+    const row = await app.prisma.appSecret.findFirst({
+      where: { scope: "app", appId: appRow.id, env, name: params.name },
+    });
+    if (!row) throw new AppError("not_found", `secret "${params.name}" not found`);
+    await app.prisma.appSecret.delete({ where: { id: row.id } });
+    await release(row.material, {
+      appId: appRow.id,
+      actor: actor.sub,
+      scope: "app",
+      env,
+      name: row.name,
+      reason: "delete",
+    });
+    await audit(appRow.id, actor.sub, "secret.deleted", { scope: "app", env, name: row.name });
+    reply.status(204);
+  });
 
   // ── Global + platform secrets (admin) ─────────────────────────────────────
 
-  app.get("/api/v1/secrets", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.listAdminSecrets, async (req) => {
     requireAdmin(req);
     const rows = await app.prisma.appSecret.findMany({
-      where: { scope: { in: [...ADMIN_SCOPES] }, env: "prod" },
+      where: { scope: { in: [...ADMIN_SECRET_SCOPES] }, env: "prod" },
       include: { grants: { include: { app: true } } },
       orderBy: [{ scope: "asc" }, { createdAt: "asc" }],
     });
-    return rows.map((r) =>
-      toMetadata(
-        r,
-        r.grants.map((g) => g.app.slug),
+    return responseBody(
+      portal.listAdminSecrets,
+      200,
+      rows.map((r) =>
+        toMetadata(
+          r,
+          r.grants.map((g) => g.app.slug),
+        ),
       ),
     );
   });
 
-  app.post("/api/v1/secrets", { preHandler: authenticate }, async (req, reply) => {
+  contractRoute(app, portal.createAdminSecret, async (req, reply) => {
     const actor = requireAdmin(req);
-    const body = AdminSecretCreateSchema.parse(req.body);
+    const { body } = parseRequest(portal.createAdminSecret, req);
     // A friendly pre-check, but *not* the guarantee — it's a non-atomic read-then-insert.
     // The partial unique index `app_secrets_admin_scope_name_key` is what actually holds
     // under concurrency (Postgres treats the NULL `appId` as distinct, so the model's
@@ -417,99 +406,91 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     }
     await audit(null, actor.sub, "secret.created", { scope: body.scope, name: body.name });
     reply.status(201);
-    return toMetadata(row);
+    return responseBody(portal.createAdminSecret, 201, toMetadata(row));
   });
 
-  app.post<{ Params: { id: string } }>(
-    "/api/v1/secrets/:id/rotate",
-    { preHandler: authenticate },
-    async (req) => {
-      const actor = requireAdmin(req);
-      const { value } = SecretRotateRequestSchema.parse(req.body);
-      const row = await app.prisma.appSecret.findFirst({
-        where: { id: req.params.id, scope: { in: [...ADMIN_SCOPES] } },
-      });
-      if (!row) throw new AppError("not_found", "secret not found");
-      assertMaterialFits(requireRecipe(row), value);
-      const material = await store().seal(value);
-      const updated = await rotateOrRelease(row, material, {
-        appId: null,
-        actor: actor.sub,
-        scope: row.scope,
-        env: row.env,
-        name: row.name,
-      });
-      await audit(null, actor.sub, "secret.rotated", { scope: row.scope, name: row.name });
-      return toMetadata(updated);
-    },
-  );
+  contractRoute(app, portal.rotateAdminSecret, async (req) => {
+    const actor = requireAdmin(req);
+    const {
+      params,
+      body: { value },
+    } = parseRequest(portal.rotateAdminSecret, req);
+    const row = await app.prisma.appSecret.findFirst({
+      where: { id: params.id, scope: { in: [...ADMIN_SECRET_SCOPES] } },
+    });
+    if (!row) throw new AppError("not_found", "secret not found");
+    assertMaterialFits(requireRecipe(row), value);
+    const material = await store().seal(value);
+    const updated = await rotateOrRelease(row, material, {
+      appId: null,
+      actor: actor.sub,
+      scope: row.scope,
+      env: row.env,
+      name: row.name,
+    });
+    await audit(null, actor.sub, "secret.rotated", { scope: row.scope, name: row.name });
+    return responseBody(portal.rotateAdminSecret, 200, toMetadata(updated));
+  });
 
-  app.delete<{ Params: { id: string } }>(
-    "/api/v1/secrets/:id",
-    { preHandler: authenticate },
-    async (req, reply) => {
-      const actor = requireAdmin(req);
-      const row = await app.prisma.appSecret.findFirst({
-        where: { id: req.params.id, scope: { in: [...ADMIN_SCOPES] } },
-      });
-      if (!row) throw new AppError("not_found", "secret not found");
-      await app.prisma.appSecret.delete({ where: { id: row.id } }); // cascades grants
-      await release(row.material, {
-        appId: null,
-        actor: actor.sub,
-        scope: row.scope,
-        env: row.env,
-        name: row.name,
-        reason: "delete",
-      });
-      await audit(null, actor.sub, "secret.deleted", { scope: row.scope, name: row.name });
-      reply.status(204);
-    },
-  );
+  contractRoute(app, portal.deleteAdminSecret, async (req, reply) => {
+    const actor = requireAdmin(req);
+    const { params } = parseRequest(portal.deleteAdminSecret, req);
+    const row = await app.prisma.appSecret.findFirst({
+      where: { id: params.id, scope: { in: [...ADMIN_SECRET_SCOPES] } },
+    });
+    if (!row) throw new AppError("not_found", "secret not found");
+    await app.prisma.appSecret.delete({ where: { id: row.id } }); // cascades grants
+    await release(row.material, {
+      appId: null,
+      actor: actor.sub,
+      scope: row.scope,
+      env: row.env,
+      name: row.name,
+      reason: "delete",
+    });
+    await audit(null, actor.sub, "secret.deleted", { scope: row.scope, name: row.name });
+    reply.status(204);
+  });
 
-  app.post<{ Params: { id: string } }>(
-    "/api/v1/secrets/:id/grants",
-    { preHandler: authenticate },
-    async (req, reply) => {
-      const actor = requireAdmin(req);
-      const { appSlug } = SecretGrantRequestSchema.parse(req.body);
-      const secret = await app.prisma.appSecret.findFirst({
-        where: { id: req.params.id, scope: "global" },
+  contractRoute(app, portal.grantSecret, async (req, reply) => {
+    const actor = requireAdmin(req);
+    const {
+      params,
+      body: { appSlug },
+    } = parseRequest(portal.grantSecret, req);
+    const secret = await app.prisma.appSecret.findFirst({
+      where: { id: params.id, scope: "global" },
+    });
+    if (!secret) throw new AppError("not_found", "global secret not found");
+    const targetApp = await findApp(appSlug);
+    try {
+      await app.prisma.appSecretGrant.create({
+        data: { secretId: secret.id, appId: targetApp.id, grantedBy: actor.sub },
       });
-      if (!secret) throw new AppError("not_found", "global secret not found");
-      const targetApp = await findApp(appSlug);
-      try {
-        await app.prisma.appSecretGrant.create({
-          data: { secretId: secret.id, appId: targetApp.id, grantedBy: actor.sub },
-        });
-      } catch (err) {
-        if (isUniqueViolation(err)) {
-          throw new AppError("conflict", `"${appSlug}" already holds this secret`);
-        }
-        throw err;
+    } catch (err) {
+      if (isUniqueViolation(err)) {
+        throw new AppError("conflict", `"${appSlug}" already holds this secret`);
       }
-      await audit(targetApp.id, actor.sub, "secret.granted", { name: secret.name, app: appSlug });
-      reply.status(201);
-      return { secretId: secret.id, appSlug };
-    },
-  );
+      throw err;
+    }
+    await audit(targetApp.id, actor.sub, "secret.granted", { name: secret.name, app: appSlug });
+    reply.status(201);
+    return responseBody(portal.grantSecret, 201, { secretId: secret.id, appSlug });
+  });
 
   // By slug, symmetric with the grant route (which takes `appSlug`) and with the
   // `boundApps` slugs the metadata exposes.
-  app.delete<{ Params: { id: string; appSlug: string } }>(
-    "/api/v1/secrets/:id/grants/:appSlug",
-    { preHandler: authenticate },
-    async (req, reply) => {
-      const actor = requireAdmin(req);
-      const targetApp = await findApp(req.params.appSlug);
-      await app.prisma.appSecretGrant.deleteMany({
-        where: { secretId: req.params.id, appId: targetApp.id },
-      });
-      await audit(targetApp.id, actor.sub, "secret.revoked", {
-        secretId: req.params.id,
-        app: req.params.appSlug,
-      });
-      reply.status(204);
-    },
-  );
+  contractRoute(app, portal.revokeSecretGrant, async (req, reply) => {
+    const actor = requireAdmin(req);
+    const { params } = parseRequest(portal.revokeSecretGrant, req);
+    const targetApp = await findApp(params.appSlug);
+    await app.prisma.appSecretGrant.deleteMany({
+      where: { secretId: params.id, appId: targetApp.id },
+    });
+    await audit(targetApp.id, actor.sub, "secret.revoked", {
+      secretId: params.id,
+      app: params.appSlug,
+    });
+    reply.status(204);
+  });
 }

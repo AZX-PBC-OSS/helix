@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { CspViolationsPageSchema } from "@azx-pbc/shared";
-import { authenticate, requireAdmin } from "../plugins/auth.js";
+import { portal, responseBody } from "@azx-pbc/shared/contracts";
+import { requireAdmin } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { toCspViolation, type CspViolationRow } from "../db/mappers.js";
 
 /**
@@ -10,7 +11,7 @@ import { toCspViolation, type CspViolationRow } from "../db/mappers.js";
  * origin-grant approval request (`POST /api/v1/apps/:slug/access/origin`).
  */
 export async function cspRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/v1/csp/violations", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.listCspViolations, async (req) => {
     requireAdmin(req);
     const rows = await app.prisma.$queryRaw<CspViolationRow[]>`
       SELECT r."appId", a.slug AS slug, a.capabilities AS capabilities,
@@ -21,6 +22,6 @@ export async function cspRoutes(app: FastifyInstance): Promise<void> {
       GROUP BY r."appId", a.slug, a.capabilities, r.directive, r."blockedUri"
       ORDER BY MAX(r."createdAt") DESC
       LIMIT 200`;
-    return CspViolationsPageSchema.parse({ violations: rows.map(toCspViolation) });
+    return responseBody(portal.listCspViolations, 200, { violations: rows.map(toCspViolation) });
   });
 }

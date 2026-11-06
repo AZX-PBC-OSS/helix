@@ -6,9 +6,11 @@ import {
   SPAN_DEPLOY_REPO,
   type RepoDeployOutcome,
 } from "@azx-pbc/shared/telemetry";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
 import { createGithubOidcVerifier, type GithubOidcVerifier } from "../auth/githubOidc.js";
 import { toVersion } from "../db/mappers.js";
 import { resolveRepoDeployConfig } from "../deployment.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 import {
   auditBoundDenial,
@@ -48,7 +50,10 @@ export async function ciVersionRoutes(
     return cached.verifier;
   };
 
-  app.post<{ Params: { slug: string } }>("/api/v1/apps/:slug/ci/versions", async (req, reply) => {
+  contractRoute(app, portal.uploadCiVersion, async (req, reply) => {
+    const {
+      params: { slug },
+    } = parseRequest(portal.uploadCiVersion, req);
     const config = resolveRepoDeployConfig();
     if (!config.enabled) {
       throw new AppError("not_found", "repo-backed deploys are not enabled on this portal");
@@ -110,7 +115,12 @@ export async function ciVersionRoutes(
               }
               throw err;
             });
-            reply.status(201).send({ version: toVersion(version), warnings });
+            reply.status(201).send(
+              responseBody(portal.uploadCiVersion, 201, {
+                version: toVersion(version),
+                warnings,
+              }),
+            );
           } catch (err) {
             if (err instanceof RepoDeployDenied) {
               outcome = err.outcome;
@@ -120,7 +130,7 @@ export async function ciVersionRoutes(
                 [ATTR_OUTCOME]: outcome,
               });
               req.log.warn(
-                { event: "repo_deploy.denied", reason: outcome, slug: req.params.slug },
+                { event: "repo_deploy.denied", reason: outcome, slug },
                 "CI deploy refused",
               );
               throw err.error;

@@ -40,6 +40,7 @@ import { directoryRoutes } from "./routes/directory.js";
 import { connectionsInternalRoutes } from "./routes/connectionsInternal.js";
 import { connectionsPageRoutes } from "./routes/connectionsPages.js";
 import { myConnectionsRoutes } from "./routes/connectionsMine.js";
+import { openapiRoutes } from "./routes/openapi.js";
 import { resolveSpaDist, spaRoutes } from "./routes/spa.js";
 import { assertDeploymentConfig } from "./deployment.js";
 import { SERVICE_NAME } from "./serviceName.js";
@@ -172,6 +173,8 @@ export function buildApp(opts: BuildAppOptions = {}): FastifyInstance {
   // My Connections: the principal-scoped list + disconnect —
   // the one user-scoped portal surface, no owner/admin gate.
   app.register(myConnectionsRoutes);
+  // The portal API's own OpenAPI document (ADR-0054). Public.
+  app.register(openapiRoutes);
 
   // The real dashboard when a built SPA is present; the M2 stopgap otherwise.
   const spaDist = opts.spaDist !== undefined ? opts.spaDist : resolveSpaDist();

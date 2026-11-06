@@ -1,14 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import {
-  SessionListResponseSchema,
-  SessionRevokeRequestSchema,
-  SessionRevokeResultSchema,
-  type SessionListResponse,
-  type SessionSummary,
-} from "@azx-pbc/shared";
+import { type SessionListResponse, type SessionSummary } from "@azx-pbc/shared";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
 import { DirectoryError } from "@azx-pbc/directory";
-import { authenticate, requireAdmin, type Actor } from "../plugins/auth.js";
-import { AppError } from "../plugins/errors.js";
+import { requireAdmin, type Actor } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { Prisma } from "../db/client.js";
 import { bumpSearchLimit, RATE_BUCKETS } from "../directory/rateLimit.js";
 
@@ -27,18 +22,6 @@ import { bumpSearchLimit, RATE_BUCKETS } from "../directory/rateLimit.js";
  * It cannot create sessions or alter handoff token hashes. The role-split
  * integration test verifies these grants.
  */
-
-/** Default page of live sessions; the sweeper bounds the table (~32 h dwell). */
-const DEFAULT_LIMIT = 200;
-/** Hard cap — hygiene, like usage.ts's limits: response size is the route's. */
-const MAX_LIMIT = 500;
-
-/** Clamp a `?limit=` query value to a sane positive integer. */
-function clampLimit(raw: unknown, fallback: number, max: number): number {
-  const n = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
-  if (!Number.isFinite(n) || n < 1) return fallback;
-  return Math.min(Math.trunc(n), max);
-}
 
 /** Prisma returns `groups` as Json; read it back the way the edge wrote it. */
 function toGroups(value: unknown): string[] {
@@ -129,105 +112,98 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
   // gate runs filters the same way, so this is exactly what the edge would
   // still admit). Expired-but-unswept rows are deliberately absent: listing
   // them would render a kill affordance that does nothing.
-  app.get<{ Querystring: { limit?: string } }>(
-    "/api/v1/sessions",
-    { preHandler: authenticate },
-    async (req): Promise<SessionListResponse> => {
-      // First statement, ahead of any parse or DB read — the idiom approvals.ts,
-      // csp.ts, secrets.ts and usage.ts use, and what the admin-gate sweep in
-      // sessions.test.ts pins.
-      const actor = requireAdmin(req);
-      const limit = clampLimit(req.query.limit, DEFAULT_LIMIT, MAX_LIMIT);
+  //
+  // The page defaults to 200 rows, capped at 500 (the contract's `limit`); the
+  // sweeper bounds the table (~32 h dwell).
+  contractRoute(app, portal.listSessions, async (req): Promise<SessionListResponse> => {
+    // First statement, ahead of any parse or DB read — the idiom approvals.ts,
+    // csp.ts, secrets.ts and usage.ts use, and what the admin-gate sweep in
+    // sessions.test.ts pins.
+    const actor = requireAdmin(req);
+    const {
+      query: { limit },
+    } = parseRequest(portal.listSessions, req);
 
-      const rows = await app.prisma.session.findMany({
-        where: { tokenHash: { not: null }, expiresAt: { gt: new Date() } },
-        include: { app: { select: { slug: true } } },
-        orderBy: [{ userOid: "asc" }, { expiresAt: "desc" }],
-        take: limit,
-      });
+    const rows = await app.prisma.session.findMany({
+      where: { tokenHash: { not: null }, expiresAt: { gt: new Date() } },
+      include: { app: { select: { slug: true } } },
+      orderBy: [{ userOid: "asc" }, { expiresAt: "desc" }],
+      take: limit,
+    });
 
-      const summaries: SessionSummary[] = rows.map((r) => ({
-        id: r.id,
-        appId: r.appId,
-        slug: r.app.slug,
-        userOid: r.userOid,
-        // The display half, read as stored — rendered, never compared.
-        userName: r.userName,
-        userEmail: r.userEmail,
-        userKind: toSessionKind(r.userKind),
-        groups: toGroups(r.groups),
-        createdAt: r.createdAt.toISOString(),
-        activatedAt: r.activatedAt?.toISOString() ?? null,
-        refreshDueAt: r.refreshDueAt.toISOString(),
-        expiresAt: r.expiresAt.toISOString(),
-      }));
+    const summaries: SessionSummary[] = rows.map((r) => ({
+      id: r.id,
+      appId: r.appId,
+      slug: r.app.slug,
+      userOid: r.userOid,
+      // The display half, read as stored — rendered, never compared.
+      userName: r.userName,
+      userEmail: r.userEmail,
+      userKind: toSessionKind(r.userKind),
+      groups: toGroups(r.groups),
+      createdAt: r.createdAt.toISOString(),
+      activatedAt: r.activatedAt?.toISOString() ?? null,
+      refreshDueAt: r.refreshDueAt.toISOString(),
+      expiresAt: r.expiresAt.toISOString(),
+    }));
 
-      const union = [...new Set(summaries.flatMap((s) => s.groups))];
-      const names = await resolveGroupNames(app, actor, union);
-      return SessionListResponseSchema.parse({ rows: summaries, ...names });
-    },
-  );
+    const union = [...new Set(summaries.flatMap((s) => s.groups))];
+    const names = await resolveGroupNames(app, actor, union);
+    return responseBody(portal.listSessions, 200, { rows: summaries, ...names });
+  });
 
   // Kill every session of one user, across all apps. Idempotent: a user whose
   // last session expired between list and click is already in the desired end
   // state, so `{ removed: 0 }` — not a 404 the SPA would have to special-case
   // and a script would have to race.
-  app.post<{ Body: unknown }>(
-    "/api/v1/sessions/revoke",
-    { preHandler: authenticate },
-    async (req) => {
-      const actor = requireAdmin(req);
-      const parsed = SessionRevokeRequestSchema.safeParse(req.body);
-      if (!parsed.success) {
-        throw new AppError(
-          "validation_failed",
-          "`userOid` is required: the subject of a session row, as the list returned it",
-        );
-      }
+  contractRoute(app, portal.revokeSessions, async (req) => {
+    const actor = requireAdmin(req);
+    const {
+      body: { userOid },
+    } = parseRequest(portal.revokeSessions, req);
 
-      // One statement, RETURNING what it removed. Not SELECT-then-DELETE: the
-      // audit metadata must describe exactly the rows the kill took, with no
-      // window in which a minted session is deleted but unreported (or
-      // reported but alive). `DELETE` as helix_portal rides the
-      // `sessions_portal_all` RLS policy; the grant (SELECT+DELETE only) is
-      // what migration 20260921120000 tightened.
-      //
-      // No `expiresAt` predicate, on purpose: a never-redeemed pending of the
-      // same user dies too. A pending row is a login in flight, and an
-      // in-flight login for a user being killed is precisely the thing to kill.
-      const removed = await app.prisma.$queryRaw<RemovedRow[]>(Prisma.sql`
+    // One statement, RETURNING what it removed. Not SELECT-then-DELETE: the
+    // audit metadata must describe exactly the rows the kill took, with no
+    // window in which a minted session is deleted but unreported (or
+    // reported but alive). `DELETE` as helix_portal rides the
+    // `sessions_portal_all` RLS policy; the grant (SELECT+DELETE only) is
+    // what migration 20260921120000 tightened.
+    //
+    // No `expiresAt` predicate, on purpose: a never-redeemed pending of the
+    // same user dies too. A pending row is a login in flight, and an
+    // in-flight login for a user being killed is precisely the thing to kill.
+    const removed = await app.prisma.$queryRaw<RemovedRow[]>(Prisma.sql`
         DELETE FROM sessions
-         WHERE "userOid" = ${parsed.data.userOid}
+         WHERE "userOid" = ${userOid}
          RETURNING "appId", "userName", "userEmail", "userKind"`);
 
-      const appIds = [...new Set(removed.map((r) => r.appId))];
-      const appRows = appIds.length
-        ? await app.prisma.app.findMany({ where: { id: { in: appIds } }, select: { slug: true } })
-        : [];
-      const apps = appRows.map((a) => a.slug);
+    const appIds = [...new Set(removed.map((r) => r.appId))];
+    const appRows = appIds.length
+      ? await app.prisma.app.findMany({ where: { id: { in: appIds } }, select: { slug: true } })
+      : [];
+    const apps = appRows.map((a) => a.slug);
 
-      // Capture-at-write (ADR-0021's amendment): the session rows themselves
-      // are about to be swept, so the audit row carries the display half now
-      // or never. First non-null wins — all rows of one subject hold the same
-      // captured claims.
-      const firstNamed = removed.find((r) => r.userName !== null || r.userEmail !== null);
-      const metadata = {
-        userOid: parsed.data.userOid,
-        userName: firstNamed?.userName ?? null,
-        userEmail: firstNamed?.userEmail ?? null,
-        userKind: toSessionKind(removed[0]?.userKind ?? null),
-        apps,
-        removed: removed.length,
-      };
-      // appId: null — the kill is platform-level, spanning apps by design; the
-      // same expressiveness the directory routes use. Audited even when
-      // removed = 0: "who tried to kill whose sessions, when" is the record,
-      // and a repeated 0-removals revoke is itself a fact worth reading.
-      await app.prisma.auditEvent.create({
-        data: { appId: null, actor: actor.sub, action: "session.revoke", metadata },
-      });
+    // Capture-at-write (ADR-0021's amendment): the session rows themselves
+    // are about to be swept, so the audit row carries the display half now
+    // or never. First non-null wins — all rows of one subject hold the same
+    // captured claims.
+    const firstNamed = removed.find((r) => r.userName !== null || r.userEmail !== null);
+    const metadata = {
+      userOid: userOid,
+      userName: firstNamed?.userName ?? null,
+      userEmail: firstNamed?.userEmail ?? null,
+      userKind: toSessionKind(removed[0]?.userKind ?? null),
+      apps,
+      removed: removed.length,
+    };
+    // appId: null — the kill is platform-level, spanning apps by design; the
+    // same expressiveness the directory routes use. Audited even when
+    // removed = 0: "who tried to kill whose sessions, when" is the record,
+    // and a repeated 0-removals revoke is itself a fact worth reading.
+    await app.prisma.auditEvent.create({
+      data: { appId: null, actor: actor.sub, action: "session.revoke", metadata },
+    });
 
-      return SessionRevokeResultSchema.parse({ removed: removed.length, apps });
-    },
-  );
+    return responseBody(portal.revokeSessions, 200, { removed: removed.length, apps });
+  });
 }

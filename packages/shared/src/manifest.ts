@@ -364,8 +364,12 @@ export const CapabilitiesSchema = z
    * so a conflict merges ON — the same direction every default here reads.
    * Consumers that APPLY a shim change must write both views (the classifier's
    * `applyScalar` does); a parse alone can never desynchronize them.
+   *
+   * `.overwrite`, not `.transform`: the result has the same shape, so the
+   * OpenAPI generator can describe it (ADR-0054). It only runs when the object
+   * itself parsed.
    */
-  .transform((caps): Capabilities => {
+  .overwrite((caps): Capabilities => {
     const legacyShim = caps.fetch?.shim ?? false;
     const fetchOn = legacyShim || (caps.shim?.fetch ?? false);
     const connectOn = caps.shim?.connect ?? false;

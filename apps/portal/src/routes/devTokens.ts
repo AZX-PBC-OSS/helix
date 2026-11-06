@@ -1,12 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import {
-  DEV_TOKEN_DEFAULT_TTL_DAYS,
-  DevTokenMintRequestSchema,
-  DevTokenRotateRequestSchema,
-  type DevTokenMetadata,
-} from "@azx-pbc/shared";
+import { DEV_TOKEN_DEFAULT_TTL_DAYS, type DevTokenMetadata } from "@azx-pbc/shared";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
 import { hashDevToken, newDevToken } from "@azx-pbc/shared/devToken";
-import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
+import { requireActor } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 
 /**
@@ -59,102 +56,88 @@ export async function devTokenRoutes(app: FastifyInstance): Promise<void> {
   // List the app's dev tokens (metadata only — never the hash). Authenticated-only,
   // matching the secrets-list read posture; owner-scoped read filtering is the
   // same ADR-0007 v0 residual as everywhere else (reads stay authenticated-only).
-  app.get<{ Params: { slug: string } }>(
-    "/api/v1/apps/:slug/dev-tokens",
-    { preHandler: authenticate },
-    async (req) => {
-      requireActor(req);
-      const appRow = await findApp(req.params.slug);
-      const rows = await app.prisma.appDevToken.findMany({
-        where: { appId: appRow.id },
-        orderBy: { createdAt: "desc" },
-      });
-      return rows.map(toMetadata);
-    },
-  );
+  contractRoute(app, portal.listDevTokens, async (req) => {
+    requireActor(req);
+    const { params } = parseRequest(portal.listDevTokens, req);
+    const appRow = await findApp(params.slug);
+    const rows = await app.prisma.appDevToken.findMany({
+      where: { appId: appRow.id },
+      orderBy: { createdAt: "desc" },
+    });
+    return responseBody(portal.listDevTokens, 200, rows.map(toMetadata));
+  });
 
   // Mint a new dev token → returns the plaintext ONCE, stores only its hash.
-  app.post<{ Params: { slug: string } }>(
-    "/api/v1/apps/:slug/dev-tokens",
-    { preHandler: [authenticate, ownsApp] },
-    async (req, reply) => {
-      const actor = requireActor(req);
-      const appRow = await findApp(req.params.slug);
-      const body = DevTokenMintRequestSchema.parse(req.body);
-      const token = newDevToken();
-      const row = await app.prisma.appDevToken.create({
-        data: {
-          appId: appRow.id,
-          // The minting developer's canonical id (ADR-0048): the actor's oid,
-          // NOT the email-collapsed sub — the dev gateway resolves this into
-          // the dev-tier partition key and metering identity, and an opaque id
-          // is what those consumers want.
-          developerOid: actor.oid,
-          tokenHash: hashDevToken(token),
-          origins: body.origins,
-          expiresAt: expiryFromNow(body.ttlDays ?? DEV_TOKEN_DEFAULT_TTL_DAYS),
-        },
-      });
-      await audit(appRow.id, actor.sub, "app.dev-token.minted", {
-        id: row.id,
+  contractRoute(app, portal.mintDevToken, async (req, reply) => {
+    const actor = requireActor(req);
+    const { params, body } = parseRequest(portal.mintDevToken, req);
+    const appRow = await findApp(params.slug);
+    const token = newDevToken();
+    const row = await app.prisma.appDevToken.create({
+      data: {
+        appId: appRow.id,
+        // The minting developer's canonical id (ADR-0048): the actor's oid,
+        // NOT the email-collapsed sub — the dev gateway resolves this into
+        // the dev-tier partition key and metering identity, and an opaque id
+        // is what those consumers want.
+        developerOid: actor.oid,
+        tokenHash: hashDevToken(token),
         origins: body.origins,
-      });
-      reply.status(201);
-      return { token, metadata: toMetadata(row) };
-    },
-  );
+        expiresAt: expiryFromNow(body.ttlDays ?? DEV_TOKEN_DEFAULT_TTL_DAYS),
+      },
+    });
+    await audit(appRow.id, actor.sub, "app.dev-token.minted", {
+      id: row.id,
+      origins: body.origins,
+    });
+    reply.status(201);
+    return responseBody(portal.mintDevToken, 201, { token, metadata: toMetadata(row) });
+  });
 
   // Rotate: mint a fresh secret for an existing token, keeping its origins and
   // renewing the lifetime (pass `ttlDays` to override; else the default TTL).
   // Returns the new plaintext once. A revoked token is NOT rotatable — revocation
   // is terminal (it matches the UI's "can't be undone" and the hidden Rotate
   // button); rotating would silently re-activate the row. Mint a new one instead.
-  app.post<{ Params: { slug: string; id: string } }>(
-    "/api/v1/apps/:slug/dev-tokens/:id/rotate",
-    { preHandler: [authenticate, ownsApp] },
-    async (req) => {
-      const actor = requireActor(req);
-      const appRow = await findApp(req.params.slug);
-      const body = DevTokenRotateRequestSchema.parse(req.body ?? {});
-      // Scope the id to the app so a valid owner can't target another app's row.
-      const existing = await app.prisma.appDevToken.findFirst({
-        where: { id: req.params.id, appId: appRow.id },
-      });
-      if (!existing) throw new AppError("not_found", "dev token not found");
-      if (existing.revokedAt) {
-        throw new AppError("conflict", "cannot rotate a revoked dev token — mint a new one");
-      }
-      const token = newDevToken();
-      const row = await app.prisma.appDevToken.update({
-        where: { id: existing.id },
-        data: {
-          tokenHash: hashDevToken(token),
-          expiresAt: expiryFromNow(body.ttlDays ?? DEV_TOKEN_DEFAULT_TTL_DAYS),
-        },
-      });
-      await audit(appRow.id, actor.sub, "app.dev-token.rotated", { id: row.id });
-      return { token, metadata: toMetadata(row) };
-    },
-  );
+  contractRoute(app, portal.rotateDevToken, async (req) => {
+    const actor = requireActor(req);
+    const { params, body } = parseRequest(portal.rotateDevToken, req);
+    const appRow = await findApp(params.slug);
+    // Scope the id to the app so a valid owner can't target another app's row.
+    const existing = await app.prisma.appDevToken.findFirst({
+      where: { id: params.id, appId: appRow.id },
+    });
+    if (!existing) throw new AppError("not_found", "dev token not found");
+    if (existing.revokedAt) {
+      throw new AppError("conflict", "cannot rotate a revoked dev token — mint a new one");
+    }
+    const token = newDevToken();
+    const row = await app.prisma.appDevToken.update({
+      where: { id: existing.id },
+      data: {
+        tokenHash: hashDevToken(token),
+        expiresAt: expiryFromNow(body?.ttlDays ?? DEV_TOKEN_DEFAULT_TTL_DAYS),
+      },
+    });
+    await audit(appRow.id, actor.sub, "app.dev-token.rotated", { id: row.id });
+    return responseBody(portal.rotateDevToken, 200, { token, metadata: toMetadata(row) });
+  });
 
   // Revoke: a soft flip (`revokedAt`) so the dev-gateway's per-request check is a
   // lookup — revocation is immediate (§4.1).
-  app.delete<{ Params: { slug: string; id: string } }>(
-    "/api/v1/apps/:slug/dev-tokens/:id",
-    { preHandler: [authenticate, ownsApp] },
-    async (req, reply) => {
-      const actor = requireActor(req);
-      const appRow = await findApp(req.params.slug);
-      const existing = await app.prisma.appDevToken.findFirst({
-        where: { id: req.params.id, appId: appRow.id },
-      });
-      if (!existing) throw new AppError("not_found", "dev token not found");
-      await app.prisma.appDevToken.update({
-        where: { id: existing.id },
-        data: { revokedAt: new Date() },
-      });
-      await audit(appRow.id, actor.sub, "app.dev-token.revoked", { id: existing.id });
-      reply.status(204);
-    },
-  );
+  contractRoute(app, portal.revokeDevToken, async (req, reply) => {
+    const actor = requireActor(req);
+    const { params } = parseRequest(portal.revokeDevToken, req);
+    const appRow = await findApp(params.slug);
+    const existing = await app.prisma.appDevToken.findFirst({
+      where: { id: params.id, appId: appRow.id },
+    });
+    if (!existing) throw new AppError("not_found", "dev token not found");
+    await app.prisma.appDevToken.update({
+      where: { id: existing.id },
+      data: { revokedAt: new Date() },
+    });
+    await audit(appRow.id, actor.sub, "app.dev-token.revoked", { id: existing.id });
+    reply.status(204);
+  });
 }

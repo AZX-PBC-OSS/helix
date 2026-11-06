@@ -23,6 +23,7 @@
     "@azure/storage-blob": "catalog:",
     "@azx-pbc/deploy-skill": "workspace:*",
     "@azx-pbc/directory": "workspace:*",
+    "@azx-pbc/openapi": "workspace:*",
     "@azx-pbc/secret-store": "workspace:*",
     "@azx-pbc/shared": "workspace:*",
     "@azx-pbc/telemetry": "workspace:*",
