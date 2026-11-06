@@ -24,6 +24,18 @@ beforeAll(async () => {
   app.post("/echo", async (req) => parseRequest(contract, req).body);
   // A handler whose own response breaks its schema.
   app.get("/drift", async () => z.object({ id: z.string() }).parse({ id: 42 }));
+  // An SDK failure that carries a 4xx status, the shape of an Azure RestError
+  // from Blob storage. It is the platform's failure, not the caller's.
+  app.get("/sdk-403", async () => {
+    throw Object.assign(new Error("AuthorizationPermissionMismatch: storage said no"), {
+      name: "RestError",
+      code: "AuthorizationPermissionMismatch",
+      statusCode: 403,
+    });
+  });
+  app.get("/sdk-413", async () => {
+    throw Object.assign(new Error("RequestBodyTooLarge"), { name: "RestError", statusCode: 413 });
+  });
   app.get("/request-error", async () => {
     throw new RequestValidationError("query", []);
   });
@@ -63,6 +75,14 @@ describe("portal error mapping", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe("validation_failed");
+  });
+
+  it("answers 500 for a non-framework error that carries a 4xx status, without its message", async () => {
+    for (const url of ["/sdk-403", "/sdk-413"]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode, url).toBe(500);
+      expect(res.json().error, url).toEqual({ code: "internal", message: "internal server error" });
+    }
   });
 
   it("passes through the framework's own client status", async () => {

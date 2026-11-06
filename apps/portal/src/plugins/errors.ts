@@ -45,6 +45,22 @@ export class AppError extends Error {
   }
 }
 
+/**
+ * An error Fastify or one of its plugins raised about the request itself. They
+ * all carry an `FST_` code. Matching on the code, not only a 4xx `statusCode`,
+ * matters: SDK errors (an Azure `RestError` from Blob storage, say) carry a 4xx
+ * status too, and those are the platform's failure, not the caller's.
+ */
+function isFrameworkClientError(err: FastifyError): err is FastifyError & { statusCode: number } {
+  return (
+    typeof err.code === "string" &&
+    err.code.startsWith("FST_") &&
+    err.statusCode !== undefined &&
+    err.statusCode >= 400 &&
+    err.statusCode < 500
+  );
+}
+
 function envelope(code: ApiErrorCode, message: string, details?: unknown): ApiError {
   return { error: { code, message, ...(details === undefined ? {} : { details }) } };
 }
@@ -121,8 +137,9 @@ export const errorsPlugin = fp(
         return;
       }
 
-      // @fastify/multipart raises 413 when the bundle exceeds the size limit.
-      if (err.statusCode === 413) {
+      // @fastify/multipart raises 413 when the bundle exceeds the size limit, and
+      // Fastify's body parser when a JSON body exceeds its own.
+      if (isFrameworkClientError(err) && err.statusCode === 413) {
         reply.status(413).send(envelope("bundle_invalid", "uploaded bundle is too large"));
         return;
       }
@@ -130,7 +147,7 @@ export const errorsPlugin = fp(
       // Fastify's and its plugins' own client errors: a malformed JSON body, an
       // unsupported content type, a non-multipart upload. Their status is set
       // by the framework and their message describes the request, not the server.
-      if (err.statusCode !== undefined && err.statusCode >= 400 && err.statusCode < 500) {
+      if (isFrameworkClientError(err)) {
         reply.status(err.statusCode).send(envelope("validation_failed", err.message));
         return;
       }
