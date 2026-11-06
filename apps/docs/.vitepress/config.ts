@@ -1,5 +1,10 @@
+import { copyFileSync, mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import { defineConfig } from "vitepress";
 import llmstxt from "vitepress-plugin-llms";
+
+const require = createRequire(import.meta.url);
 
 // The public docs site, published to GitHub Pages as a project page:
 // https://azx-pbc-oss.github.io/helix/ — hence the base. Content lives in
@@ -25,6 +30,15 @@ export default defineConfig({
   },
   vite: {
     plugins: [llmstxt()],
+  },
+  // Publish the generated OpenAPI documents (ADR-0054) next to the reference
+  // pages, at /helix/openapi/*.json, for client generators and agents.
+  buildEnd(site) {
+    const dir = join(site.outDir, "openapi");
+    mkdirSync(dir, { recursive: true });
+    for (const name of ["app-api.json", "portal-api.json"]) {
+      copyFileSync(require.resolve(`@azx-pbc/openapi/${name}`), join(dir, name));
+    }
   },
   head: [
     // Head links don't get the base prefix automatically, so spell it out.
@@ -53,6 +67,7 @@ export default defineConfig({
             { text: "Deploying updates", link: "/deploy/updates" },
             { text: "Operating background jobs", link: "/deploy/jobs" },
             { text: "Configuration reference", link: "/deploy/configuration" },
+            { text: "Portal API reference", link: "/deploy/portal-api-reference" },
             { text: "Local development", link: "/deploy/local-dev" },
           ],
         },
@@ -71,6 +86,7 @@ export default defineConfig({
             { text: "The helix CLI", link: "/apps/cli" },
             { text: "Deploy from GitHub", link: "/apps/deploy-from-github" },
             { text: "The dev gateway", link: "/apps/dev-gateway" },
+            { text: "App API reference", link: "/apps/api-reference" },
           ],
         },
       ],

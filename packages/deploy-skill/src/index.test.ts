@@ -134,6 +134,22 @@ describe("the skill stays evergreen", () => {
     }
   });
 
+  /**
+   * The docs build publishes each generated spec at /helix/openapi/<name>
+   * (apps/docs/.vitepress/config.ts `buildEnd`), so a linked spec must be one
+   * the generator writes.
+   */
+  it("links only to OpenAPI documents the generator writes", () => {
+    const specs = [
+      ...out.matchAll(/azx-pbc-oss\.github\.io\/helix\/openapi\/([a-z-]+\.json)/g),
+    ].map((m) => m[1]!);
+    expect(specs.length).toBeGreaterThan(0);
+    for (const spec of specs) {
+      const src = new URL(`../../openapi/spec/${spec}`, import.meta.url);
+      expect(existsSync(src), `${spec} is linked from SKILL.md`).toBe(true);
+    }
+  });
+
   it("stays short", () => {
     expect(TEMPLATE.split("\n").length).toBeLessThan(200);
   });

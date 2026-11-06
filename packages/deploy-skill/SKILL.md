@@ -43,6 +43,7 @@ deployment's addresses, and where to look up everything else.
   - Connected accounts (OAuth providers): https://azx-pbc-oss.github.io/helix/apps/connected-accounts.md
   - Background jobs (work that outlives the page): https://azx-pbc-oss.github.io/helix/apps/jobs.md
   - Error codes: https://azx-pbc-oss.github.io/helix/apps/errors.md
+  - Every `/_api` endpoint's schemas (OpenAPI 3.1): https://azx-pbc-oss.github.io/helix/openapi/app-api.json
   - The CLI: https://azx-pbc-oss.github.io/helix/apps/cli.md
   - Everything in one file: https://azx-pbc-oss.github.io/helix/llms-full.txt
 
