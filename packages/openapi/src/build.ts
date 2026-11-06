@@ -135,7 +135,7 @@ export function buildDocument(api: ContractApi): ReturnType<typeof createDocumen
   for (const c of doc.contracts) {
     const path = toOpenApiPath(c.path);
     const item = (paths[path] ??= {});
-    const method = c.method.toLowerCase() as "get" | "post" | "put" | "patch" | "delete";
+    const method = c.method.toLowerCase() as "get" | "post" | "put" | "patch" | "delete" | "options";
     if (item[method]) throw new Error(`duplicate contract for ${c.method} ${c.path}`);
     item[method] = operation(c);
   }

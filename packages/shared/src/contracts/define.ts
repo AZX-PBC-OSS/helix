@@ -9,7 +9,7 @@
  */
 import { z } from "zod";
 
-export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 
 /** Which published document a contract belongs to. */
 export type ContractApi = "portal" | "app";
