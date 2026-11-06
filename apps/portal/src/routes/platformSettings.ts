@@ -1,14 +1,9 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import {
-  BlockedSlugTermsResponseSchema,
-  CreateBlockedSlugTermRequestSchema,
-  PlatformConfigResponseSchema,
-  PlatformSettingsResponseSchema,
-  UpdatePlatformSettingsRequestSchema,
-  blockedTermIn,
-} from "@azx-pbc/shared";
-import { authenticate, requireAdmin } from "../plugins/auth.js";
+import { blockedTermIn } from "@azx-pbc/shared";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
+import { requireAdmin } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";
 import { platformConfigEntries } from "../platformConfig.js";
@@ -28,10 +23,10 @@ export async function platformSettingsRoutes(app: FastifyInstance): Promise<void
     operatorContactUrl: true,
   } as const;
 
-  app.get("/api/v1/admin/settings", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.getPlatformSettings, async (req) => {
     requireAdmin(req);
     const row = await app.prisma.platformSettings.findUnique({ where: { id: 1 } });
-    return PlatformSettingsResponseSchema.parse({
+    return responseBody(portal.getPlatformSettings, 200, {
       operatorName: row?.operatorName ?? null,
       operatorDescription: row?.operatorDescription ?? null,
       operatorContactUrl: row?.operatorContactUrl ?? null,
@@ -41,9 +36,9 @@ export async function platformSettingsRoutes(app: FastifyInstance): Promise<void
     });
   });
 
-  app.put("/api/v1/admin/settings", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.updatePlatformSettings, async (req) => {
     const actor = requireAdmin(req);
-    const body = UpdatePlatformSettingsRequestSchema.parse(req.body);
+    const { body } = parseRequest(portal.updatePlatformSettings, req);
     const before = await app.prisma.platformSettings.findUnique({
       where: { id: 1 },
       select: operatorFields,
@@ -54,7 +49,7 @@ export async function platformSettingsRoutes(app: FastifyInstance): Promise<void
       update: { ...body, updatedBy: actor.sub },
     });
     await audit("platform.settings.updated", actor.sub, { before, after: body });
-    return PlatformSettingsResponseSchema.parse({
+    return responseBody(portal.updatePlatformSettings, 200, {
       operatorName: row.operatorName,
       operatorDescription: row.operatorDescription,
       operatorContactUrl: row.operatorContactUrl,
@@ -63,7 +58,7 @@ export async function platformSettingsRoutes(app: FastifyInstance): Promise<void
     });
   });
 
-  app.get("/api/v1/admin/slug-terms", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.listBlockedSlugTerms, async (req) => {
     requireAdmin(req);
     const rows = await app.prisma.blockedSlugTerm.findMany({ orderBy: { term: "asc" } });
     const terms = rows.map((r) => r.term);
@@ -81,7 +76,7 @@ export async function platformSettingsRoutes(app: FastifyInstance): Promise<void
       const term = blockedTermIn(a.slug, terms);
       return term ? [{ slug: a.slug, displayName: a.displayName, term }] : [];
     });
-    return BlockedSlugTermsResponseSchema.parse({
+    return responseBody(portal.listBlockedSlugTerms, 200, {
       terms: rows.map((r) => ({
         id: r.id,
         term: r.term,
@@ -93,9 +88,9 @@ export async function platformSettingsRoutes(app: FastifyInstance): Promise<void
     });
   });
 
-  app.post("/api/v1/admin/slug-terms", { preHandler: authenticate }, async (req, reply) => {
+  contractRoute(app, portal.createBlockedSlugTerm, async (req, reply) => {
     const actor = requireAdmin(req);
-    const body = CreateBlockedSlugTermRequestSchema.parse(req.body);
+    const { body } = parseRequest(portal.createBlockedSlugTerm, req);
     let row;
     try {
       row = await app.prisma.blockedSlugTerm.create({
@@ -108,18 +103,22 @@ export async function platformSettingsRoutes(app: FastifyInstance): Promise<void
       throw err;
     }
     await audit("slug_term.added", actor.sub, { term: row.term, note: row.note });
-    return reply.code(201).send({
-      id: row.id,
-      term: row.term,
-      note: row.note,
-      createdBy: row.createdBy,
-      createdAt: row.createdAt.toISOString(),
-    });
+    return reply.code(201).send(
+      responseBody(portal.createBlockedSlugTerm, 201, {
+        id: row.id,
+        term: row.term,
+        note: row.note,
+        createdBy: row.createdBy,
+        createdAt: row.createdAt.toISOString(),
+      }),
+    );
   });
 
-  app.delete("/api/v1/admin/slug-terms/:id", { preHandler: authenticate }, async (req, reply) => {
+  contractRoute(app, portal.deleteBlockedSlugTerm, async (req, reply) => {
     const actor = requireAdmin(req);
-    const { id } = req.params as { id: string };
+    const {
+      params: { id },
+    } = parseRequest(portal.deleteBlockedSlugTerm, req);
     const parsed = z.uuid().safeParse(id);
     const row = parsed.success
       ? await app.prisma.blockedSlugTerm.findUnique({ where: { id: parsed.data } })
@@ -130,8 +129,8 @@ export async function platformSettingsRoutes(app: FastifyInstance): Promise<void
     return reply.code(204).send();
   });
 
-  app.get("/api/v1/admin/config", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.getPlatformConfig, async (req) => {
     requireAdmin(req);
-    return PlatformConfigResponseSchema.parse({ entries: platformConfigEntries() });
+    return responseBody(portal.getPlatformConfig, 200, { entries: platformConfigEntries() });
   });
 }

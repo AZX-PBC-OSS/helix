@@ -14,7 +14,7 @@ import {
   type JobsSubmitForward,
   type JobsSubmitSpec,
 } from "../jobs/forwarder.js";
-import { buildApp } from "../app.js";
+import { buildApp, type EdgeDeps } from "../app.js";
 import { buildDevGateway } from "../devGateway/app.js";
 import { hashDevToken } from "@azx-pbc/shared/devToken";
 import type { DevTokenStore } from "../devGateway/devTokenStore.js";
@@ -164,6 +164,8 @@ export interface JobsHarnessOpts {
    * composition's own throttle construction.
    */
   submissionLimits?: JobsCapacityLimits;
+  /** Observe every declared route (the ADR-0054 coverage test). */
+  onRoute?: EdgeDeps["onRoute"];
 }
 
 export interface JobsHarness {
@@ -210,6 +212,7 @@ export function buildJobsEdgeApp(
     jobsForwarder: forwarder,
     usage: opts.usage ?? null,
     jobsSubmissionThrottle: opts.jobsSubmissionThrottle ?? null,
+    ...(opts.onRoute ? { onRoute: opts.onRoute } : {}),
   });
   return { app, sessions, usage: opts.usage ?? null };
 }

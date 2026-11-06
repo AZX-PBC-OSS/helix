@@ -2,6 +2,7 @@ import fp from "fastify-plugin";
 import type { FastifyError } from "fastify";
 import { ZodError } from "zod";
 import type { ApiError, ApiErrorCode } from "@azx-pbc/shared";
+import { RequestValidationError } from "@azx-pbc/shared/contracts";
 import { redactUrl } from "@azx-pbc/shared/logging";
 
 /** Default HTTP status for each error code. AppError may override. */
@@ -90,6 +91,14 @@ export const errorsPlugin = fp(
           );
         }
         reply.status(err.statusCode).send(envelope(err.code, err.message, err.details));
+        return;
+      }
+
+      // A request that failed its route contract (`parseRequest`).
+      if (err instanceof RequestValidationError) {
+        reply
+          .status(400)
+          .send(envelope("validation_failed", "request validation failed", err.issues));
         return;
       }
 

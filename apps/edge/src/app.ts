@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type RouteOptions } from "fastify";
 import { HealthStatusSchema, isValidServiceWorkerScope, worstHealthState } from "@azx-pbc/shared";
 import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
@@ -166,6 +166,12 @@ export interface EdgeDeps {
   anonRateLimiter?: IpRateLimiter | null;
   /** Dev TLS material (server.ts reads the mkcert files); tests omit it. */
   https?: { cert: Buffer; key: Buffer } | null;
+  /**
+   * Observe every route as it is declared (tests). Registered before any
+   * route, so it sees the routes `buildApp` declares directly (ADR-0054 route
+   * coverage).
+   */
+  onRoute?: (route: RouteOptions) => void;
 }
 
 /**
@@ -246,6 +252,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     trustProxy: config.trustProxy,
     ...(deps.https ? { https: deps.https } : {}),
   }) as unknown as FastifyInstance;
+  if (deps.onRoute) app.addHook("onRoute", deps.onRoute);
 
   // Auth routes exist only when the whole auth stack is wired (config block +
   // session store + OIDC client); otherwise they fail closed below.
