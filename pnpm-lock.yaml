@@ -216,6 +216,9 @@ catalogs:
     zod:
       specifier: ^4.4.3
       version: 4.4.3
+    zod-openapi:
+      specifier: ^6.0.2
+      version: 6.0.2
 
 overrides:
   brace-expansion: ^5.0.12
@@ -748,6 +751,27 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
+
+  packages/openapi:
+    devDependencies:
+      '@azx-pbc/shared':
+        specifier: workspace:*
+        version: link:../shared
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.13.2
+      tsx:
+        specifier: 'catalog:'
+        version: 4.22.4
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+      zod-openapi:
+        specifier: 'catalog:'
+        version: 6.0.2(zod@4.4.3)
 
   packages/secret-store:
     devDependencies:
@@ -5003,6 +5027,12 @@ packages:
   zip-stream@7.0.5:
     resolution: {integrity: sha512-dSvYKdvLsAHCDqPOhIwk/q5CvuWtTB3Dgpoe0uVEFjTzIOAmsQpprX25InCvrvJsirEbu1OHyy67n/kAj1Sw/w==}
     engines: {node: '>=18'}
+
+  zod-openapi@6.0.2:
+    resolution: {integrity: sha512-SwC5Ppi2ov8WimzNWP/XK95VqPyLDzxPYj10HgNPzhZH9gO7zx0sxdYL9eq7wOADHx1JddOApjhYDmMWQvnVnw==}
+    engines: {node: '>=22.14.0'}
+    peerDependencies:
+      zod: ^4.0.0
 
   zod-validation-error@4.0.2:
     resolution: {integrity: sha512-Q6/nZLe6jxuU80qb/4uJ4t5v2VEZ44lzQjPDhYJNztRQ4wyWc6VF3D3Kb/fAuPetZQnhS3hnajCf9CsWesghLQ==}
@@ -9421,6 +9451,10 @@ snapshots:
       compress-commons: 7.0.1
       normalize-path: 3.0.0
       readable-stream: 4.7.0
+
+  zod-openapi@6.0.2(zod@4.4.3):
+    dependencies:
+      zod: 4.4.3
 
   zod-validation-error@4.0.2(zod@4.4.3):
     dependencies:

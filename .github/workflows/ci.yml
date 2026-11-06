@@ -1,9 +1,9 @@
 name: CI
 
 # Basic CI: runs the same checks as ./check-and-lint.sh (typecheck, lint,
-# format:check, docs build, tests), then builds the runtime app images (edge,
-# portal, egress and the jobs runner) plus the certbot automation image, and
-# publishes them to the GitHub Container Registry (GHCR).
+# format:check, OpenAPI spec check, docs build, tests), then builds the runtime
+# app images (edge, portal, egress and the jobs runner) plus the certbot
+# automation image, and publishes them to the GitHub Container Registry (GHCR).
 #
 # The checks are split across two jobs by what they *need*, not by what they
 # are. Only the test suite touches Postgres or Blob, so `static` (typecheck +
@@ -106,7 +106,7 @@ jobs:
         # Step names, so this is the same script a developer runs locally; the
         # script still runs every named step even if an earlier one fails, then
         # exits non-zero — one run surfaces the full picture.
-        run: ./check-and-lint.sh typecheck lint refs format docs
+        run: ./check-and-lint.sh typecheck lint refs format openapi docs
 
   test:
     name: test (${{ matrix.shard }})

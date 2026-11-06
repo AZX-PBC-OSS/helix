@@ -222,6 +222,13 @@ catalog:
   # (its `exports` point at ./src) without leaking `workspace:*` into a
   # published manifest.
   esbuild: ^0.28.2
+  # ── Spec generation (packages/openapi, ADR-0054) ──
+  # Turns the zod route contracts in @azx-pbc/shared/contracts into the
+  # committed OpenAPI documents. Build-time only: a devDependency of the
+  # generator package, never imported by a service, so the edge's runtime
+  # dependency set (ADR-0003) is unchanged.
+  zod-openapi: ^6.0.2
+
   # ── Docs site (apps/docs) ──
   # The public docs site (docs.azx… → GitHub Pages project page). Static build
   # only — no server, no runtime service. Kept on the 1.x stable line; the 2.x

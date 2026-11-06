@@ -1,0 +1,9 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Helix app API",
+    "version": "v1",
+    "description": "The same-origin `/_api/*` gateway a hosted app calls from the browser: identity, LLM, app data, connected accounts, the fetch proxy, and background jobs. Requests are made from the app's own origin and carry the `__Host-session` cookie."
+  },
+  "paths": {}
+}
