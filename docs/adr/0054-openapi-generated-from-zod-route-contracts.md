@@ -1,7 +1,7 @@
 # 0054. OpenAPI specs generated from zod route contracts
 
 **Status:** Proposed (2026-11-05).
-**Related:** ADR [0003](0003-dependency-minimal-edge.md) (dependency-minimal edge), [0014](0014-same-origin-api-gateway.md) (the `/_api/*` gateway), [0024](0024-portal-cli-bearer-jwt-jwks.md) (portal bearer auth), [0036](0036-deployment-capability-catalogue.md) (capability catalogue), [0037](0037-platform-observability-otlp-boundary.md) (telemetry), [0052](0052-evergreen-agent-skill-and-npx-cli.md) (docs are the reference; `/apps/` URLs are stable). **Code (planned):** `packages/shared/src/contracts/`, `scripts/openapi.mts`, `openapi/`, `apps/docs`.
+**Related:** ADR [0003](0003-dependency-minimal-edge.md) (dependency-minimal edge), [0014](0014-same-origin-api-gateway.md) (the `/_api/*` gateway), [0024](0024-portal-cli-bearer-jwt-jwks.md) (portal bearer auth), [0036](0036-deployment-capability-catalogue.md) (capability catalogue), [0037](0037-platform-observability-otlp-boundary.md) (telemetry), [0052](0052-evergreen-agent-skill-and-npx-cli.md) (docs are the reference; `/apps/` URLs are stable). **Code:** `packages/shared/src/contracts/`, `packages/openapi/`, `apps/portal/src/plugins/contractRoute.ts`, `apps/docs/src/apps/api-reference.md`. **Feature doc:** [`docs/features/openapi.md`](../features/openapi.md).
 
 ## Context
 
@@ -59,19 +59,32 @@ fit Helix:
    - security scheme, tag, summary, and description.
 
    The contract is the single source for both validation and documentation.
-   Handlers parse with the contract's schema (`contract.body.parse(req.body)`),
-   not a separately imported one, so the schema that is enforced is the schema
-   that is documented. Routes keep their existing Fastify registration, and the
-   edge keeps its host-class dispatch. This is a change to where schemas live,
-   not to how routing works.
+   Handlers validate input with `parseRequest(contract, req)`, not a separately
+   imported schema, so the schema that is enforced is the schema that is
+   documented. The module is pure zod, so the edge, which loads
+   `@azx-pbc/shared` at runtime, gains no dependency.
 
-2. **The spec is generated at build time, never at runtime.** A script
-   (`scripts/openapi.mts`) turns the contract tables into OpenAPI 3.1 documents
-   with `zod-openapi` (zod 4 native). It is a root dev dependency, so no
-   service, and in particular not the edge, gains a runtime package. The script
-   writes two documents:
-   - `openapi/app-api.json` for `/_api/*`;
-   - `openapi/portal-api.json` for `/api/v1/*`.
+   The portal registers each route with `contractRoute`, which takes the method
+   and path from the contract and adds the `authenticate` and `ownsApp`
+   preHandlers the contract's `auth` and `owner` fields declare. The documented
+   and the enforced authentication are therefore one declaration. The edge keeps
+   its host-class dispatch and takes only its paths from the contracts.
+
+   `parseRequest` throws `RequestValidationError`, which the portal maps to 400.
+   Any other `ZodError` in the portal means a server-side value broke its own
+   schema, and is a 500. Before this, every `ZodError` was a 400, which blamed
+   the caller for the platform's mistake.
+
+2. **The spec is generated at build time, never at runtime.** A private
+   package, `packages/openapi`, turns the contract tables into OpenAPI 3.1
+   documents with `zod-openapi` (zod 4 native). `zod-openapi` is a
+   devDependency of that package only, so no service, and in particular not the
+   edge, gains a runtime package. It writes two documents:
+   - `packages/openapi/spec/app-api.json` for `/_api/*`;
+   - `packages/openapi/spec/portal-api.json` for `/api/v1/*`.
+
+   They live in a package, not a top-level directory, so the portal and the docs
+   site can resolve them as `@azx-pbc/openapi/<name>.json`.
 
 3. **The generated specs are committed, and CI rejects a stale one.**
    `check-and-lint.sh` regenerates both documents and fails when the result
@@ -85,11 +98,14 @@ fit Helix:
      contract with no route. Routes outside the published APIs are listed by
      name in an explicit exclusion list: health, auth pages, internal hops, and
      the dev gateway.
-   - **Response conformance.** A test helper validates each `inject()` reply
-     against the contract's schema for its status code. It is enabled across the
-     existing route tests. This runs in tests only, so the edge's hot path does
-     not gain a parse of every response body. Where the portal already parses
-     its own responses, that stays as it is.
+   - **Response conformance.** A recorder on each test app's `onSend` hook
+     checks every reply's status, content type and JSON body against the
+     contract, and fails the test file when the app closes. It is enabled in the
+     portal's shared test harness and the edge's gateway test builders, so the
+     existing route tests exercise it. This runs in tests only, so the edge's hot
+     path does not gain a parse of every response body. The portal parses its
+     JSON responses through the declared schema at runtime as well, as it
+     already did for most routes.
 
 5. **What is published, and where.**
    - **The docs site renders both specs** as reference pages next to the
@@ -100,10 +116,13 @@ fit Helix:
      for them.
    - **The portal serves `GET /api/v1/openapi.json`** without authentication.
      The repository is public, so the spec discloses nothing the source doesn't.
-     The file is read once at boot from the build output.
-   - **The edge does not serve a spec.** The docs site is the stable address. The
-     agent skill links to the docs page, which is a stable URL and not a
-     per-release value, so it is allowed under ADR-0052.
+     The committed file is read once at boot.
+   - **The edge does not serve a spec.** The docs site is the stable address.
+   - **The agent skill links the app API document**
+     (`/helix/openapi/app-api.json`), not the rendered page: a page's markdown
+     twin carries no schema. The link is stable and not a per-release value, so
+     it is allowed under ADR-0052, and the skill's tests check it names a
+     document the generator writes.
 
 6. **Internal hops are out of scope.** Egress `POST /proxy`, the jobs↔edge and
    portal→jobs signed calls, and `connectionsInternal` are not published. Their
@@ -128,10 +147,18 @@ fit Helix:
 
 ## Consequences
 
-- **Every published route gains a contract entry.** About 30 portal routes and
-  the `/_api/*` routes need one. Migration is mechanical for routes that already
+- **Every published route gains a contract entry.** That is 79 portal routes
+  and 25 `/_api/*` routes. Migration is mechanical for routes that already
   parse through shared schemas. The edge's app-data routes need new response
   schemas, which this decision requires anyway.
+- **Response schemas cannot use `.transform()`.** zod-openapi cannot describe a
+  transform's output. A normalization that keeps the value's type uses
+  `.overwrite()` instead, which also only runs on input that otherwise parsed.
+  Request schemas may still transform, because a request is documented by its
+  input type.
+- **Response schemas must be idempotent.** The portal parses values that were
+  already parsed once, such as stored rows read through a schema, so a schema
+  whose output fails its own input rule turns a degraded row into a 500.
 - **Adding a route without a contract fails CI.** That is the point of the
   decision, but it is a new step for contributors. The failure message has to
   say where to add the entry.
@@ -150,9 +177,8 @@ fit Helix:
   proves unreliable, Scalar's standalone renderer is the fallback, because both
   read the same JSON.
 - **Telemetry:** no new edge or egress seam. The portal's `GET
-  /api/v1/openapi.json` serves a static file. It gets a route constant
-  (`ROUTE_*`) for its span like any other portal route, and no instrument
-  (ADR-0037 decision 8).
+  /api/v1/openapi.json` serves a file read at boot. Like most portal routes it
+  has no span, and the portal has no instruments (ADR-0037 decision 8).
 
 ## Rollout
 
@@ -164,4 +190,4 @@ fit Helix:
    coverage test's exclusion list starts as every unconverted route and shrinks
    to only the intentional exclusions.
 3. Publish: the docs reference pages, the portal endpoint, and a skill link to
-   the docs page.
+   the app API document.

@@ -48,19 +48,21 @@ Constraints from that work that outlive any status line:
 | `pnpm --filter @azx-pbc/portal db:migrate`        | Create/apply a Prisma migration (dev). Also `db:deploy`, `db:reset`, `db:generate`                                                                                                                                                                                                                                                                                                                                                       |
 | `pnpm --filter @azx-pbc/jobs db:migrate`          | Apply the jobs runner's private migration/configuration (`apps/jobs`, needs `JOBS_MIGRATE_DATABASE_URL` — the `helix_jobs_migrate` DSN). See `apps/jobs/README.md`                                                                                                                                                                                                                                                                       |
 | `pnpm --filter @azx-pbc/helix-cli helix -- <cmd>` | Run the `helix` CLI (`deploy`, `create`, `versions`, `promote`, `rollback`). Runs in `packages/cli`; for real deploys run it from an app dir instead — see `packages/cli/README.md`                                                                                                                                                                                                                                                      |
-| `./check-and-lint.sh`                             | Poor-man's CI: typecheck + lint + format check + docs build + tests in one pass (add `--fix` to auto-fix first)                                                                                                                                                                                                                                                                                                                          |
+| `pnpm openapi`                                    | Regenerate the committed OpenAPI documents (`packages/openapi/spec/`) from the route contracts (ADR-0054). The `openapi` step of `./check-and-lint.sh` fails when they are stale                                                                                                                                                                                                                                                         |
+| `./check-and-lint.sh`                             | Poor-man's CI: typecheck + lint + format check + OpenAPI spec check + docs build + tests in one pass (add `--fix` to auto-fix first)                                                                                                                                                                                                                                                                                                     |
 
-The portal API lives under `/api/v1`. Mutating routes take a bearer token through the verifier chain — an IdP-minted JWT (`helix login`) or `$PORTAL_DEV_TOKEN` (CI/dev fallback); reads now require the same token (only `/health` + the auth-config bootstrap stay public). Deploys land as `preview` versions — promotion to live is a separate step (architecture §5.1).
+The portal API lives under `/api/v1`. Mutating routes take a bearer token through the verifier chain — an IdP-minted JWT (`helix login`) or `$PORTAL_DEV_TOKEN` (CI/dev fallback); reads now require the same token (only `/health`, the auth-config and deployment-config bootstraps, and `GET /api/v1/openapi.json` stay public). Every published route is declared as a zod route contract in `@azx-pbc/shared/contracts`, which the handler validates with and the OpenAPI generator documents from (`docs/features/openapi.md`). Deploys land as `preview` versions — promotion to live is a separate step (architecture §5.1).
 
 The standard workspace scripts (`install`, `typecheck`, `lint`, `format`, `test`) are in the root `package.json`. Per-package scripts also run via `pnpm --filter @azx-pbc/edge <script>`.
 
 **Before committing, opening a PR, or reporting a change as finished, run
 `./check-and-lint.sh` (or `--fix`) from the repo root and get a clean pass.** It
-runs typecheck, lint, format check, docs build, and the full test suite. Fix
-failures and rerun the gate before proceeding. Targeted checks are useful during
-iteration but do not replace it. CI uses the same script, split into static
-checks (`typecheck lint format docs`) and tests (`test`, requiring Postgres and
-Azurite). Running the script without step names covers both.
+runs typecheck, lint, format check, the OpenAPI spec check, docs build, and the
+full test suite. Fix failures and rerun the gate before proceeding. Targeted
+checks are useful during iteration but do not replace it. CI uses the same
+script, split into static checks (`typecheck lint refs format openapi docs`)
+and tests (`test`, requiring Postgres and Azurite). Running the script without
+step names covers both.
 
 ## Environment
 
