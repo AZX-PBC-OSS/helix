@@ -102,10 +102,16 @@ export const errorsPlugin = fp(
         return;
       }
 
+      // Any other ZodError is the platform's fault: a handler built a response
+      // that broke its own schema, or read a stored row that no longer parses.
+      // Request input reaches handlers through `parseRequest`, which throws
+      // RequestValidationError instead, so this is never the caller's mistake.
       if (err instanceof ZodError) {
-        reply
-          .status(400)
-          .send(envelope("validation_failed", "request validation failed", err.issues));
+        req.log.error(
+          { err, event: "portal.schema_violation", status: 500 },
+          "a server-side value failed its schema",
+        );
+        reply.status(500).send(envelope("internal", "internal server error"));
         return;
       }
 
@@ -118,6 +124,14 @@ export const errorsPlugin = fp(
       // @fastify/multipart raises 413 when the bundle exceeds the size limit.
       if (err.statusCode === 413) {
         reply.status(413).send(envelope("bundle_invalid", "uploaded bundle is too large"));
+        return;
+      }
+
+      // Fastify's and its plugins' own client errors: a malformed JSON body, an
+      // unsupported content type, a non-multipart upload. Their status is set
+      // by the framework and their message describes the request, not the server.
+      if (err.statusCode !== undefined && err.statusCode >= 400 && err.statusCode < 500) {
+        reply.status(err.statusCode).send(envelope("validation_failed", err.message));
         return;
       }
 
