@@ -68,3 +68,4 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0051](0051-repo-backed-apps-ci-push-github-oidc.md) | Repo-backed apps: CI pushes the bundle, authenticated by GitHub Actions OIDC | Accepted (not yet built) |
 | [0052](0052-evergreen-agent-skill-and-npx-cli.md) | Evergreen agent skill, docs-first reference, and the npx CLI | Accepted |
 | [0053](0053-app-authored-jobs.md) | App-authored jobs: app code that keeps working on the server, run in QuickJS compiled to WebAssembly | Proposed |
+| [0054](0054-openapi-generated-from-zod-route-contracts.md) | OpenAPI specs generated from zod route contracts | Proposed |
