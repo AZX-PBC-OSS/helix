@@ -17,7 +17,7 @@ needs a bearer token: run `helix login`, or use a portal dev token.
 
 This page is generated from the same schemas the portal validates with. The
 machine-readable document is at
-[`/helix/openapi/portal-api.json`](/openapi/portal-api.json){target="_self"},
+[`/helix/openapi/portal-api.json`](/helix/openapi/portal-api.json){target="_self"},
 and a running portal serves the document for its own release at
 `GET /api/v1/openapi.json`.
 

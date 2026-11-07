@@ -17,7 +17,7 @@ it explains the capabilities, the manifest grants they need, and the limits.
 This page is the field-level detail.
 
 The machine-readable document is at
-[`/helix/openapi/app-api.json`](/openapi/app-api.json){target="_self"}. It is
+[`/helix/openapi/app-api.json`](/helix/openapi/app-api.json){target="_self"}. It is
 OpenAPI 3.1, so client generators and agents can read it directly.
 
 The reference describes the latest release. A deployment running an older
