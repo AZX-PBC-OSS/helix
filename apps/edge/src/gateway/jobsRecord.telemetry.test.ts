@@ -23,6 +23,9 @@ import {
   type JobsHarness,
 } from "../test/jobsGateway.js";
 import { SESSION_COOKIE } from "../auth/cookies.js";
+import { assertConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The reference routes' outcome telemetry (ADR-0037 + the observability

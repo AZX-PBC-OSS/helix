@@ -63,3 +63,32 @@ export const DirectoryGroupsResponseSchema = z.discriminatedUnion("available", [
   }),
 ]);
 export type DirectoryGroupsResponse = z.infer<typeof DirectoryGroupsResponseSchema>;
+
+/**
+ * Mirrors `MIN_SEARCH_LENGTH` and `MAX_SEARCH_RESULTS` in `@azx-pbc/directory`,
+ * which this package cannot import. `directory.test.ts` in the portal holds the
+ * two in step.
+ */
+export const DIRECTORY_MIN_SEARCH_LENGTH = 3;
+export const DIRECTORY_MAX_SEARCH_RESULTS = 25;
+
+/** `GET /api/v1/directory/groups` query. */
+export const DirectorySearchQuerySchema = z.object({
+  /**
+   * The provider enforces the minimum length too. This check gives the HTTP
+   * caller a 400 in the shared error envelope.
+   */
+  q: z
+    .string()
+    .trim()
+    .min(DIRECTORY_MIN_SEARCH_LENGTH)
+    .meta({ description: "The search term, at least three characters after trimming." }),
+  top: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(DIRECTORY_MAX_SEARCH_RESULTS)
+    .default(10)
+    .meta({ description: "The most groups to return, 1 to 25." }),
+});
+export type DirectorySearchQuery = z.infer<typeof DirectorySearchQuerySchema>;

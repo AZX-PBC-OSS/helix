@@ -171,15 +171,17 @@ export const API_ERROR_CODES = [
   "capability_unavailable",
   "internal",
 ] as const;
-export const ApiErrorCodeSchema = z.enum(API_ERROR_CODES);
+export const ApiErrorCodeSchema = z.enum(API_ERROR_CODES).meta({ id: "ApiErrorCode" });
 export type ApiErrorCode = z.infer<typeof ApiErrorCodeSchema>;
 
 /** Uniform error envelope returned by every non-2xx response. */
-export const ApiErrorSchema = z.object({
-  error: z.object({
-    code: ApiErrorCodeSchema,
-    message: z.string(),
-    details: z.unknown().optional(),
-  }),
-});
+export const ApiErrorSchema = z
+  .object({
+    error: z.object({
+      code: ApiErrorCodeSchema,
+      message: z.string(),
+      details: z.unknown().optional(),
+    }),
+  })
+  .meta({ id: "ApiError", description: "The platform's error envelope." });
 export type ApiError = z.infer<typeof ApiErrorSchema>;

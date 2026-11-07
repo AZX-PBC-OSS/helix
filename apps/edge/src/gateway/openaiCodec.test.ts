@@ -19,6 +19,9 @@ import {
 } from "../test/fakes.js";
 import { RoutingLlmProvider } from "./routingLlmProvider.js";
 import { LlmProviderError, type LlmProvider } from "./provider.js";
+import { assertConformance, recordConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The OpenAI-compatible surface (`/_api/openai/v1/*`). It rides the exact same
@@ -75,6 +78,7 @@ function buildEdge(
     llmProvider: opts.provider ?? provider,
     usage,
   });
+  recordConformance(app);
   return { app, sessions, provider, usage };
 }
 
@@ -223,6 +227,20 @@ describe("streaming", () => {
     expect(res.body).toContain('"error"');
     expect(res.body).not.toContain("[DONE]");
     expect(edge.usage.records[0]).toMatchObject({ outcome: "error" });
+  });
+});
+
+describe("malformed JSON", () => {
+  // Fastify's parser refuses the body before the OpenAI codec runs, so the
+  // 400 carries the platform envelope. The contract declares both shapes, and
+  // the conformance recorder checks this response against it.
+  it("is a 400 in the platform's ApiError envelope", async () => {
+    const edge = buildEdge();
+    const token = await seedSession(edge.sessions);
+    const res = await completions(edge, token, "{not json");
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBeTypeOf("string");
+    expect(res.json().error.type).toBeUndefined();
   });
 });
 

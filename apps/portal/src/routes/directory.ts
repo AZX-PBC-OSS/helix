@@ -1,16 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { z } from "zod";
 import { DirectoryGroupsResponseSchema, type DirectoryGroupsResponse } from "@azx-pbc/shared";
+import { parseRequest, portal } from "@azx-pbc/shared/contracts";
 import {
   DirectoryError,
   GRAPH_GROUP_PERMISSION,
-  MAX_SEARCH_RESULTS,
-  MIN_SEARCH_LENGTH,
   type DirectoryOutcome,
   type GroupName,
   type GroupSummary,
 } from "@azx-pbc/directory";
-import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
+import { ownsApp, requireActor } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 import { bumpSearchLimit, RATE_BUCKETS, SEARCH_LIMIT } from "../directory/rateLimit.js";
 import { directorySearchAllowed, directorySearchTier } from "../policy/directoryPolicy.js";
@@ -44,16 +43,6 @@ async function ownsAppWhenSearchRestricted(req: FastifyRequest): Promise<void> {
   if (directorySearchTier() === "everyone") return;
   await ownsApp(req);
 }
-
-const SearchQuerySchema = z.object({
-  /**
-   * Minimum length enforced here as well as inside the provider. Two layers, on
-   * purpose: this one produces a clean 400 with the shared error envelope, and
-   * the provider's protects any future non-HTTP caller.
-   */
-  q: z.string().trim().min(MIN_SEARCH_LENGTH),
-  top: z.coerce.number().int().positive().max(MAX_SEARCH_RESULTS).default(10),
-});
 
 export async function directoryRoutes(app: FastifyInstance): Promise<void> {
   const audit = (actor: string, action: string, metadata: object = {}) =>
@@ -145,12 +134,14 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
   };
 
   // Search the tenant's groups. See the restrictions in the module comment.
-  app.get<{ Querystring: { q?: string; top?: string } }>(
-    "/api/v1/directory/groups",
-    { preHandler: authenticate },
+  contractRoute(
+    app,
+    portal.searchDirectoryGroups,
     async (req): Promise<DirectoryGroupsResponse> => {
       const actor = requireActor(req);
-      const { q, top } = SearchQuerySchema.parse(req.query);
+      const {
+        query: { q, top },
+      } = parseRequest(portal.searchDirectoryGroups, req);
 
       /**
        * Who may search at all (ADR-0040 decision 11). Checked BEFORE the rate
@@ -236,16 +227,19 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
    * authorization value invites exactly one bug — disagreeing about which is real
    * — and the UI would show the wrong one.
    */
-  app.get<{ Params: { slug: string } }>(
-    "/api/v1/apps/:slug/visibility/groups",
-    { preHandler: [authenticate, ownsAppWhenSearchRestricted] },
+  contractRoute(
+    app,
+    portal.resolveAppVisibilityGroups,
     async (req): Promise<DirectoryGroupsResponse> => {
       const actor = requireActor(req);
+      const {
+        params: { slug },
+      } = parseRequest(portal.resolveAppVisibilityGroups, req);
       const row = await app.prisma.app.findUnique({
-        where: { slug: req.params.slug },
+        where: { slug },
         select: { visibilityGroupIds: true },
       });
-      if (!row) throw new AppError("not_found", `app "${req.params.slug}" not found`);
+      if (!row) throw new AppError("not_found", `app "${slug}" not found`);
       if (row.visibilityGroupIds.length === 0) {
         // No Graph call, so nothing to limit — and a group-less app must not spend
         // anyone's budget just by being opened.
@@ -256,6 +250,7 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
         await attempt("getGroups", () => app.directory.getGroups(row.visibilityGroupIds)),
       );
     },
+    { ownership: ownsAppWhenSearchRestricted },
   );
 
   /**
@@ -276,9 +271,9 @@ export async function directoryRoutes(app: FastifyInstance): Promise<void> {
    * anything that doesn't resolve is simply omitted. That keeps the shape
    * knowledge in the one place that has to have it.
    */
-  app.get(
-    "/api/v1/directory/my-groups",
-    { preHandler: authenticate },
+  contractRoute(
+    app,
+    portal.listMyDirectoryGroups,
     async (req): Promise<DirectoryGroupsResponse> => {
       const actor = requireActor(req);
       if (actor.groups.length === 0) {

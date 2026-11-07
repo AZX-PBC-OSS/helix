@@ -1,5 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { DeploymentConfigResponseSchema, MIN_CLI_VERSION } from "@azx-pbc/shared";
+import { MIN_CLI_VERSION } from "@azx-pbc/shared";
+import { portal, responseBody } from "@azx-pbc/shared/contracts";
+import { contractRoute } from "../plugins/contractRoute.js";
 import {
   resolveAppPublicBase,
   resolveDevApiBase,
@@ -21,13 +23,13 @@ const MB = 1024 * 1024;
  * always answers.
  */
 export async function configRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/v1/config", async () => {
+  contractRoute(app, portal.getDeploymentConfig, async () => {
     const devApiBase = resolveDevApiBase();
     const cap = resolvePlatformMonthlyUsdCap();
     const repoDeploy = resolveRepoDeployConfig();
     // Optional fields are omitted, not nulled: absent means "not enabled on this
     // deployment", and the client hides that surface rather than guessing.
-    return DeploymentConfigResponseSchema.parse({
+    return responseBody(portal.getDeploymentConfig, 200, {
       appPublicBase: resolveAppPublicBase().origin,
       ...(devApiBase ? { devApiBase: devApiBase.origin } : {}),
       ...(cap !== null ? { platformMonthlyUsdCap: cap } : {}),

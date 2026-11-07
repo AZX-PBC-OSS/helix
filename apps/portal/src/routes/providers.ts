@@ -1,20 +1,16 @@
 import { z } from "zod";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   CONFIRM_INVALIDATION_FIELD,
   ConfirmationRequiredDetailsSchema,
   ConnectionProviderSchema,
   ProviderCreateRequestSchema,
   ProviderDeleteRequestSchema,
-  ProviderDeleteResponseSchema,
   ProviderExportDocumentSchema,
   ProviderImportPreviewDiffEntrySchema,
   ProviderImportPreviewRequestSchema,
-  ProviderImportPreviewResponseSchema,
   ProviderImportRequestSchema,
-  ProviderImportResponseSchema,
   ProviderImpactSchema,
-  ProviderListResponseSchema,
   ProviderMetadataSchema,
   ProviderUpdateRequestSchema,
   type ConnectionProvider,
@@ -26,9 +22,11 @@ import {
   type ProviderUpdateRequest,
   type SensitiveProviderField,
 } from "@azx-pbc/shared";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
 import type { SecretStore } from "@azx-pbc/secret-store";
 import { Prisma, type PrismaClient } from "../db/client.js";
-import { authenticate, requireAdmin, type Actor } from "../plugins/auth.js";
+import { requireAdmin, type Actor } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 import { isUniqueViolation } from "../db/errors.js";
 import { connectionsCallbackUrl } from "../deployment.js";
@@ -379,6 +377,15 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     return result.data;
   };
 
+  /**
+   * The params of a route whose body takes the 422 path above. `parseRequest`
+   * would reject the body with the generic 400, so it reads the params alone.
+   */
+  const idParam = (
+    contract: typeof portal.updateProvider | typeof portal.deleteProvider,
+    req: FastifyRequest,
+  ): string => parseRequest({ ...contract, body: undefined }, req).params.id;
+
   // Custody must be configured (a KEK in dev / Key Vault in prod) to seal.
   const store = (): SecretStore => {
     if (!app.secretStore) {
@@ -505,12 +512,12 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
-  app.get("/api/v1/providers", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.listProviders, async (req) => {
     requireAdmin(req);
     const rows = await app.prisma.connectionProvider.findMany({
       orderBy: [{ env: "asc" }, { ref: "asc" }],
     });
-    return ProviderListResponseSchema.parse({
+    return responseBody(portal.listProviders, 200, {
       callbackUrl: connectionsCallbackUrl(),
       providers: rows.map(toMetadata),
     });
@@ -568,53 +575,43 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     return row;
   };
 
-  app.post("/api/v1/providers", { preHandler: authenticate }, async (req, reply) => {
+  contractRoute(app, portal.createProvider, async (req, reply) => {
     const actor = requireAdmin(req);
     const body = parseBody(ProviderCreateRequestSchema, req.body);
     const row = await sealAndCreateProvider(actor, body);
     await audit("provider.created", actor.sub, { ref: body.ref, env: body.env, kind: body.kind });
     reply.status(201);
-    return toMetadata(row);
+    return responseBody(portal.createProvider, 201, toMetadata(row));
   });
 
-  app.get<{ Params: { id: string } }>(
-    "/api/v1/providers/:id",
-    { preHandler: authenticate },
-    async (req) => {
-      requireAdmin(req);
-      const row = await app.prisma.connectionProvider.findUnique({
-        where: { id: req.params.id },
-      });
-      if (!row) throw new AppError("not_found", `provider "${req.params.id}" not found`);
-      return toMetadata(row);
-    },
-  );
+  contractRoute(app, portal.getProvider, async (req) => {
+    requireAdmin(req);
+    const { id } = parseRequest(portal.getProvider, req).params;
+    const row = await app.prisma.connectionProvider.findUnique({ where: { id } });
+    if (!row) throw new AppError("not_found", `provider "${id}" not found`);
+    return responseBody(portal.getProvider, 200, toMetadata(row));
+  });
 
-  app.get<{ Params: { id: string } }>(
-    "/api/v1/providers/:id/export",
-    { preHandler: authenticate },
-    async (req) => {
-      const actor = requireAdmin(req);
-      // The read is the export's failure surface: an unknown id
-      // is a 404, a failed or drifted read a 5xx — never a successful partial
-      // document the SPA could save as if it were the provider's configuration.
-      const row = await app.prisma.connectionProvider.findUnique({
-        where: { id: req.params.id },
-      });
-      if (!row) throw new AppError("not_found", `provider "${req.params.id}" not found`);
-      const document = toExportDocument(row);
-      // A read-only mutation of nothing: repeating an export re-reads the same
-      // configuration and changes it nowhere — the audit trail is the only
-      // trace (bounded metadata; no endpoint URL, no material).
-      await audit("provider.exported", actor.sub, {
-        providerId: row.id,
-        ref: row.ref,
-        env: row.env,
-        kind: row.kind,
-      });
-      return document;
-    },
-  );
+  contractRoute(app, portal.exportProvider, async (req) => {
+    const actor = requireAdmin(req);
+    const { id } = parseRequest(portal.exportProvider, req).params;
+    // The read is the export's failure surface: an unknown id
+    // is a 404, a failed or drifted read a 5xx — never a successful partial
+    // document the SPA could save as if it were the provider's configuration.
+    const row = await app.prisma.connectionProvider.findUnique({ where: { id } });
+    if (!row) throw new AppError("not_found", `provider "${id}" not found`);
+    const document = toExportDocument(row);
+    // A read-only mutation of nothing: repeating an export re-reads the same
+    // configuration and changes it nowhere — the audit trail is the only
+    // trace (bounded metadata; no endpoint URL, no material).
+    await audit("provider.exported", actor.sub, {
+      providerId: row.id,
+      ref: row.ref,
+      env: row.env,
+      kind: row.kind,
+    });
+    return responseBody(portal.exportProvider, 200, document);
+  });
 
   /**
    * The edit path the form route and the import's update mode share:
@@ -783,21 +780,20 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     return toMetadata(updated);
   };
 
-  app.put<{ Params: { id: string } }>(
-    "/api/v1/providers/:id",
-    { preHandler: authenticate },
-    async (req) => {
-      const actor = requireAdmin(req);
-      const body = parseBody(ProviderUpdateRequestSchema, req.body);
-      const row = await app.prisma.connectionProvider.findUnique({
-        where: { id: req.params.id },
-      });
-      if (!row) throw new AppError("not_found", `provider "${req.params.id}" not found`);
-      return applyProviderUpdate(actor, row, body, { action: "provider.updated" });
-    },
-  );
+  contractRoute(app, portal.updateProvider, async (req) => {
+    const actor = requireAdmin(req);
+    const id = idParam(portal.updateProvider, req);
+    const body = parseBody(ProviderUpdateRequestSchema, req.body);
+    const row = await app.prisma.connectionProvider.findUnique({ where: { id } });
+    if (!row) throw new AppError("not_found", `provider "${id}" not found`);
+    return responseBody(
+      portal.updateProvider,
+      200,
+      await applyProviderUpdate(actor, row, body, { action: "provider.updated" }),
+    );
+  });
 
-  app.post("/api/v1/providers/import/preview", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.previewProviderImport, async (req) => {
     requireAdmin(req);
     const body = parsePreviewBody(ProviderImportPreviewRequestSchema, req.body);
     const imported = body.document.provider;
@@ -811,7 +807,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
       }
       // The file-picker's validate-only call: the document parsed against the
       // shared schema — no mode chosen, nothing proposed yet.
-      return ProviderImportPreviewResponseSchema.parse({ mode: null, provider: imported });
+      return responseBody(portal.previewProviderImport, 200, { mode: null, provider: imported });
     }
     if (body.mode === "create") {
       if (body.env === undefined) {
@@ -828,7 +824,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
       const existing = await app.prisma.connectionProvider.findUnique({
         where: { ref_env: { ref: imported.ref, env: body.env } },
       });
-      return ProviderImportPreviewResponseSchema.parse({
+      return responseBody(portal.previewProviderImport, 200, {
         mode: "create",
         env: body.env,
         provider: imported,
@@ -854,7 +850,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     });
     if (!row) throw new AppError("not_found", `provider "${body.targetId}" not found`);
     const stored = parseStoredRow(row);
-    return ProviderImportPreviewResponseSchema.parse({
+    return responseBody(portal.previewProviderImport, 200, {
       mode: "update",
       target: {
         providerId: row.id,
@@ -870,7 +866,7 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.post("/api/v1/providers/import", { preHandler: authenticate }, async (req, reply) => {
+  contractRoute(app, portal.importProvider, async (req, reply) => {
     const actor = requireAdmin(req);
     const body = parseBody(ProviderImportRequestSchema, req.body);
     if (body.mode === "create") {
@@ -890,7 +886,10 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
         kind: row.kind,
       });
       reply.status(201);
-      return ProviderImportResponseSchema.parse({ outcome: "created", provider: toMetadata(row) });
+      return responseBody(portal.importProvider, 201, {
+        outcome: "created",
+        provider: toMetadata(row),
+      });
     }
     const row = await app.prisma.connectionProvider.findUnique({
       where: { id: body.targetId },
@@ -907,101 +906,91 @@ export async function providerRoutes(app: FastifyInstance): Promise<void> {
       }),
       { action: "provider.imported", extra: { mode: "update", providerId: row.id } },
     );
-    return ProviderImportResponseSchema.parse({ outcome: "updated", provider });
+    return responseBody(portal.importProvider, 200, { outcome: "updated", provider });
   });
 
-  app.get<{ Params: { id: string } }>(
-    "/api/v1/providers/:id/impact",
-    { preHandler: authenticate },
-    async (req) => {
-      requireAdmin(req);
-      const row = await app.prisma.connectionProvider.findUnique({
-        where: { id: req.params.id },
-      });
-      if (!row) throw new AppError("not_found", `provider "${req.params.id}" not found`);
-      return providerImpact(app.prisma, row);
-    },
-  );
+  contractRoute(app, portal.getProviderImpact, async (req) => {
+    requireAdmin(req);
+    const { id } = parseRequest(portal.getProviderImpact, req).params;
+    const row = await app.prisma.connectionProvider.findUnique({ where: { id } });
+    if (!row) throw new AppError("not_found", `provider "${id}" not found`);
+    return responseBody(portal.getProviderImpact, 200, await providerImpact(app.prisma, row));
+  });
 
-  app.delete<{ Params: { id: string } }>(
-    "/api/v1/providers/:id",
-    { preHandler: authenticate },
-    async (req) => {
-      const actor = requireAdmin(req);
-      // An absent body parses as no acknowledgement — deletion's confirmation
-      // is never optional, and the 409 below is the outcome that teaches it.
-      const body = parseBody(ProviderDeleteRequestSchema, req.body ?? {});
-      const row = await app.prisma.connectionProvider.findUnique({
-        where: { id: req.params.id },
-      });
-      if (!row) {
-        // Distinguishable repeat: the id this call names was
-        // removed here — answered from the audit event, never from a ref
-        // match, so a replacement provider recreated under the same ref (a new
-        // surrogate id) is untouched by an old id's repeat deletion.
-        if (await removedProviderEventExists(app.prisma, req.params.id)) {
-          return ProviderDeleteResponseSchema.parse({ outcome: "already_removed" });
-        }
-        throw new AppError("not_found", `provider "${req.params.id}" not found`);
+  contractRoute(app, portal.deleteProvider, async (req) => {
+    const actor = requireAdmin(req);
+    const id = idParam(portal.deleteProvider, req);
+    // An absent body parses as no acknowledgement — deletion's confirmation
+    // is never optional, and the 409 below is the outcome that teaches it.
+    const body = parseBody(ProviderDeleteRequestSchema, req.body ?? {});
+    const row = await app.prisma.connectionProvider.findUnique({ where: { id } });
+    if (!row) {
+      // Distinguishable repeat: the id this call names was
+      // removed here — answered from the audit event, never from a ref
+      // match, so a replacement provider recreated under the same ref (a new
+      // surrogate id) is untouched by an old id's repeat deletion.
+      if (await removedProviderEventExists(app.prisma, id)) {
+        return responseBody(portal.deleteProvider, 200, { outcome: "already_removed" });
       }
+      throw new AppError("not_found", `provider "${id}" not found`);
+    }
 
-      if (body[CONFIRM_INVALIDATION_FIELD] !== true) {
-        throw new AppError(
-          "confirmation_required",
-          `deleting provider "${row.ref}" invalidates its existing user connections ` +
-            `and pending consent attempts, and affected apps need approval again — confirm to delete`,
-          ConfirmationRequiredDetailsSchema.parse({
-            impact: await providerImpact(app.prisma, row),
-          }),
-        );
-      }
-
-      const boundApps = (await providerImpact(app.prisma, row)).boundApps.length;
-      await app.prisma.$transaction(async (tx) => {
-        // The invalidations, the removal, and the audit row: one transaction,
-        // all-or-nothing. The audit row is what a repeat
-        // deletion is answered from, so it commits with the removal or not at
-        // all.
-        const invalidatedConnections = await invalidateConnections(tx, row);
-        const killedAttempts = await killPendingAttempts(tx, row);
-        const { count } = await tx.connectionProvider.deleteMany({ where: { id: row.id } });
-        if (count === 0) {
-          // A concurrent removal won; roll everything back — the loser answers
-          // from the audit event on its next call.
-          throw new CasLost();
-        }
-        await tx.auditEvent.create({
-          data: {
-            appId: null,
-            actor: actor.sub,
-            action: "provider.deleted",
-            // Bounded metadata: refs,
-            // env, ids, and counts — never a credential, sealed material, or
-            // endpoint URL.
-            metadata: {
-              ref: row.ref,
-              env: row.env,
-              providerId: row.id,
-              boundApps,
-              connections: invalidatedConnections,
-              pendingAttempts: killedAttempts,
-            },
-          },
-        });
-      });
-
-      // The row is gone — its sealed credentials are unreferenced. Released
-      // OUTSIDE the transaction (the vault is never inside the
-      // all-or-nothing boundary); a failed destroy is reported as
-      // provider.destroy_failed and never un-deletes the row.
-      await releaseAll(
-        [
-          { material: row.clientIdMaterial, field: "clientId" },
-          { material: row.clientSecretMaterial, field: "clientSecret" },
-        ],
-        { actor: actor.sub, ref: row.ref, env: row.env, reason: "delete" },
+    if (body[CONFIRM_INVALIDATION_FIELD] !== true) {
+      throw new AppError(
+        "confirmation_required",
+        `deleting provider "${row.ref}" invalidates its existing user connections ` +
+          `and pending consent attempts, and affected apps need approval again — confirm to delete`,
+        ConfirmationRequiredDetailsSchema.parse({
+          impact: await providerImpact(app.prisma, row),
+        }),
       );
-      return ProviderDeleteResponseSchema.parse({ outcome: "deleted" });
-    },
-  );
+    }
+
+    const boundApps = (await providerImpact(app.prisma, row)).boundApps.length;
+    await app.prisma.$transaction(async (tx) => {
+      // The invalidations, the removal, and the audit row: one transaction,
+      // all-or-nothing. The audit row is what a repeat
+      // deletion is answered from, so it commits with the removal or not at
+      // all.
+      const invalidatedConnections = await invalidateConnections(tx, row);
+      const killedAttempts = await killPendingAttempts(tx, row);
+      const { count } = await tx.connectionProvider.deleteMany({ where: { id: row.id } });
+      if (count === 0) {
+        // A concurrent removal won; roll everything back — the loser answers
+        // from the audit event on its next call.
+        throw new CasLost();
+      }
+      await tx.auditEvent.create({
+        data: {
+          appId: null,
+          actor: actor.sub,
+          action: "provider.deleted",
+          // Bounded metadata: refs,
+          // env, ids, and counts — never a credential, sealed material, or
+          // endpoint URL.
+          metadata: {
+            ref: row.ref,
+            env: row.env,
+            providerId: row.id,
+            boundApps,
+            connections: invalidatedConnections,
+            pendingAttempts: killedAttempts,
+          },
+        },
+      });
+    });
+
+    // The row is gone — its sealed credentials are unreferenced. Released
+    // OUTSIDE the transaction (the vault is never inside the
+    // all-or-nothing boundary); a failed destroy is reported as
+    // provider.destroy_failed and never un-deletes the row.
+    await releaseAll(
+      [
+        { material: row.clientIdMaterial, field: "clientId" },
+        { material: row.clientSecretMaterial, field: "clientSecret" },
+      ],
+      { actor: actor.sub, ref: row.ref, env: row.env, reason: "delete" },
+    );
+    return responseBody(portal.deleteProvider, 200, { outcome: "deleted" });
+  });
 }

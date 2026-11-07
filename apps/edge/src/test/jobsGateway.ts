@@ -14,7 +14,7 @@ import {
   type JobsSubmitForward,
   type JobsSubmitSpec,
 } from "../jobs/forwarder.js";
-import { buildApp } from "../app.js";
+import { buildApp, type EdgeDeps } from "../app.js";
 import { buildDevGateway } from "../devGateway/app.js";
 import { hashDevToken } from "@azx-pbc/shared/devToken";
 import type { DevTokenStore } from "../devGateway/devTokenStore.js";
@@ -22,6 +22,7 @@ import { hashSessionToken, newSessionToken } from "../auth/sessions.js";
 import type { UsageStore } from "../gateway/usage.js";
 import type { JobsSubmissionThrottle } from "../gateway/jobsThrottle.js";
 import { testAuthConfig, testDevGatewayConfig, testEdgeConfig } from "./config.js";
+import { recordConformance } from "./conformance.js";
 import {
   FakeBlobReader,
   FakeOidcClient,
@@ -164,6 +165,8 @@ export interface JobsHarnessOpts {
    * composition's own throttle construction.
    */
   submissionLimits?: JobsCapacityLimits;
+  /** Observe every declared route (the ADR-0054 coverage test). */
+  onRoute?: EdgeDeps["onRoute"];
 }
 
 export interface JobsHarness {
@@ -210,7 +213,9 @@ export function buildJobsEdgeApp(
     jobsForwarder: forwarder,
     usage: opts.usage ?? null,
     jobsSubmissionThrottle: opts.jobsSubmissionThrottle ?? null,
+    ...(opts.onRoute ? { onRoute: opts.onRoute } : {}),
   });
+  recordConformance(app);
   return { app, sessions, usage: opts.usage ?? null };
 }
 
@@ -242,6 +247,7 @@ export function buildDisabledJobsEdge(opts: JobsHarnessOpts = {}): JobsHarness {
     usage: opts.usage ?? null,
     jobsSubmissionThrottle: opts.jobsSubmissionThrottle ?? null,
   });
+  recordConformance(app);
   // The forwarder field is never consulted on this build; the type wants one.
   return { app, forwarder: new FakeJobsForwarder(), sessions, usage: opts.usage ?? null };
 }

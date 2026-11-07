@@ -1,6 +1,6 @@
 import { connect } from "node:net";
 import { randomUUID } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { request as undiciRequest } from "undici";
 import type { FastifyInstance } from "fastify";
 import { SESSION_COOKIE } from "../auth/cookies.js";
@@ -47,6 +47,9 @@ import {
   SPAN_JOBS_SUBMIT_EDGE,
   SPAN_JOBS_SUBMIT_DEV,
 } from "@azx-pbc/shared/telemetry";
+import { assertConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The app-facing jobs submission route (`POST /_api/jobs/:server/types/:type`).

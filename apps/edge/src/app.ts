@@ -1,7 +1,8 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type RouteOptions } from "fastify";
 import { HealthStatusSchema, isValidServiceWorkerScope, worstHealthState } from "@azx-pbc/shared";
 import { traceContextMixin } from "@azx-pbc/telemetry/correlation";
 import { loggerOption, requestIdOptions } from "@azx-pbc/shared/logging";
+import { app as appApi } from "@azx-pbc/shared/contracts";
 import type { EdgeConfig } from "./config.js";
 import type { BlobReader } from "./blob/client.js";
 import type {
@@ -79,7 +80,6 @@ import {
   ROUTE_JOBS_SNAPSHOT,
   ROUTE_JOBS_SUBMIT,
   ROUTE_OPENAI,
-  ROUTE_CONSENT_CANCEL,
   SPAN_JOBS_CANCEL_EDGE,
   SPAN_JOBS_FETCH_EDGE,
   SPAN_JOBS_RESULT_EDGE,
@@ -166,6 +166,12 @@ export interface EdgeDeps {
   anonRateLimiter?: IpRateLimiter | null;
   /** Dev TLS material (server.ts reads the mkcert files); tests omit it. */
   https?: { cert: Buffer; key: Buffer } | null;
+  /**
+   * Observe every route as it is declared (tests). Registered before any
+   * route, so it sees the routes `buildApp` declares directly (ADR-0054 route
+   * coverage).
+   */
+  onRoute?: (route: RouteOptions) => void;
 }
 
 /**
@@ -246,6 +252,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     trustProxy: config.trustProxy,
     ...(deps.https ? { https: deps.https } : {}),
   }) as unknown as FastifyInstance;
+  if (deps.onRoute) app.addHook("onRoute", deps.onRoute);
 
   // Auth routes exist only when the whole auth stack is wired (config block +
   // session store + OIDC client); otherwise they fail closed below.
@@ -726,8 +733,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
 
   // Appendix A.6: the one thing an app may ask about its user.
   app.route({
-    method: "GET",
-    url: "/_api/me",
+    method: appApi.getMe.method,
+    url: appApi.getMe.path,
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app" && handleMe) {
         await handleMe(req, reply, req.hostClass.slug);
@@ -741,8 +748,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // A GET navigation endpoint, so no body
   // parser concerns; app hosts only (the two-router discipline).
   app.route({
-    method: "GET",
-    url: "/_api/connections/:ref/start",
+    method: appApi.startConnection.method,
+    url: appApi.startConnection.path,
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app") {
         await handleConsentStart(req, reply, req.hostClass.slug);
@@ -756,8 +763,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // JSON POST `window.helix.connect` fires when its popup closed without a
   // completion message. App hosts only; session-gated inward.
   app.route({
-    method: "POST",
-    url: ROUTE_CONSENT_CANCEL,
+    method: appApi.cancelConnectionAttempt.method,
+    url: appApi.cancelConnectionAttempt.path,
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app") {
         await handleConsentCancel(req, reply, req.hostClass.slug);
@@ -771,8 +778,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // read on the app host, session-gated inward (the `/_api/me` posture: 401,
   // never a redirect; no Origin check on a read).
   app.route({
-    method: "GET",
-    url: "/_api/connections/:ref/status",
+    method: appApi.getConnectionStatus.method,
+    url: appApi.getConnectionStatus.path,
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app") {
         await handleConnectionStatus(req, reply, req.hostClass.slug);
@@ -784,8 +791,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
 
   // M4 gateway: the LLM capability (architecture §6.1). App hosts only.
   app.route({
-    method: "POST",
-    url: "/_api/llm/chat",
+    method: appApi.llmChat.method,
+    url: appApi.llmChat.path,
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app" && handleLlmChat) {
         await handleLlmChat(req, reply, req.hostClass.slug);
@@ -798,8 +805,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // its OpenAI client at `baseURL = <origin>/_api/openai/v1`; the `__Host-session`
   // cookie authenticates same-origin, so the SDK `apiKey` is ignored. App hosts only.
   app.route({
-    method: "POST",
-    url: "/_api/openai/v1/chat/completions",
+    method: appApi.createOpenAiChatCompletion.method,
+    url: appApi.createOpenAiChatCompletion.path,
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app" && handleOpenAiChat) {
         await handleOpenAiChat(req, reply, req.hostClass.slug);
@@ -809,8 +816,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
     },
   });
   app.route({
-    method: "GET",
-    url: "/_api/openai/v1/models",
+    method: appApi.listOpenAiModels.method,
+    url: appApi.listOpenAiModels.path,
     handler: async (req, reply) => {
       if (req.hostClass.kind === "app" && handleOpenAiModels) {
         await handleOpenAiModels(req, reply, req.hostClass.slug);
@@ -826,19 +833,19 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
   // type, and is covered by an adversarial test. The shared list verb
   // (ADR-0042) is read-side only and requires a prefix-grant; collections stay
   // unlistable regardless of grants.
-  for (const [method, url, name] of [
-    ["PUT", "/_api/data/user/:key", "putUser"],
-    ["GET", "/_api/data/user/:key", "getUser"],
-    ["DELETE", "/_api/data/user/:key", "deleteUser"],
-    ["GET", "/_api/data/user", "listUser"],
-    ["POST", "/_api/data/collections/:name", "postCollection"],
-    ["GET", "/_api/data/shared", "listShared"],
-    ["GET", "/_api/data/shared/:key", "getShared"],
-    ["PUT", "/_api/data/shared/:key", "putShared"],
+  for (const [contract, name] of [
+    [appApi.putUserData, "putUser"],
+    [appApi.getUserData, "getUser"],
+    [appApi.deleteUserData, "deleteUser"],
+    [appApi.listUserData, "listUser"],
+    [appApi.appendCollectionItem, "postCollection"],
+    [appApi.listSharedData, "listShared"],
+    [appApi.getSharedData, "getShared"],
+    [appApi.putSharedData, "putShared"],
   ] as const) {
     app.route({
-      method,
-      url,
+      method: contract.method,
+      url: contract.path,
       handler: async (req, reply) => {
         if (req.hostClass.kind === "app" && dataHandlers) {
           await dataHandlers[name](req, reply, req.hostClass.slug);
@@ -859,7 +866,7 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       fetchScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
       fetchScope.route({
         method: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        url: "/_api/fetch/*",
+        url: appApi.fetchProxyGet.path,
         handler: async (req, reply) => {
           if (req.hostClass.kind === "app") {
             await handleFetch(req, reply, req.hostClass.slug);
@@ -882,8 +889,8 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
       jobsScope.removeAllContentTypeParsers();
       jobsScope.addContentTypeParser("*", (_req, payload, done) => done(null, payload));
       jobsScope.route({
-        method: "POST",
-        url: ROUTE_JOBS_SUBMIT,
+        method: appApi.submitJob.method,
+        url: appApi.submitJob.path,
         handler: async (req, reply) => {
           if (req.hostClass.kind === "app" && handleJobsSubmit) {
             await handleJobsSubmit(req, reply, req.hostClass.slug);
@@ -892,14 +899,14 @@ export function buildApp(deps: EdgeDeps): FastifyInstance {
           sendNotFound(reply);
         },
       });
-      for (const [method, url, handler] of [
-        ["GET", ROUTE_JOBS_SNAPSHOT, handleJobsSnapshot],
-        ["GET", ROUTE_JOBS_RESULT, handleJobsResult],
-        ["DELETE", ROUTE_JOBS_CANCEL, handleJobsCancel],
+      for (const [contract, handler] of [
+        [appApi.getJob, handleJobsSnapshot],
+        [appApi.getJobResult, handleJobsResult],
+        [appApi.cancelJob, handleJobsCancel],
       ] as const) {
         jobsScope.route({
-          method,
-          url,
+          method: contract.method,
+          url: contract.path,
           handler: async (req, reply) => {
             if (req.hostClass.kind === "app" && handler) {
               await handler(req, reply, req.hostClass.slug);

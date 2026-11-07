@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import { AuthConfigResponseSchema, PortalMeResponseSchema } from "@azx-pbc/shared";
-import { actorIsAdmin, authenticate, requireActor } from "../plugins/auth.js";
+import { portal, responseBody } from "@azx-pbc/shared/contracts";
+import { actorIsAdmin, requireActor } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { directorySearchAllowed, directorySearchTier } from "../policy/directoryPolicy.js";
 import { AppError } from "../plugins/errors.js";
 
@@ -8,24 +9,24 @@ import { AppError } from "../plugins/errors.js";
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   // Public: the CLI bootstraps from here, so its only config is the portal
   // URL. 404 when the portal is dev-token-only (no IdP to discover).
-  app.get("/api/v1/auth/config", async () => {
+  contractRoute(app, portal.getAuthConfig, async () => {
     const config = app.authPublicConfig;
     if (!config) {
       throw new AppError("not_found", "OIDC is not configured on this portal");
     }
-    return AuthConfigResponseSchema.parse(config);
+    return responseBody(portal.getAuthConfig, 200, config);
   });
 
   // Who am I, per the verifier chain — powers `helix whoami` and the v1 SPA.
   // `oid` is the canonical principal id (ADR-0048): additive on the wire,
   // echoed so an operator (or `helix whoami`) can collect the email→oid pair
   // the cutover runbook needs without a database round-trip.
-  app.get("/api/v1/me", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.getCurrentActor, async (req) => {
     const actor = requireActor(req);
     const canSearch = directorySearchAllowed(actor);
     const tier = directorySearchTier();
     const restriction = tier === "everyone" ? undefined : tier;
-    return PortalMeResponseSchema.parse({
+    return responseBody(portal.getCurrentActor, 200, {
       oid: actor.oid,
       sub: actor.sub,
       via: actor.via,

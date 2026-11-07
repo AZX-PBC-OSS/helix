@@ -181,14 +181,17 @@ export const OpenAiChatCompletionChunkSchema = z.object({
 export type OpenAiChatCompletionChunk = z.infer<typeof OpenAiChatCompletionChunkSchema>;
 
 /** OpenAI error envelope. `type`/`code` are set from the platform's ApiErrorCode. */
-export interface OpenAiErrorBody {
-  error: {
-    message: string;
-    type: string;
-    param: string | null;
-    code: string | null;
-  };
-}
+export const OpenAiErrorBodySchema = z
+  .object({
+    error: z.object({
+      message: z.string(),
+      type: z.string(),
+      param: z.string().nullable(),
+      code: z.string().nullable(),
+    }),
+  })
+  .meta({ id: "OpenAiError", description: "OpenAI's error envelope." });
+export type OpenAiErrorBody = z.infer<typeof OpenAiErrorBodySchema>;
 
 /** OpenAI `GET /v1/models` list item. `created` is required by the OpenAI Model object. */
 export const OpenAiModelSchema = z.object({

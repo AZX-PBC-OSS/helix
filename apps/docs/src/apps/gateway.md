@@ -18,6 +18,9 @@ Calls that change data are Origin-checked, so they must come from the app's own
 page. A `curl` from a terminal is refused. To call the gateway from a local dev
 server, use the [dev gateway](./dev-gateway).
 
+Every endpoint's request and response schemas are listed in the generated
+[app API reference](./api-reference).
+
 ## Identity
 
 Unless the app is `public`, the platform only serves signed-in users, so you

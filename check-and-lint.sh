@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run typecheck, lint, formatting, docs build, and tests. Run every selected step
+# Run typecheck, lint, formatting, the OpenAPI spec check, docs build, and tests. Run every selected step
 # even if one fails, then report timings and exit non-zero on any failure.
 #
 # Usage:
@@ -9,7 +9,7 @@
 #   ./check-and-lint.sh typecheck lint format  # selected checks
 #   ./check-and-lint.sh test -- --shard=1/3    # pass arguments to Vitest
 #
-# CI uses this script for both jobs: static runs typecheck/lint/format/docs;
+# CI uses this script for both jobs: static runs typecheck/lint/format/openapi/docs;
 # test runs the suite. Arguments after -- require test as the only selected step.
 
 
@@ -17,7 +17,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_STEPS=(typecheck lint refs format docs test)
+ALL_STEPS=(typecheck lint refs format openapi docs test)
 
 FIX=0
 STEPS=()
@@ -105,6 +105,7 @@ if [[ "${FIX}" -eq 1 ]]; then
   # --log-level warn: `prettier --write` otherwise names all ~300 files it looked
   # at, which buries every warning the steps below emit. The format step re-checks.
   pnpm format --log-level warn || true
+  pnpm openapi || true
 fi
 
 wants typecheck && run_step "typecheck" pnpm typecheck
@@ -117,6 +118,9 @@ wants lint && run_step "lint" pnpm lint
 # itself out of the scan.
 wants refs && run_step "refs" bash -c 'if git ls-files -z | xargs -0 grep -nIE "(^|[^A-Za-z0-9])(I-[0-9]{2,}|T-[0-9]{3,})([^A-Za-z0-9]|$)"; then echo "machine-local planning identifiers (I-xx / T-nnnn) found above — remove them"; exit 1; fi'
 wants format && run_step "format" pnpm format:check
+# The committed OpenAPI documents must match what the route contracts generate
+# (ADR-0054). `--fix` regenerates them; this step only compares.
+wants openapi && run_step "openapi" pnpm openapi:check
 # The VitePress build fails on a dead internal link or an unrenderable page,
 # so a broken docs change goes red here instead of at the Pages deploy after
 # merge. Needs no services, so CI gates it with the static steps.

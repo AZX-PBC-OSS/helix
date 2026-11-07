@@ -26,6 +26,9 @@ import {
   registryEntry,
 } from "../test/fakes.js";
 import type { PortalProvider, PortalProxyRequest, PortalProxyResponse } from "./portalProvider.js";
+import { assertConformance, recordConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * `GET /_api/connections/:ref/status` (ADR-0031 as amended) — the app-facing
@@ -108,6 +111,7 @@ function buildStatusEdge(
     oidc: new FakeOidcClient(),
     portal: opts.withPortal === false ? null : portal,
   });
+  recordConformance(app);
   return {
     app,
     portal,

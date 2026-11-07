@@ -349,3 +349,19 @@ describe("SecretMetadataSchema", () => {
     ).toMatchObject({ name: "x api key" });
   });
 });
+
+describe("stored recipe header names", () => {
+  it("treat a whitespace-only legacy name as unreadable, so a re-parse agrees", () => {
+    const row = { kind: "header", name: "   ", template: "{secret}" };
+    expect(StoredInjectionRecipeSchema.safeParse(row).success).toBe(false);
+  });
+
+  it("re-parse their own output unchanged", () => {
+    const once = StoredInjectionRecipeSchema.parse({
+      kind: "header",
+      name: " X-Api-Key ",
+      template: "{secret}",
+    });
+    expect(StoredInjectionRecipeSchema.parse(once)).toEqual(once);
+  });
+});

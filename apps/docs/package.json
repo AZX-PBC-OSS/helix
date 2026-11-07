@@ -12,9 +12,11 @@
     "vitepress": "catalog:"
   },
   "devDependencies": {
+    "@azx-pbc/openapi": "workspace:*",
     "@types/node": "catalog:",
     "sitemap": "catalog:",
     "typescript": "catalog:",
+    "vitepress-openapi": "catalog:",
     "vitepress-plugin-llms": "catalog:"
   }
 }

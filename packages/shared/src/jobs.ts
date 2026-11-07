@@ -426,22 +426,24 @@ export const JobRequestErrorSchema = RawInputKeyScreen.pipe(
       error: JobErrorSchema.nullable(),
     }),
   ]),
-).superRefine((error, ctx) => {
-  if (!messageIsFixed(error.code, error.message)) {
-    ctx.addIssue({ code: "custom", path: ["message"], message: MESSAGE_RULE });
-    return;
-  }
-  const statefulCode = (JOB_STATEFUL_ERROR_CODES as readonly string[]).includes(error.code);
-  if (statefulCode !== "status" in error) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["code"],
-      message: statefulCode
-        ? "a job-state-dependent 409 error carries the job's status and error — the bare shape is not valid for it"
-        : "only a job-state-dependent 409 code carries status and error",
-    });
-  }
-});
+)
+  .superRefine((error, ctx) => {
+    if (!messageIsFixed(error.code, error.message)) {
+      ctx.addIssue({ code: "custom", path: ["message"], message: MESSAGE_RULE });
+      return;
+    }
+    const statefulCode = (JOB_STATEFUL_ERROR_CODES as readonly string[]).includes(error.code);
+    if (statefulCode !== "status" in error) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["code"],
+        message: statefulCode
+          ? "a job-state-dependent 409 error carries the job's status and error — the bare shape is not valid for it"
+          : "only a job-state-dependent 409 code carries status and error",
+      });
+    }
+  })
+  .meta({ id: "JobRequestError", description: "A jobs operation's error." });
 export type JobRequestError = z.infer<typeof JobRequestErrorSchema>;
 
 /**

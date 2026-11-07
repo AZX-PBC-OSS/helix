@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { request as undiciRequest } from "undici";
 import { jobRequestError, type JobSnapshot } from "@azx-pbc/shared";
 import { HttpJobsForwarder } from "../jobs/forwarder.js";
@@ -35,6 +35,9 @@ import {
   SPAN_JOBS_SNAPSHOT_EDGE,
   SPAN_JOBS_SNAPSHOT_DEV,
 } from "@azx-pbc/shared/telemetry";
+import { assertConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The app-facing jobs reference routes — poll, result read, cancellation —

@@ -2,6 +2,7 @@ import fp from "fastify-plugin";
 import type { FastifyError } from "fastify";
 import { ZodError } from "zod";
 import type { ApiError, ApiErrorCode } from "@azx-pbc/shared";
+import { RequestValidationError } from "@azx-pbc/shared/contracts";
 import { redactUrl } from "@azx-pbc/shared/logging";
 
 /** Default HTTP status for each error code. AppError may override. */
@@ -42,6 +43,22 @@ export class AppError extends Error {
     this.details = details;
     this.statusCode = statusCode ?? STATUS_BY_CODE[code];
   }
+}
+
+/**
+ * An error Fastify or one of its plugins raised about the request itself. They
+ * all carry an `FST_` code. Matching on the code, not only a 4xx `statusCode`,
+ * matters: SDK errors (an Azure `RestError` from Blob storage, say) carry a 4xx
+ * status too, and those are the platform's failure, not the caller's.
+ */
+function isFrameworkClientError(err: FastifyError): err is FastifyError & { statusCode: number } {
+  return (
+    typeof err.code === "string" &&
+    err.code.startsWith("FST_") &&
+    err.statusCode !== undefined &&
+    err.statusCode >= 400 &&
+    err.statusCode < 500
+  );
 }
 
 function envelope(code: ApiErrorCode, message: string, details?: unknown): ApiError {
@@ -93,10 +110,24 @@ export const errorsPlugin = fp(
         return;
       }
 
-      if (err instanceof ZodError) {
+      // A request that failed its route contract (`parseRequest`).
+      if (err instanceof RequestValidationError) {
         reply
           .status(400)
           .send(envelope("validation_failed", "request validation failed", err.issues));
+        return;
+      }
+
+      // Any other ZodError is the platform's fault: a handler built a response
+      // that broke its own schema, or read a stored row that no longer parses.
+      // Request input reaches handlers through `parseRequest`, which throws
+      // RequestValidationError instead, so this is never the caller's mistake.
+      if (err instanceof ZodError) {
+        req.log.error(
+          { err, event: "portal.schema_violation", status: 500 },
+          "a server-side value failed its schema",
+        );
+        reply.status(500).send(envelope("internal", "internal server error"));
         return;
       }
 
@@ -106,9 +137,18 @@ export const errorsPlugin = fp(
         return;
       }
 
-      // @fastify/multipart raises 413 when the bundle exceeds the size limit.
-      if (err.statusCode === 413) {
+      // @fastify/multipart raises 413 when the bundle exceeds the size limit, and
+      // Fastify's body parser when a JSON body exceeds its own.
+      if (isFrameworkClientError(err) && err.statusCode === 413) {
         reply.status(413).send(envelope("bundle_invalid", "uploaded bundle is too large"));
+        return;
+      }
+
+      // Fastify's and its plugins' own client errors: a malformed JSON body, an
+      // unsupported content type, a non-multipart upload. Their status is set
+      // by the framework and their message describes the request, not the server.
+      if (isFrameworkClientError(err)) {
+        reply.status(err.statusCode).send(envelope("validation_failed", err.message));
         return;
       }
 

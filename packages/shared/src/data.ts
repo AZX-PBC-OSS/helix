@@ -63,3 +63,9 @@ export const CollectionSummarySchema = z.object({
   lastAt: z.iso.datetime().nullable(),
 });
 export type CollectionSummary = z.infer<typeof CollectionSummarySchema>;
+
+/** The owner's JSON export of a collection: oldest-first, capped at the export limit. */
+export const CollectionExportSchema = z.object({
+  items: z.array(CollectionItemSchema),
+});
+export type CollectionExport = z.infer<typeof CollectionExportSchema>;

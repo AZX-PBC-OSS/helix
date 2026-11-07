@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import FormData from "form-data";
 import type { FastifyInstance } from "fastify";
 import { buildApp, type BuildAppOptions } from "../app.js";
+import { conformanceRecorder, portalContracts } from "@azx-pbc/shared/contracts";
 import { createPrismaClient, type PrismaClient } from "../db/client.js";
 import { InMemoryBlobStore } from "./memoryBlob.js";
 
@@ -41,7 +42,14 @@ export function createTestPrisma(): PrismaClient {
 export function buildTestApp(
   opts: Pick<
     BuildAppOptions,
-    "auth" | "spaDist" | "secretStore" | "directory" | "geo" | "jobsDelivery" | "repoDeploy"
+    | "auth"
+    | "spaDist"
+    | "secretStore"
+    | "directory"
+    | "geo"
+    | "jobsDelivery"
+    | "repoDeploy"
+    | "onRoute"
   > & {
     prisma?: PrismaClient;
   } = {},
@@ -52,6 +60,10 @@ export function buildTestApp(
   // the developer has built apps/portal-web (spa.test.ts opts back in).
   // `prisma` last: the resolved client wins even if opts carries the key as undefined.
   const app = buildApp({ blobStore: blob, spaDist: null, ...opts, prisma });
+  // Every response a test provokes is checked against its route contract
+  // (ADR-0054). Violations surface when the test closes the app.
+  const conformance = conformanceRecorder(portalContracts);
+  app.addHook("onSend", conformance.onSend);
   return {
     app,
     prisma,
@@ -59,6 +71,7 @@ export function buildTestApp(
     async close() {
       await app.close();
       await prisma.$disconnect();
+      conformance.assertNone();
     },
   };
 }

@@ -4,11 +4,14 @@ import {
   StaticDirectory,
   UnavailableDirectory,
   GRAPH_GROUP_PERMISSION,
+  MAX_SEARCH_RESULTS,
+  MIN_SEARCH_LENGTH,
   type DirectoryOutcome,
   type DirectoryProvider,
   type GroupName,
   type GroupSummary,
 } from "@azx-pbc/directory";
+import { DIRECTORY_MAX_SEARCH_RESULTS, DIRECTORY_MIN_SEARCH_LENGTH } from "@azx-pbc/shared";
 import {
   authHeader,
   buildTestApp,
@@ -45,6 +48,13 @@ class DeniedDirectory implements DirectoryProvider {
 function get(t: TestApp, url: string) {
   return t.app.inject({ method: "GET", url, headers: authHeader() });
 }
+
+// The route's query contract restates the provider's limits, because shared
+// cannot import the directory package.
+it("keeps the search query contract in step with the provider's limits", () => {
+  expect(DIRECTORY_MIN_SEARCH_LENGTH).toBe(MIN_SEARCH_LENGTH);
+  expect(DIRECTORY_MAX_SEARCH_RESULTS).toBe(MAX_SEARCH_RESULTS);
+});
 
 describe("GET /api/v1/directory/groups", () => {
   let t: TestApp;

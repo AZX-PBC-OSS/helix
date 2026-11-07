@@ -222,6 +222,17 @@ catalog:
   # (its `exports` point at ./src) without leaking `workspace:*` into a
   # published manifest.
   esbuild: ^0.28.2
+  # ── Spec generation (packages/openapi, ADR-0054) ──
+  # Turns the zod route contracts in @azx-pbc/shared/contracts into the
+  # committed OpenAPI documents. Build-time only: a devDependency of the
+  # generator package, never imported by a service, so the edge's runtime
+  # dependency set (ADR-0003) is unchanged.
+  zod-openapi: ^6.0.2
+  # Validates the generated documents against the official OpenAPI 3.1 JSON
+  # Schema in packages/openapi's tests, so a generator bug that emits an invalid
+  # document fails CI. Test-only.
+  "@seriousme/openapi-schema-validator": ^2.11.0
+
   # ── Docs site (apps/docs) ──
   # The public docs site (docs.azx… → GitHub Pages project page). Static build
   # only — no server, no runtime service. Kept on the 1.x stable line; the 2.x
@@ -231,6 +242,10 @@ catalog:
   # .md twins) at build time — the plugin Vite/Vue use. Docs build only;
   # markdown-processing deps, never near a runtime service.
   vitepress-plugin-llms: ^1.14.0
+  # Renders the generated OpenAPI documents (packages/openapi/spec) as the API
+  # reference pages (ADR-0054). Docs build only. Pre-1.0: if it breaks, Scalar's
+  # standalone renderer reads the same JSON.
+  vitepress-openapi: ^0.2.8
   # Powers VitePress's native sitemap option (vitepress declares no range for
   # it; 9.x is current — fall back to ^8.0.3 if the import surface breaks).
   sitemap: ^9.0.1

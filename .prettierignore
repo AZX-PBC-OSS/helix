@@ -27,3 +27,7 @@ packages/deploy-skill/SKILL.md
 
 # Docs site content — prose (like docs/), including the generated quickstart page.
 apps/docs/src
+
+# Generated OpenAPI documents (ADR-0054): written by `pnpm openapi`, compared
+# byte-for-byte by the `openapi` step, so Prettier must not reflow them.
+packages/openapi/spec

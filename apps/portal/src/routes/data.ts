@@ -1,7 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { PrincipalKindSchema } from "@azx-pbc/shared";
 import {
-  CollectionItemsPageSchema,
   CollectionSummarySchema,
   collectionCsv,
   EnvSchema,
@@ -9,8 +8,10 @@ import {
   type CollectionItem,
   type Env,
 } from "@azx-pbc/shared";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
 import type { Prisma, PrismaClient } from "../db/client.js";
-import { authenticate, ownsApp, requireActor } from "../plugins/auth.js";
+import { requireActor } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 
 /**
@@ -31,12 +32,6 @@ import { AppError } from "../plugins/errors.js";
  */
 
 export const MAX_EXPORT_ROWS = 10_000;
-
-function clampLimit(raw: unknown, fallback: number, max: number): number {
-  const n = typeof raw === "string" ? Number.parseInt(raw, 10) : Number(raw);
-  if (!Number.isFinite(n) || n < 1) return fallback;
-  return Math.min(Math.trunc(n), max);
-}
 
 /**
  * Select the newest max rows from a newest-first query, then emit oldest-first.
@@ -90,16 +85,9 @@ function toCollectionItem(r: ItemRow): CollectionItem {
  * the ones pinned to a single tier), and an owner draining their data should be
  * able to see everything they collected. The SPA narrows to `prod` by default so
  * dev-mode test rows don't masquerade as real leads; that is a presentation
- * choice, not an API one.
- *
- * An empty value counts as absent. A caller that builds its query string
- * unconditionally sends `?env=`, and 400ing that would contradict the documented
- * "absent means both tiers" — every other param on this route already treats
- * empty as absent (`before` by a falsy check, `limit` by `clampLimit`'s fallback,
- * `format` by not matching `csv`). An unrecognised *value* still 400s.
+ * choice, not an API one. The contract treats an empty value as absent.
  */
-function envFilter(raw: unknown): { env?: Env } {
-  const env = EnvSchema.optional().parse(raw === "" ? undefined : raw);
+function envFilter(env: Env | undefined): { env?: Env } {
   return env ? { env } : {};
 }
 
@@ -138,163 +126,145 @@ export async function dataRoutes(app: FastifyInstance): Promise<void> {
    * Grouped by env as well as name so the SPA — which shows `prod` by default —
    * can say "340 rows in dev mode" instead of silently hiding them.
    */
-  app.get<{ Params: { slug: string } }>(
-    "/api/v1/apps/:slug/collections",
-    { preHandler: [authenticate, ownsApp] },
-    async (req) => {
-      const appId = await appIdFor(req.params.slug);
-      const groups = await app.prisma.appCollectionItem.groupBy({
-        by: ["collection", "env"],
-        where: { appId },
-        _count: { _all: true },
-        _max: { createdAt: true },
-      });
-      return groups
-        .map((g) =>
-          CollectionSummarySchema.parse({
-            name: g.collection,
-            env: g.env,
-            count: g._count._all,
-            lastAt: g._max.createdAt?.toISOString() ?? null,
-          }),
-        )
-        .sort((a, b) =>
-          a.name === b.name ? a.env.localeCompare(b.env) : a.name < b.name ? -1 : 1,
-        );
-    },
-  );
+  contractRoute(app, portal.listAppCollections, async (req) => {
+    const { params } = parseRequest(portal.listAppCollections, req);
+    const appId = await appIdFor(params.slug);
+    const groups = await app.prisma.appCollectionItem.groupBy({
+      by: ["collection", "env"],
+      where: { appId },
+      _count: { _all: true },
+      _max: { createdAt: true },
+    });
+    return groups
+      .map((g) =>
+        CollectionSummarySchema.parse({
+          name: g.collection,
+          env: g.env,
+          count: g._count._all,
+          lastAt: g._max.createdAt?.toISOString() ?? null,
+        }),
+      )
+      .sort((a, b) => (a.name === b.name ? a.env.localeCompare(b.env) : a.name < b.name ? -1 : 1));
+  });
 
   // Paginate a collection newest-first; cursor on createdAt (?before=ISO).
-  app.get<{
-    Params: { slug: string; name: string };
-    Querystring: { limit?: string; before?: string; env?: string };
-  }>(
-    "/api/v1/apps/:slug/collections/:name",
-    { preHandler: [authenticate, ownsApp] },
-    async (req) => {
-      const appId = await appIdFor(req.params.slug);
-      const limit = clampLimit(req.query.limit, 50, 200);
-      const before = req.query.before ? new Date(req.query.before) : undefined;
-      if (before && Number.isNaN(before.getTime())) {
-        throw new AppError("validation_failed", "`before` must be an ISO-8601 timestamp");
-      }
+  contractRoute(app, portal.listAppCollectionItems, async (req) => {
+    const { params, query } = parseRequest(portal.listAppCollectionItems, req);
+    const appId = await appIdFor(params.slug);
+    const limit = query.limit;
+    const before = query.before ? new Date(query.before) : undefined;
+    if (before && Number.isNaN(before.getTime())) {
+      throw new AppError("validation_failed", "`before` must be an ISO-8601 timestamp");
+    }
 
-      const rows = await app.prisma.appCollectionItem.findMany({
-        where: {
-          appId,
-          collection: req.params.name,
-          ...envFilter(req.query.env),
-          ...(before ? { createdAt: { lt: before } } : {}),
-        },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take: limit + 1,
-      });
+    const rows = await app.prisma.appCollectionItem.findMany({
+      where: {
+        appId,
+        collection: params.name,
+        ...envFilter(query.env),
+        ...(before ? { createdAt: { lt: before } } : {}),
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1,
+    });
 
-      const hasMore = rows.length > limit;
-      const page = hasMore ? rows.slice(0, limit) : rows;
-      const last = page.at(-1);
-      return CollectionItemsPageSchema.parse({
-        rows: page.map((r) => toCollectionItem(r as ItemRow)),
-        ...(hasMore && last ? { nextBefore: last.createdAt.toISOString() } : {}),
-      });
-    },
-  );
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const last = page.at(-1);
+    return responseBody(portal.listAppCollectionItems, 200, {
+      rows: page.map((r) => toCollectionItem(r as ItemRow)),
+      ...(hasMore && last ? { nextBefore: last.createdAt.toISOString() } : {}),
+    });
+  });
 
   // Export the whole collection (capped) as JSON or CSV.
-  app.get<{
-    Params: { slug: string; name: string };
-    Querystring: { format?: string; env?: string };
-  }>(
-    "/api/v1/apps/:slug/collections/:name/export",
-    { preHandler: [authenticate, ownsApp] },
-    async (req, reply) => {
-      const actor = requireActor(req);
-      const appId = await appIdFor(req.params.slug);
-      const format = req.query.format === "csv" ? "csv" : "json";
-      const env = envFilter(req.query.env);
-      // Newest-first so the cap drops the OLDEST rows; `exportWindow` reverses the
-      // kept slice back to chronological. One extra row distinguishes "exactly at
-      // the cap" from "over it", so a collection of precisely MAX_EXPORT_ROWS
-      // isn't reported as truncated.
-      const rows = (await app.prisma.appCollectionItem.findMany({
-        where: { appId, collection: req.params.name, ...env },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        take: MAX_EXPORT_ROWS + 1,
-      })) as ItemRow[];
-      const window = exportWindow(rows, MAX_EXPORT_ROWS);
-      // Surface truncation rather than silently capping (app-data design §7).
-      const truncated = window.truncated;
-      if (truncated) reply.header("x-helix-export-truncated", String(MAX_EXPORT_ROWS));
-      const items = window.rows.map(toCollectionItem);
-      // Rendered before the audit so the column cap can be recorded with the rest
-      // of the export, and only once — deriving columns twice over 10,000 rows to
-      // answer the same question would be pure waste.
-      const csvOut = format === "csv" ? collectionCsv(items) : null;
+  contractRoute(app, portal.exportAppCollection, async (req, reply) => {
+    const actor = requireActor(req);
+    const { params, query } = parseRequest(portal.exportAppCollection, req);
+    const appId = await appIdFor(params.slug);
+    const format = query.format;
+    const env = envFilter(query.env);
+    // Newest-first so the cap drops the OLDEST rows; `exportWindow` reverses the
+    // kept slice back to chronological. One extra row distinguishes "exactly at
+    // the cap" from "over it", so a collection of precisely MAX_EXPORT_ROWS
+    // isn't reported as truncated.
+    const rows = (await app.prisma.appCollectionItem.findMany({
+      where: { appId, collection: params.name, ...env },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: MAX_EXPORT_ROWS + 1,
+    })) as ItemRow[];
+    const window = exportWindow(rows, MAX_EXPORT_ROWS);
+    // Surface truncation rather than silently capping (app-data design §7).
+    const truncated = window.truncated;
+    if (truncated) reply.header("x-helix-export-truncated", String(MAX_EXPORT_ROWS));
+    const items = window.rows.map(toCollectionItem);
+    // Rendered before the audit so the column cap can be recorded with the rest
+    // of the export, and only once — deriving columns twice over 10,000 rows to
+    // answer the same question would be pure waste.
+    const csvOut = format === "csv" ? collectionCsv(items) : null;
 
-      // A bulk pull of visitor PII is at least as consequential as rotating a
-      // secret, which is audited — and platform-admins pass `ownsApp`, so this row
-      // is what makes a cross-owner read reviewable after the fact. The paginated
-      // list is deliberately not audited: too chatty to be worth reading.
-      await audit(app.prisma, appId, actor.sub, "collection.exported", {
-        collection: req.params.name,
-        ...env,
-        format,
-        rows: items.length,
-        truncated,
-        // Only meaningful for CSV: the JSON export has no columns to cap.
-        ...(csvOut ? { columnsTruncated: csvOut.columns.truncated } : {}),
-      });
+    // A bulk pull of visitor PII is at least as consequential as rotating a
+    // secret, which is audited — and platform-admins pass `ownsApp`, so this row
+    // is what makes a cross-owner read reviewable after the fact. The paginated
+    // list is deliberately not audited: too chatty to be worth reading.
+    await audit(app.prisma, appId, actor.sub, "collection.exported", {
+      collection: params.name,
+      ...env,
+      format,
+      rows: items.length,
+      truncated,
+      // Only meaningful for CSV: the JSON export has no columns to cap.
+      ...(csvOut ? { columnsTruncated: csvOut.columns.truncated } : {}),
+    });
 
-      if (csvOut) {
-        // Two independent caps, so two headers. Row truncation loses data; column
-        // truncation does not (the raw `item` column carries every key), but the
-        // owner still gets told rather than quietly handed a narrower file.
-        if (csvOut.columns.truncated) {
-          reply.header("x-helix-export-columns-truncated", String(MAX_DERIVED_COLUMNS));
-        }
-        return reply
-          .header("content-type", "text/csv; charset=utf-8")
-          .header("cache-control", "no-store")
-          .header(
-            "content-disposition",
-            `attachment; filename="${safeFilename(req.params.slug)}-${safeFilename(req.params.name)}.csv"`,
-          )
-          .send(csvOut.csv);
+    if (csvOut) {
+      // Two independent caps, so two headers. Row truncation loses data; column
+      // truncation does not (the raw `item` column carries every key), but the
+      // owner still gets told rather than quietly handed a narrower file.
+      if (csvOut.columns.truncated) {
+        reply.header("x-helix-export-columns-truncated", String(MAX_DERIVED_COLUMNS));
       }
-      return reply.header("cache-control", "no-store").send({ items });
-    },
-  );
+      return reply
+        .header("content-type", "text/csv; charset=utf-8")
+        .header("cache-control", "no-store")
+        .header(
+          "content-disposition",
+          `attachment; filename="${safeFilename(params.slug)}-${safeFilename(params.name)}.csv"`,
+        )
+        .send(csvOut.csv);
+    }
+    return reply
+      .header("cache-control", "no-store")
+      .send(responseBody(portal.exportAppCollection, 200, { items }));
+  });
 
   // Owner deletion of one item (GDPR-style erasure — app-data design §9).
-  app.delete<{ Params: { slug: string; name: string; id: string } }>(
-    "/api/v1/apps/:slug/collections/:name/items/:id",
-    { preHandler: [authenticate, ownsApp] },
-    async (req, reply) => {
-      const actor = requireActor(req);
-      // Resolved before the transaction so the interactive-transaction budget
-      // covers only the two writes.
-      const appId = await appIdFor(req.params.slug);
+  contractRoute(app, portal.deleteAppCollectionItem, async (req, reply) => {
+    const actor = requireActor(req);
+    const { params } = parseRequest(portal.deleteAppCollectionItem, req);
+    // Resolved before the transaction so the interactive-transaction budget
+    // covers only the two writes.
+    const appId = await appIdFor(params.slug);
 
-      // One transaction, because an erasure that leaves no trace is
-      // indistinguishable from data loss — and this is the route a
-      // subject-access request is answered with, where "we erased it" has to be
-      // provable afterwards. Interactive rather than batched: the 404 has to be
-      // able to roll the delete back, and a batched `$transaction([...])` would
-      // commit both statements before the count check could throw, leaving a
-      // `collection.item_deleted` row asserting an erasure that never happened.
-      await app.prisma.$transaction(async (tx) => {
-        const result = await tx.appCollectionItem.deleteMany({
-          where: { id: req.params.id, appId, collection: req.params.name },
-        });
-        if (result.count === 0) {
-          throw new AppError("not_found", "item not found");
-        }
-        await audit(tx, appId, actor.sub, "collection.item_deleted", {
-          collection: req.params.name,
-          id: req.params.id,
-        });
+    // One transaction, because an erasure that leaves no trace is
+    // indistinguishable from data loss — and this is the route a
+    // subject-access request is answered with, where "we erased it" has to be
+    // provable afterwards. Interactive rather than batched: the 404 has to be
+    // able to roll the delete back, and a batched `$transaction([...])` would
+    // commit both statements before the count check could throw, leaving a
+    // `collection.item_deleted` row asserting an erasure that never happened.
+    await app.prisma.$transaction(async (tx) => {
+      const result = await tx.appCollectionItem.deleteMany({
+        where: { id: params.id, appId, collection: params.name },
       });
-      return reply.status(204).send();
-    },
-  );
+      if (result.count === 0) {
+        throw new AppError("not_found", "item not found");
+      }
+      await audit(tx, appId, actor.sub, "collection.item_deleted", {
+        collection: params.name,
+        id: params.id,
+      });
+    });
+    return reply.status(204).send();
+  });
 }

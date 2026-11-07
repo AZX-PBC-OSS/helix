@@ -1,10 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import {
-  MyConnectionSchema,
-  MyConnectionsResponseSchema,
-  type DisconnectResponse,
-} from "@azx-pbc/shared";
+import { MyConnectionSchema, type DisconnectResponse } from "@azx-pbc/shared";
+import { parseRequest, portal, responseBody } from "@azx-pbc/shared/contracts";
 import {
   ATTR_ATTEMPTS_KILLED,
   ATTR_ENV,
@@ -16,7 +13,8 @@ import {
   SPAN_CONNECTIONS_MINE,
 } from "@azx-pbc/shared/telemetry";
 import { Prisma } from "../db/client.js";
-import { authenticate, requireActor } from "../plugins/auth.js";
+import { requireActor } from "../plugins/auth.js";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { AppError } from "../plugins/errors.js";
 import { withSpan } from "../telemetry.js";
 
@@ -47,7 +45,7 @@ import { withSpan } from "../telemetry.js";
  * and an unknown id are the same 404.
  */
 export async function myConnectionsRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/v1/connections/mine", { preHandler: authenticate }, async (req) => {
+  contractRoute(app, portal.listMyConnections, async (req) => {
     const actor = requireActor(req);
     return withSpan(SPAN_CONNECTIONS_MINE, { "http.route": ROUTE_CONNECTIONS_MINE }, async () => {
       const rows = await app.prisma.$queryRaw<
@@ -95,7 +93,7 @@ export async function myConnectionsRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      return MyConnectionsResponseSchema.parse({
+      return responseBody(portal.listMyConnections, 200, {
         connections: rows.map((r) =>
           MyConnectionSchema.parse({
             id: r.id,
@@ -112,104 +110,101 @@ export async function myConnectionsRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.delete<{ Params: { id: string } }>(
-    "/api/v1/connections/mine/:id",
-    { preHandler: authenticate },
-    async (req): Promise<DisconnectResponse> => {
-      const actor = requireActor(req);
-      return withSpan(
-        SPAN_CONNECTIONS_DISCONNECT,
-        { "http.route": ROUTE_CONNECTIONS_MINE_ID },
-        async (span) => {
-          // A malformed id cannot name a connection: the same 404 an unknown
-          // one gets, keeping the failure classes indistinguishable.
-          const parsedId = z.uuid().safeParse(req.params.id);
-          if (!parsedId.success) {
-            throw new AppError("not_found", "connection not found");
-          }
-          const id = parsedId.data;
+  contractRoute(app, portal.disconnectMyConnection, async (req): Promise<DisconnectResponse> => {
+    const actor = requireActor(req);
+    return withSpan(
+      SPAN_CONNECTIONS_DISCONNECT,
+      { "http.route": ROUTE_CONNECTIONS_MINE_ID },
+      async (span) => {
+        // A malformed id cannot name a connection: the same 404 an unknown
+        // one gets, keeping the failure classes indistinguishable.
+        const { params } = parseRequest(portal.disconnectMyConnection, req);
+        const parsedId = z.uuid().safeParse(params.id);
+        if (!parsedId.success) {
+          throw new AppError("not_found", "connection not found");
+        }
+        const id = parsedId.data;
 
-          const outcome = await app.prisma.$transaction(async (tx): Promise<DisconnectResponse> => {
-            // The one UPDATE: the invalidation and the ledger mark
-            // — this row's own sealed material, for the egress sweep to
-            // destroy — commit together. Scoped to the caller's row and
-            // excluding the tombstone, so a repeat matches zero rows and
-            // writes nothing at all. The single-slot residual (an egress
-            // rotation racing this mark) is the accepted residual class.
-            const invalidated = await tx.$queryRaw<Array<{ providerId: string; env: string }>>(
-              Prisma.sql`UPDATE user_connections
+        const outcome = await app.prisma.$transaction(async (tx): Promise<DisconnectResponse> => {
+          // The one UPDATE: the invalidation and the ledger mark
+          // — this row's own sealed material, for the egress sweep to
+          // destroy — commit together. Scoped to the caller's row and
+          // excluding the tombstone, so a repeat matches zero rows and
+          // writes nothing at all. The single-slot residual (an egress
+          // rotation racing this mark) is the accepted residual class.
+          const invalidated = await tx.$queryRaw<Array<{ providerId: string; env: string }>>(
+            Prisma.sql`UPDATE user_connections
                 SET status = 'invalidated', "pendingRetire" = material, "updatedAt" = now()
                 WHERE id = ${id}::uuid AND "userOid" = ${actor.oid}
                   AND status <> 'invalidated'
                 RETURNING "providerId", env`,
-            );
-            if (invalidated.length === 0) {
-              // Zero rows: unknown, another principal's, or already
-              // invalidated. Decide from the caller's OWN row state only —
-              // a foreign id looks exactly like a missing one (BOLA).
-              const own = await tx.userConnection.findFirst({
-                where: { id, userOid: actor.oid },
-                select: { status: true },
-              });
-              if (own && own.status === "invalidated") {
-                return { outcome: "already_removed" };
-              }
-              throw new AppError("not_found", "connection not found");
+          );
+          if (invalidated.length === 0) {
+            // Zero rows: unknown, another principal's, or already
+            // invalidated. Decide from the caller's OWN row state only —
+            // a foreign id looks exactly like a missing one (BOLA).
+            const own = await tx.userConnection.findFirst({
+              where: { id, userOid: actor.oid },
+              select: { status: true },
+            });
+            if (own && own.status === "invalidated") {
+              return { outcome: "already_removed" };
             }
-            const row = invalidated[0]!;
-            const env = row.env === "dev" ? "dev" : "prod";
+            throw new AppError("not_found", "connection not found");
+          }
+          const row = invalidated[0]!;
+          const env = row.env === "dev" ? "dev" : "prod";
 
-            const provider = await tx.connectionProvider.findUnique({
-              where: { id: row.providerId },
-              select: { ref: true },
-            });
-            // Unreachable by construction (a provider's rows are invalidated
-            // in the same transaction that deletes it), so the audit's bounded
-            // metadata is always writable — fail rather than audit a guess.
-            if (!provider) {
-              throw new AppError("internal", "disconnected connection has no provider record");
-            }
+          const provider = await tx.connectionProvider.findUnique({
+            where: { id: row.providerId },
+            select: { ref: true },
+          });
+          // Unreachable by construction (a provider's rows are invalidated
+          // in the same transaction that deletes it), so the audit's bounded
+          // metadata is always writable — fail rather than audit a guess.
+          if (!provider) {
+            throw new AppError("internal", "disconnected connection has no provider record");
+          }
 
-            // The pending consent attempts started before this disconnect:
-            // killed by `cancelledAt`, the marker the claim probe already
-            // refuses — a killed attempt can never complete (the same
-            // pattern, scoped to this one connection).
-            const killed = await tx.connectionConsentAttempt.updateMany({
-              where: {
-                userOid: actor.oid,
-                providerId: row.providerId,
-                env,
-                cancelledAt: null,
-              },
-              data: { cancelledAt: new Date() },
-            });
-
-            // The audit row is the removal's record and commits with it
-            // (never a successful removal without the write).
-            // Actor is the principal, pairing with `connection.connected`;
-            // metadata bounded to ids, ref, env — never identity-bearing
-            // beyond that, never material.
-            await tx.auditEvent.create({
-              data: {
-                appId: null,
-                actor: actor.oid,
-                action: "connection.disconnected",
-                metadata: { connectionId: id, providerRef: provider.ref, env },
-              },
-            });
-
-            span.setAttributes({
-              [ATTR_PROVIDER_REF]: provider.ref,
-              [ATTR_ENV]: env,
-              [ATTR_ATTEMPTS_KILLED]: killed.count,
-            });
-            return { outcome: "disconnected" };
+          // The pending consent attempts started before this disconnect:
+          // killed by `cancelledAt`, the marker the claim probe already
+          // refuses — a killed attempt can never complete (the same
+          // pattern, scoped to this one connection).
+          const killed = await tx.connectionConsentAttempt.updateMany({
+            where: {
+              userOid: actor.oid,
+              providerId: row.providerId,
+              env,
+              cancelledAt: null,
+            },
+            data: { cancelledAt: new Date() },
           });
 
-          span.setAttributes({ [ATTR_OUTCOME]: outcome.outcome });
-          return outcome;
-        },
-      );
-    },
-  );
+          // The audit row is the removal's record and commits with it
+          // (never a successful removal without the write).
+          // Actor is the principal, pairing with `connection.connected`;
+          // metadata bounded to ids, ref, env — never identity-bearing
+          // beyond that, never material.
+          await tx.auditEvent.create({
+            data: {
+              appId: null,
+              actor: actor.oid,
+              action: "connection.disconnected",
+              metadata: { connectionId: id, providerRef: provider.ref, env },
+            },
+          });
+
+          span.setAttributes({
+            [ATTR_PROVIDER_REF]: provider.ref,
+            [ATTR_ENV]: env,
+            [ATTR_ATTEMPTS_KILLED]: killed.count,
+          });
+          return { outcome: "disconnected" };
+        });
+
+        span.setAttributes({ [ATTR_OUTCOME]: outcome.outcome });
+        return responseBody(portal.disconnectMyConnection, 200, outcome);
+      },
+    );
+  });
 }

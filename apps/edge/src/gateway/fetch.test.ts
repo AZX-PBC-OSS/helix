@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { request as undiciRequest } from "undici";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { type JWTPayload, jwtVerify } from "jose";
 import { INSTRUCTION_AUDIENCE, INSTRUCTION_JWT_TYP, OUTCOME_HEADER } from "@azx-pbc/shared";
@@ -26,6 +26,9 @@ import {
   type EgressRequest,
   type EgressResponse,
 } from "./egressProvider.js";
+import { assertConformance, recordConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * The `/_api/fetch` policy plane (fetch-proxy design §7): gate + CSRF, the
@@ -183,6 +186,7 @@ function buildFetchEdge(
     egress: opts.withEgress === false ? null : egress,
     instructionKey: opts.withEgress === false ? null : (opts.instructionKey ?? key),
   });
+  recordConformance(app);
   return { app, egress, usage };
 }
 
@@ -192,6 +196,29 @@ async function decode(token: string): Promise<JWTPayload> {
 }
 
 describe("/_api/fetch", () => {
+  // The upstream's status and body pass through unchanged, including statuses
+  // the platform also uses for its own refusals. The conformance recorder
+  // checks each response against the contract's passthrough declarations.
+  it.each([
+    [201, "application/json", JSON.stringify({ upstream: true })],
+    [400, "application/json", JSON.stringify({ upstream: true })],
+    [418, "text/plain", "short and stout"],
+    [403, "text/html", "<p>upstream says no</p>"],
+  ])("passes an upstream %i (%s) through unchanged", async (status, type, body) => {
+    const { app, egress } = buildFetchEdge();
+    egress.status = status;
+    egress.responseHeaders = { "content-type": type };
+    egress.responseBody = Readable.from([Buffer.from(body)]);
+    const res = await app.inject({
+      method: "GET",
+      url: "/_api/fetch/https://api.github.com/users/octocat",
+      headers: { ...HOST, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(status);
+    expect(res.headers["content-type"]).toContain(type);
+    expect(res.body).toBe(body);
+  });
+
   it("proxies a keyless allowlisted origin, mints an instruction, meters it", async () => {
     const { app, egress, usage } = buildFetchEdge();
     const res = await app.inject({

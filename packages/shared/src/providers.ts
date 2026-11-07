@@ -155,7 +155,17 @@ export const ApiOriginSchema = z
       ctx.addIssue({ code: "custom", message: API_ORIGIN_RULE });
     }
   })
-  .transform((value) => new URL(value).origin);
+  // `.overwrite`, not `.transform`: the value stays a string, so the OpenAPI
+  // generator can describe it (ADR-0054). Unlike a transform, an overwrite
+  // still runs after the refine above has rejected the value, so it must not
+  // throw on an unparseable one.
+  .overwrite((value) => {
+    try {
+      return new URL(value).origin;
+    } catch {
+      return value;
+    }
+  });
 export type ApiOrigin = z.infer<typeof ApiOriginSchema>;
 
 /**

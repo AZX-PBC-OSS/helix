@@ -10,7 +10,8 @@ import {
   type CapabilityCatalogue,
 } from "@azx-pbc/shared";
 import { renderSkill, type SkillVars } from "@azx-pbc/deploy-skill";
-import { authenticate } from "../plugins/auth.js";
+import { portal, responseBody } from "@azx-pbc/shared/contracts";
+import { contractRoute } from "../plugins/contractRoute.js";
 import { modelPolicy, servableLlmModels } from "../policy/modelPolicy.js";
 import { passwordAppsAllowed, publicAppsAllowed } from "../policy/visibilityPolicy.js";
 import {
@@ -46,11 +47,11 @@ const SKILL_TEMPLATE = readFileSync(require.resolve("@azx-pbc/deploy-skill/SKILL
  * *requestable* here, not a report of what some app already holds.
  */
 export async function catalogueRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/api/v1/capabilities", { preHandler: authenticate }, async () => {
-    return CapabilityCatalogueSchema.parse(await buildCatalogue(app));
+  contractRoute(app, portal.getCapabilityCatalogue, async () => {
+    return responseBody(portal.getCapabilityCatalogue, 200, await buildCatalogue(app));
   });
 
-  app.get("/api/v1/skill", { preHandler: authenticate }, async (req, reply) => {
+  contractRoute(app, portal.getDeploySkill, async (req, reply) => {
     const vars = skillVars(req);
     reply.type("text/markdown; charset=utf-8");
     return renderSkill(SKILL_TEMPLATE, vars);

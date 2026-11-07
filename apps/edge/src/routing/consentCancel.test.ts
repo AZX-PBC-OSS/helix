@@ -30,6 +30,9 @@ import {
   registryEntry,
 } from "../test/fakes.js";
 import type { PortalProvider, PortalProxyRequest, PortalProxyResponse } from "./portalProvider.js";
+import { assertConformance, recordConformance } from "../test/conformance.js";
+
+afterEach(assertConformance);
 
 /**
  * `POST /_api/connections/attempt/cancel` — the connect helper's
@@ -146,6 +149,7 @@ function buildConsentEdge(): Harness {
     oidc: new FakeOidcClient(),
     portal,
   });
+  recordConformance(app);
 
   async function signIn(opts: { oid?: string } = {}): Promise<string> {
     const token = newSessionToken();

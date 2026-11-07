@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Span } from "@opentelemetry/api";
-import { isValidDataKey, type ApiErrorCode, type Env } from "@azx-pbc/shared";
+import {
+  isValidDataKey,
+  type ApiErrorCode,
+  type DataConflictDetails,
+  type DataGetResponse,
+  type DataKeyList,
+  type DataPutResponse,
+  type Env,
+} from "@azx-pbc/shared";
 import type { GatewayConfig } from "../config.js";
 import type { RegistryReader } from "../registry/projection.js";
 import {
@@ -422,7 +430,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
             412,
             "conflict",
             "the value changed since your read — re-read and retry",
-            { currentVersion: result.currentVersion },
+            { currentVersion: result.currentVersion } satisfies DataConflictDetails,
           );
           return;
         }
@@ -430,7 +438,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         await reply
           .header("cache-control", "no-store")
           .header("etag", `"${result.version}"`)
-          .send({ key, updatedAt: result.updatedAt });
+          .send({ key, updatedAt: result.updatedAt } satisfies DataPutResponse);
       } catch (err) {
         meter(ctx.entry.appId, identity, "user.put", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data putUser failed");
@@ -463,7 +471,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         await reply
           .header("cache-control", "no-store")
           .header("etag", `"${stored.version}"`)
-          .send({ key, value: stored.value });
+          .send({ key, value: stored.value } satisfies DataGetResponse);
       } catch (err) {
         meter(ctx.entry.appId, identity, "user.get", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data getUser failed");
@@ -513,7 +521,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
           ctx.caller.env,
         );
         meter(ctx.entry.appId, identity, "user.list", "ok", ctx.caller.env);
-        await reply.header("cache-control", "no-store").send({ keys });
+        await reply.header("cache-control", "no-store").send({ keys } satisfies DataKeyList);
       } catch (err) {
         meter(ctx.entry.appId, identity, "user.list", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data listUser failed");
@@ -606,7 +614,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         await reply
           .header("cache-control", "no-store")
           .header("etag", `"${stored.version}"`)
-          .send({ key, value: stored.value });
+          .send({ key, value: stored.value } satisfies DataGetResponse);
       } catch (err) {
         meter(ctx.entry.appId, identity, "shared.get", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data getShared failed");
@@ -687,7 +695,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
             412,
             "conflict",
             "the value changed since your read — re-read and retry",
-            { currentVersion: result.currentVersion },
+            { currentVersion: result.currentVersion } satisfies DataConflictDetails,
           );
           return;
         }
@@ -695,7 +703,7 @@ export function makeDataHandlers(rt: DataGatewayRuntime) {
         await reply
           .header("cache-control", "no-store")
           .header("etag", `"${result.version}"`)
-          .send({ key, updatedAt: result.updatedAt });
+          .send({ key, updatedAt: result.updatedAt } satisfies DataPutResponse);
       } catch (err) {
         meter(ctx.entry.appId, identity, "shared.put", "error", ctx.caller.env);
         req.log.warn({ err }, "app-data putShared failed");

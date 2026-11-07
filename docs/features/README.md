@@ -33,6 +33,7 @@ See [the tour](../../TOUR.md) for the security boundaries and repository map.
 | [onboarding.md](./onboarding.md) | The in-app "How to develop" guide + the downloadable agent skill | `packages/deploy-skill`, `apps/portal-web` |
 | [dev-idp.md](./dev-idp.md) | The local OIDC issuer used in dev/test | `apps/dev-idp` |
 | [platform-settings.md](./platform-settings.md) | Operator identity on the anonymous pages, blocked app-name terms, the portal config view | `apps/portal`, `apps/edge`, `apps/portal-web` |
+| [openapi.md](./openapi.md) | The generated OpenAPI specs for the app and portal APIs, route contracts, and the checks that keep them in sync | `packages/shared`, `packages/openapi`, `apps/portal`, `apps/edge` |
 | [visitor-analytics.md](./visitor-analytics.md) | The owner's Visitors view: visits, unique visitors, approximate location | `apps/edge`, `apps/portal`, `apps/portal-web` |
 | [observability.md](./observability.md) | Logs, traces and metrics about the platform itself; the OTLP-only boundary | all three services, `packages/telemetry` |
 | [examples.md](./examples.md) | Reference apps you can `helix deploy` | `examples/` |
