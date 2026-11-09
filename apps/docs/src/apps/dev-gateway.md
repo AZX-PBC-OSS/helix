@@ -35,8 +35,46 @@ Point your calls at the dev gateway instead of `/_api/*`. Two things change:
 - the slug moves into the URL path;
 - the dev token replaces the session cookie.
 
-Everything else about the request is the same. Keep the base URL in one constant
-and switch it at build time:
+Everything else about the request is the same. The token is scoped to the dev
+partition and checked against the origins you registered; it cannot call the
+production partition or an unregistered origin.
+
+**With a dev server, relay `/_api/*` through the dev server.** This is the
+recommended pattern for local development. The dev server forwards `/_api/*` to
+the dev gateway and adds the `authorization` header itself, from an environment
+variable read on the server side. The token never lands in a bundle, and the
+app code calls `/_api/*` exactly as it will in production:
+
+```ts
+// vite.config.ts
+import { defineConfig, loadEnv } from "vite";
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), "");
+  return {
+    server: {
+      proxy: {
+        "/_api": {
+          target: "https://dev-api.example.com",
+          changeOrigin: true,
+          rewrite: (path) => `/<slug>${path}`,
+          headers: { authorization: `Bearer ${env.HELIX_DEV_TOKEN ?? ""}` },
+        },
+      },
+    },
+  };
+});
+```
+
+Put the token in `.env.local` as `HELIX_DEV_TOKEN` — no `VITE_` prefix. Vite
+only inlines `VITE_`-prefixed variables into bundles, so anything else stays on
+the dev-server side. **A `VITE_`-prefixed variable is inlined into every bundle
+that imports it, and a test runner that loads the same env file will route its
+tests at the dev gateway** — neither is what you want.
+
+Without a dev server — a **browser-based builder** — there is nothing to run a
+relay in, so the token has to reach the browser. Keep the base URL in one
+constant and switch it at build time:
 
 ```js
 const API = import.meta.env.DEV ? "https://dev-api.example.com/<slug>" : "";

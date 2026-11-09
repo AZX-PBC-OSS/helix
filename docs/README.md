@@ -48,3 +48,7 @@ implemented in `apps/jobs`; its operator procedures are in the public docs'
 candidate evidence. The [TaskQ review](design/background-jobs-taskq-refresh.md)
 is historical source evidence; the earlier background-jobs memo covers the
 deferred LLM pipeline.
+
+The [Helix app kit](design/helix-app-kit.md) is the package design behind
+ADR-0055: a proposed shared package, presets and one check command for hosted
+apps.
