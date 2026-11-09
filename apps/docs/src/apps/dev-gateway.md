@@ -58,13 +58,21 @@ export default defineConfig(({ mode }) => {
           target: "https://dev-api.example.com",
           changeOrigin: true,
           rewrite: (path) => `/<slug>${path}`,
-          headers: { authorization: `Bearer ${env.HELIX_DEV_TOKEN ?? ""}` },
+          headers: {
+            authorization: `Bearer ${env.HELIX_DEV_TOKEN ?? ""}`,
+            origin: "http://localhost:5173",
+          },
         },
       },
     },
   };
 });
 ```
+
+The dev gateway checks the `Origin` header against the origins you registered,
+and browsers send no `Origin` on a same-origin `GET`. The relay therefore sets
+it, so register your dev server's origin (here `http://localhost:5173`) on the
+**Dev mode** tab.
 
 Put the token in `.env.local` as `HELIX_DEV_TOKEN` — no `VITE_` prefix. Vite
 only inlines `VITE_`-prefixed variables into bundles, so anything else stays on

@@ -15,7 +15,7 @@ packages/helix-app/
   src/
     runtime/        gateway client, window.helix types, error mapping,
                     SessionExpiredError, TanStack Query defaults
-    presets/        tsconfig, eslint (the limits), prettier, knip,
+    presets/        tsconfig, lint (the limits), prettier, knip,
                     vitest unit (jsdom) and browser (Playwright)
     tools/          build, check-dist, csp smoke test, vite dev relay,
                     vite worker/worklet plugin
@@ -35,7 +35,7 @@ later stage cannot run without it (types before build). It always prints every
 failure it found and how to fix it:
 
 1. **types** — `tsc --noEmit` over the app's tsconfig.
-2. **lint** — the kit's ESLint preset, including the limits (ADR-0055,
+2. **lint** — the kit's lint preset, including the limits (ADR-0055,
    decision 4).
 3. **format** — Prettier check against the kit's Prettier preset.
 4. **knip** — unused files, exports and dependencies against the kit's knip

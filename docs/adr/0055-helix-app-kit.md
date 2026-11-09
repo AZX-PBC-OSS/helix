@@ -1,6 +1,6 @@
 # 0055. Helix app kit: a shared package, presets and one check command for hosted apps
 
-**Status:** Proposed (2026-11-09; from the Franklin team, for review by the Helix owners).
+**Status:** Proposed (2026-11-09; from AZX's app-factory concept work, for review by the Helix owners).
 
 **Related:** ADR [0032](0032-cli-naming-and-distribution.md) (public npm, trusted publishing — the precedent for a second published package), [0051](0051-repo-backed-apps-ci-push-github-oidc.md) (CI pushes the bundle; the deploy gate and its attestation), [0052](0052-evergreen-agent-skill-and-npx-cli.md) (docs are the reference; `/apps/` page URLs are stable), [0041](0041-app-data-write-concurrency.md) (compare-and-swap writes and the 412 retry the runtime wraps), [0035](0035-offline-capability-platform-service-worker.md) (the offline grant behind the redirect rule). **Design:** [`docs/design/helix-app-kit.md`](../design/helix-app-kit.md) (package layout, check stages, template tree, release path, scope).
 
@@ -21,8 +21,8 @@ configs. Inside this repo, three examples (`examples/asana-report`,
 changes, every copy has to be found and updated by hand, and nothing shows where
 a copy was missed.
 
-The decision to fix this with a shared kit was made by the Franklin team outside
-this repository. This ADR records it here so the Helix maintainers can review it
+The direction comes from AZX's app-factory concept work, which surveyed both
+apps. This ADR records it here so the Helix maintainers can review it
 in the normal place. Nothing described below exists yet; the package, the
 template and the command are all proposed.
 
@@ -42,16 +42,16 @@ template and the command are all proposed.
      401, 403, 429, and the `connection_required` error — to states an app can
      show the user instead of making each app re-derive them. It ships TanStack
      Query defaults that match the gateway's caching and error behaviour.
-   - **Presets.** A tsconfig base, an ESLint preset carrying the limits below,
+   - **Presets.** A tsconfig base, a lint preset carrying the limits below,
      Prettier, knip defaults, and Vitest presets — unit (jsdom) and browser
      (Playwright) — split by filename: `*.browser.test.*` runs in a browser,
      everything else runs in jsdom. The lint preset ships a self-test that
      proves each rule fires on a fixture, so a silent rule regression fails a
      test instead of quietly stopping linting.
    - **Build tools.** A `build` command; a `check-dist` command that inspects
-     the output, including the redirect-loop guard (a root `index.html` that
-     redirects to the app directory must not be served for a URL that already
-     resolves there); a CSP smoke test that loads the built app against the
+     the output, including the redirect-loop guard (the root `index.html` must
+     redirect to `/app/index.html`, never to `/app/`, which loops for an app
+     without the `offline` grant); a CSP smoke test that loads the built app against the
      real policy; a Vite dev relay that forwards `/_api/*` to the dev gateway
      and adds the `authorization` header server-side, keeping the dev token out
      of the bundle; and a Vite plugin that ships workers and worklets as
@@ -120,8 +120,8 @@ template and the command are all proposed.
   not import.
 - **The redirect-loop guard moves from app code into the kit.** Each app writes
   the root redirect; the kit's `check-dist` proves it cannot loop. Today no
-  check does this, and the failure mode (a redirect served for a URL that
-  already resolves into the app directory) is documented in
+  platform check does this, and the failure mode (a redirect to `/app/` falls
+  back to the root `index.html`, which redirects again) is documented in
   [`apps/docs/src/apps/serving-and-csp.md`](../../apps/docs/src/apps/serving-and-csp.md).
   Moving the guard into the kit is only an improvement for apps built from the
   template; hand-built apps keep today's position.
