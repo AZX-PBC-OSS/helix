@@ -129,7 +129,9 @@ wants docs && run_step "docs" pnpm --filter @azx-pbc/docs-site build
 # a second `--` and vitest never sees them, so the shard silently runs the whole
 # suite and the job still goes green. Verified — do not "fix" this to the `--`
 # form.
-wants test && run_step "tests" pnpm test "${TEST_ARGS[@]}"
+# `${TEST_ARGS[@]+"${TEST_ARGS[@]}"}` instead of plain "${TEST_ARGS[@]}": with
+# `set -u`, bash < 4.4 aborts on expanding an empty array as if it were unset.
+wants test && run_step "tests" pnpm test ${TEST_ARGS[@]+"${TEST_ARGS[@]}"}
 
 echo ""
 echo "────────────────────────────────────────"
