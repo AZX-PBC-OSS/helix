@@ -61,10 +61,19 @@ deployment's addresses, and where to look up everything else.
   other APIs through the platform: `fetch('/_api/fetch/https://api.example.com/…')`.
   The platform can inject a stored credential so no key reaches the browser. A
   direct browser call needs an approved `externalOrigins` grant.
-- **Everything dynamic goes through `/_api/*`** on your app's own origin: the LLM
-  (`POST /_api/llm/chat`, provider-neutral, so don't add a vendor SDK), app data
-  (`/_api/data/*`), and the fetch proxy. Each one needs a grant in the manifest.
-  An undeclared capability answers `403`. That is expected, not a bug.
+- **Everything dynamic goes through `/_api/*`** on your app's own origin: the LLM,
+  app data (`/_api/data/*`), and the fetch proxy. Each one needs a grant in the
+  manifest. An undeclared capability answers `403`. That is expected, not a bug.
+- **Call models through the OpenAI-compatible API, and only that.** Use the
+  official `openai` SDK with
+  `baseURL: location.origin + "/_api/openai/v1"`, `apiKey: "unused"` (the session
+  cookie authenticates) and `dangerouslyAllowBrowser: true`, or `fetch`
+  `/_api/openai/v1/chat/completions` directly. It serves every model the
+  deployment offers, Claude included. **Never use `POST /_api/llm/chat`**: it is a
+  legacy route kept for existing apps only. If you are changing an app that
+  calls it, move the app to `/_api/openai/v1`. Not every OpenAI feature is
+  served, and an unsupported one is refused with a `400`. Read the gateway
+  page's "Calling a language model" section before writing model code.
 - **Some grants wait for a human.** Outbound origins, OAuth providers, shared-data
   prefixes, `public` visibility, and budgets above the baseline queue for admin
   approval. Design for the wait, and never work around it by hardcoding a key.
@@ -145,6 +154,7 @@ correct for CI. Never add a Helix token to the repository's secrets.
       `externalOrigins` grant.
 - [ ] Every capability the code uses is declared in the manifest, within what
       `capabilities` reports.
+- [ ] Every model call goes to `/_api/openai/v1`, and none to `/_api/llm/chat`.
 - [ ] Gateway errors (`403`, `429`, `connection_required`) are shown to the user.
 - [ ] Shared writes use `If-Match` / `If-None-Match: *` and retry a bounded number of times on `412`.
 - [ ] Nothing user-specific or sensitive is in a `shared` key or the console.

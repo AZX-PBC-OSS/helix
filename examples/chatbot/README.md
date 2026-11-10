@@ -2,21 +2,22 @@
 
 A static chatbot that talks to Claude **through the AZX gateway**, not directly.
 It's the canonical exercise for the M4 LLM proxy: the app holds no vendor key,
-makes a same-origin `POST /_api/llm/chat`, and renders the streamed reply.
+makes a same-origin `POST /_api/openai/v1/chat/completions`, and renders the streamed reply.
 
-```
-browser ──POST /_api/llm/chat──▶ edge ──(injects key, checks allowlist+budget)──▶ Claude
-        ◀──────── SSE deltas ──────────────────── streamed back ──────────────────┘
+```text
+browser → edge /_api/openai/v1/chat/completions → egress → model provider
+        ← OpenAI chat completion chunks and [DONE] ← streamed reply
 ```
 
-- **No secrets in the bundle.** The edge holds the Anthropic key; the app sends
-  the platform's neutral request shape (`{ model, messages, stream }`).
-- **Session-gated.** `/_api/llm/chat` is behind the same session as the rest of
+- **No secrets in the bundle.** Egress injects the vendor key; the app sends
+  OpenAI-compatible requests with `model`, `messages`, `max_tokens`, and `stream`.
+  The model picker lists the app's allowlist from `/_api/openai/v1/models`.
+- **Session-gated.** `/_api/openai/v1/chat/completions` is behind the same session as the rest of
   the app; an unauthenticated fetch gets a 401 (the app prompts to sign in).
 - **Metered + allowlisted.** The model must be in the app's manifest
   `capabilities.llm.models`, and calls count against `dollarsPerDay`.
-- **JSON mode.** The "JSON mode" toggle sends a `responseFormat` (neutral surface)
-  / `response_format` (OpenAI surface) so the reply is schema-constrained JSON,
+- **JSON mode.** The "JSON mode" toggle sends `response_format` with a
+  `json_schema` so the reply is schema-constrained JSON,
   pretty-printed on arrival — see
   [structured output](../../docs/features/llm-gateway.md#structured-output). Needs a
   model that can enforce a schema (`claude-haiku-4-5`, `claude-opus-4-8`,
@@ -66,7 +67,7 @@ pnpm dev:egress
 pnpm dev:edge
 ```
 
-Without egress configured, `/_api/llm/chat` returns `503 capability_unavailable`
-(fail-closed — the edge has no direct-to-Anthropic path).
+Without egress configured, `/_api/openai/v1/chat/completions` returns `503`
+with OpenAI error type `api_error`. The edge has no direct-to-vendor path.
 
 Then open `https://chatbot.local.helix.azxlabs.io:8080`, sign in, and chat.

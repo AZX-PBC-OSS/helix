@@ -6,7 +6,7 @@ platform's three data capabilities at once:
 | Capability | Where |
 | ---------- | ----- |
 | **Delegated OAuth connections** (ADR-0031) | `window.helix.connect("asana")` consents inside a click; provider-bound `/_api/fetch` calls get the *user's* access token injected server-side; the boot-time status read (`GET /_api/connections/:ref/status`) picks the panel |
-| **LLM gateway** (`/_api/llm/chat`) | `gpt-5-nano` streams a markdown report from the activity digest — no key in the app |
+| **LLM gateway** (`/_api/openai/v1/chat/completions`) | `gpt-5-nano` streams a markdown report from the activity digest — no key in the app |
 | **Shared app-data** (ADR-0042 prefix grants + the list verb) | reports land at `report:<ts>-<rand>` keys; `GET /_api/data/shared?prefix=report:` lists them |
 
 **Reading reports requires no Asana connection** — anyone who passes the app's gate can list

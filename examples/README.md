@@ -15,7 +15,7 @@ exercises background jobs (ADR-0045).
 | -------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | [`hello-world`](./hello-world)   | The smallest deployable bundle: HTML + CSS + a line of JS.                                            |
 | [`notes`](./notes)               | A realistic self-contained SPA (localStorage), multiple asset types.                                  |
-| [`chatbot`](./chatbot)           | Streams Claude through the gateway (`/_api/llm/chat`) — no key in the app, manifest-granted, metered. |
+| [`chatbot`](./chatbot)           | Streams Claude through the gateway, using the OpenAI-compatible `/_api/openai/v1` — no key in the app, manifest-granted, metered. |
 | [`waitlist`](./waitlist)         | A **public** contact harvester: write-only collections + owner-seeded shared read (`/_api/data/*`).   |
 | [`oversell`](./oversell)         | Compare-and-swap shared writes (ADR-0041) and prefix grants + the list verb (ADR-0042): ETags, mandatory preconditions, a runtime-growing waitlist, one-click 412/428/403 probes.  |
 | [`github-stars`](./github-stars) | Fetches a public API **directly** — CSP-blocked until an admin approves the origin (the approval loop). |

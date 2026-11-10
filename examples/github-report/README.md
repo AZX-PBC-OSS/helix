@@ -7,7 +7,7 @@ GitHub **App** registration carries its fine-grained permissions on the app itse
 | Capability | Where |
 | ---------- | ----- |
 | **Delegated OAuth connections** (ADR-0031) | `window.helix.connect("github-readonly")` consents inside a click; provider-bound `/_api/fetch` calls get the *user's* access token injected server-side; the boot-time status read (`GET /_api/connections/:ref/status`) picks the panel |
-| **LLM gateway** (`/_api/llm/chat`) | `gpt-5-nano` streams a markdown report from the activity digest — no key in the app |
+| **LLM gateway** (`/_api/openai/v1/chat/completions`) | `gpt-5-nano` streams a markdown report from the activity digest — no key in the app |
 
 The sibling [`asana-report`](../asana-report) additionally exercises shared app-data by
 **saving** reports; this one deliberately doesn't — a report is generated, streamed, and

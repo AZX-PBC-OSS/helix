@@ -18,7 +18,7 @@ See [the tour](../../TOUR.md) for the security boundaries and repository map.
 | --- | --- | --- |
 | [edge-serving.md](./edge-serving.md) | Host routing, registry projection, Blob streaming, CSP, 404/410 | `apps/edge` |
 | [authentication.md](./authentication.md) | App-user OIDC flow, sessions, the per-request gate, portal bearer JWTs | `apps/edge`, `apps/portal` |
-| [llm-gateway.md](./llm-gateway.md) | `POST /_api/llm/chat` + the OpenAI-compatible surface — metered, allowlisted, key-hiding LLM proxy with structured output | `apps/edge` |
+| [llm-gateway.md](./llm-gateway.md) | The OpenAI-compatible surface (`/_api/openai/v1`, the recommended one) + the legacy `POST /_api/llm/chat` — metered, allowlisted, key-hiding LLM proxy with structured output | `apps/edge` |
 | [app-data-gateway.md](./app-data-gateway.md) | `/_api/data/*` user / collection / shared storage + owner drain | `apps/edge`, `apps/portal` |
 | [fetch-proxy.md](./fetch-proxy.md) | `/_api/fetch/<url>` — governed outbound HTTP via the `helix-egress` plane | `apps/edge`, `apps/egress` |
 | [background-jobs.md](./background-jobs.md) | `/_api/jobs/*` — durable, platform-authored jobs (`jobs:fetch`) with polling, retry keys, cancellation and retention | `apps/jobs`, `apps/edge`, `apps/portal` |

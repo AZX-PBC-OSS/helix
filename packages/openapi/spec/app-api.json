@@ -155,8 +155,8 @@
         "tags": [
           "LLM"
         ],
-        "summary": "Run a chat completion",
-        "description": "The platform's provider-neutral LLM call. `model` must be on the app's manifest allowlist; the edge routes it to the vendor that serves it and meters the call against the app's budget. The request must carry the app's own `Origin` (CSRF check).\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
+        "summary": "Run a chat completion (legacy)",
+        "description": "**Legacy: do not use in new code.** Call `POST /_api/openai/v1/chat/completions` instead; it serves the same models under the same policy, budget and metering, and existing callers of this route should move to it. The platform's provider-neutral LLM call. `model` must be on the app's manifest allowlist; the edge routes it to the vendor that serves it and meters the call against the app's budget. The request must carry the app's own `Origin` (CSRF check).\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
         "security": [
           {
             "session": []
@@ -474,7 +474,7 @@
           "OpenAI-compatible"
         ],
         "summary": "Create a chat completion (OpenAI-compatible)",
-        "description": "An OpenAI-compatible subset over the same policy, budget and metering as `/_api/llm/chat`. Point an OpenAI client's `baseURL` at `<app origin>/_api/openai/v1`; the session cookie authenticates, and the SDK's `apiKey` is ignored. Errors raised by this surface use OpenAI's error envelope; the session gate's 401 and the edge's 500 keep the platform's `ApiError` envelope.\n\nText chat only: tools, multimodal content, `json_object`, and the sampling parameters the platform cannot honor (`n`, `seed`, `logit_bias`, the penalties, `logprobs`) are refused with a 400 rather than dropped. The request must carry the app's own `Origin` (CSRF check).\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
+        "description": "The recommended way to call a model, for every model the deployment serves, Claude included. An OpenAI-compatible subset over the same policy, budget and metering as the legacy `/_api/llm/chat`. Point an OpenAI client's `baseURL` at `<app origin>/_api/openai/v1`; the session cookie authenticates, and the SDK's `apiKey` is ignored. Errors raised by this surface use OpenAI's error envelope; the session gate's 401, JSON body-parser errors, and the edge's 500 keep the platform's `ApiError` envelope. Routing failures may return plain text or HTML.\n\nText chat only: tools, multimodal content, `json_object`, and the sampling parameters the platform cannot honor (`n` other than 1, `seed`, `logit_bias`, the penalties, `logprobs`) are refused with a 400 rather than dropped. The request must carry the app's own `Origin` (CSRF check).\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
         "security": [
           {
             "session": []
@@ -952,7 +952,7 @@
           "OpenAI-compatible"
         ],
         "summary": "List the app's models (OpenAI-compatible)",
-        "description": "An OpenAI-compatible subset over the same policy, budget and metering as `/_api/llm/chat`. Point an OpenAI client's `baseURL` at `<app origin>/_api/openai/v1`; the session cookie authenticates, and the SDK's `apiKey` is ignored. Errors raised by this surface use OpenAI's error envelope; the session gate's 401 and the edge's 500 keep the platform's `ApiError` envelope.\n\nLists the models on the app's own allowlist, not the platform catalogue.\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
+        "description": "The recommended way to call a model, for every model the deployment serves, Claude included. An OpenAI-compatible subset over the same policy, budget and metering as the legacy `/_api/llm/chat`. Point an OpenAI client's `baseURL` at `<app origin>/_api/openai/v1`; the session cookie authenticates, and the SDK's `apiKey` is ignored. Errors raised by this surface use OpenAI's error envelope; the session gate's 401, JSON body-parser errors, and the edge's 500 keep the platform's `ApiError` envelope. Routing failures may return plain text or HTML.\n\nLists the models on the app's own allowlist, not the platform catalogue.\n\nPublic apps accept anonymous callers; every other visibility mode requires the app's session.",
         "security": [
           {
             "session": []

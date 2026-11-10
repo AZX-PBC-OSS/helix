@@ -200,7 +200,7 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
                   </List>
                   <Group gap={8} wrap="nowrap">
                     <Code style={{ flex: 1, overflowX: "auto", whiteSpace: "nowrap" }}>
-                      {devApiBase}/&lt;slug&gt;/_api/llm/chat
+                      {devApiBase}/&lt;slug&gt;/_api/openai/v1
                     </Code>
                     <CopyBtn value={`${devApiBase}/`} label="Copy base" />
                   </Group>
@@ -264,7 +264,8 @@ export function HelpModal({ opened, onClose }: { opened: boolean; onClose: () =>
               <Code>hello-world</Code> — the smallest thing that deploys.
             </List.Item>
             <List.Item>
-              <Code>chatbot</Code> — streams a model through <Code>/_api/llm/chat</Code>.
+              <Code>chatbot</Code> — streams a model through the OpenAI-compatible{" "}
+              <Code>/_api/openai/v1</Code> API.
             </List.Item>
             <List.Item>
               <Code>waitlist</Code> — a public form writing to a write-only collection.

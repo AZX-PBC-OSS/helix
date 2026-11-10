@@ -9,7 +9,7 @@ import "./style.css";
  *     access token injected server-side (the app never sees it). The boot-time
  *     `GET /_api/connections/:ref/status` read decides which panel to show —
  *     a connected banner or a Connect CTA — without firing a wasted API call.
- *   - **LLM gateway** — `POST /_api/llm/chat` streams a report from the
+ *   - **LLM gateway** — `POST /_api/openai/v1/chat/completions` streams a report from the
  *     activity digest; the model allowlist lives in the manifest.
  *   - **Shared app-data** — finished reports land at `report:<ts>-<rand>` keys,
  *     listable and readable by anyone who passes the app's gate. Reading needs
@@ -258,8 +258,7 @@ const REPORT_SYSTEM_PROMPT = [
 
 /**
  * Split an SSE body into records (blank-line separated) and hand each to `onRecord`.
- * The gateway's native surface frames replies as `event: delta` `{text}` records,
- * then `event: done` (or `event: error`).
+ * The gateway sends OpenAI chat completion chunks followed by `[DONE]`.
  */
 async function readSse(body: ReadableStream<Uint8Array>, onRecord: (record: string) => void): Promise<void> {
   const reader = body.getReader();
@@ -281,13 +280,16 @@ async function generateReportMarkdown(
   digest: Record<string, unknown>,
   onDelta: (text: string) => void,
 ): Promise<string> {
-  const res = await fetch("/_api/llm/chat", {
+  const res = await fetch("/_api/openai/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       model: MODEL,
-      system: REPORT_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: JSON.stringify(digest) }],
+      messages: [
+        { role: "system", content: REPORT_SYSTEM_PROMPT },
+        { role: "user", content: JSON.stringify(digest) },
+      ],
+      max_tokens: 4096,
       stream: true,
     }),
   });
@@ -297,28 +299,39 @@ async function generateReportMarkdown(
   }
 
   let accumulated = "";
-  let stopReason = "";
+  let finishReason = "";
+  let completed = false;
   await readSse(res.body, (record) => {
-    let event = "message";
     const dataLines: string[] = [];
     for (const line of record.split("\n")) {
-      if (line.startsWith("event:")) event = line.slice(6).trim();
       if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
     }
-    if (!dataLines.length) return;
-    const parsed = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
-    if (event === "delta") {
-      const text = String(parsed.text ?? "");
+    const data = dataLines.join("\n");
+    if (!data) return;
+    if (data === "[DONE]") {
+      completed = true;
+      return;
+    }
+    const parsed = JSON.parse(data) as {
+      choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
+      error?: { message?: string };
+    };
+    if (parsed.error) throw new Error(parsed.error.message ?? "stream error");
+    for (const choice of parsed.choices ?? []) {
+      const text = choice.delta?.content ?? "";
       accumulated += text;
-      onDelta(text);
-    } else if (event === "done") {
-      stopReason = String(parsed.stopReason ?? "");
-    } else if (event === "error") {
-      throw new Error(String(parsed.message ?? "stream error"));
+      if (text) onDelta(text);
+      if (choice.finish_reason) finishReason = choice.finish_reason;
     }
   });
-  if (stopReason.includes("max_tokens")) {
+  if (finishReason === "length") {
     throw new Error("the report was cut short by the model's output cap — try a shorter range");
+  }
+  if (finishReason === "content_filter") {
+    throw new Error("the model declined to generate this report");
+  }
+  if (!completed || !accumulated.trim()) {
+    throw new Error("the report stream ended without a complete answer — try again");
   }
   return accumulated;
 }

@@ -376,7 +376,7 @@ async function send(text: string): Promise<void> {
     const res = await fetch("/_api/openai/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, messages: outgoing, stream: true }),
+      body: JSON.stringify({ model, messages: outgoing, max_tokens: 4096, stream: true }),
     });
 
     if (!res.ok || !res.body) {

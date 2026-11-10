@@ -50,7 +50,7 @@ and sets a host-only session cookie. Apps do not implement sign-in or hold API k
 
 ```text
 browser → edge (auth, CSP) → Blob (static assets)
-browser → edge /_api/llm/chat → egress → LLM vendor
+browser → edge /_api/openai/v1/chat/completions → egress → LLM vendor
 browser → edge /_api/fetch/<url> → egress → third-party API
 browser → edge /_api/data/* → Postgres (scoped app data)
 ```

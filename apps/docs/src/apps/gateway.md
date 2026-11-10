@@ -43,75 +43,147 @@ check whether the network is back. See [Offline](./serving-and-csp#offline).
 
 ## Calling a language model
 
-`POST /_api/llm/chat` sends a chat to the platform's model provider. The API is
-provider-neutral, so don't add a vendor SDK.
+Call models through the **OpenAI-compatible API** at `/_api/openai/v1`. It
+speaks the OpenAI Chat Completions format, so the official `openai` SDK works
+with only a base-URL change. It serves **every** model your deployment offers,
+Claude models included. The model id picks the vendor, not the API you call.
 
 ```js
-const res = await fetch("/_api/llm/chat", {
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: `${location.origin}/_api/openai/v1`,
+  apiKey: "unused", // ignored: the session cookie authenticates. Never put a real key here
+  dangerouslyAllowBrowser: true, // safe here: there is no key to leak
+});
+
+const stream = await client.chat.completions.create({
+  model: "claude-haiku-4-5", // must be in the manifest's llm.models
+  messages: [
+    { role: "system", content: "You are terse." },
+    { role: "user", content: "hello" },
+  ],
+  max_tokens: 1024,
+  stream: true,
+});
+for await (const chunk of stream) {
+  output.textContent += chunk.choices[0]?.delta?.content ?? "";
+}
+```
+
+You don't need the SDK. A plain `fetch` to the same endpoint works too:
+
+```js
+const res = await fetch("/_api/openai/v1/chat/completions", {
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify({
-    model: "claude-haiku-4-5", // must be in the manifest's llm.models
-    system: "You are terse.", // top-level, NOT a message with role "system"
-    messages: [{ role: "user", content: "hello" }], // roles: user | assistant
-    maxTokens: 1024, // default 1024
-    stream: true, // default true
+    model: "claude-haiku-4-5",
+    messages: [{ role: "user", content: "hello" }],
+    max_tokens: 1024,
   }),
 });
+const body = await res.json();
+if (!res.ok) throw new Error(body.error?.message ?? `Request failed (${res.status})`);
+const reply = body.choices[0].message.content;
 ```
 
-`helix capabilities` lists the models your deployment serves. Choose the
-cheapest one that does the job. A small, fast model is usually right for
-classification, extraction, and short text. The operator chooses whether calls
-go to first-party vendors or Azure AI Foundry; the model ids and the request
-format are the same either way.
+::: warning Use this API, not `/_api/llm/chat`
+The platform's older provider-neutral route, `POST /_api/llm/chat`, still works
+so that existing apps keep running. Don't use it in new code, and move existing
+apps off it when you next change them. See
+[Legacy: `/_api/llm/chat`](#legacy-llm-chat).
+:::
+
+`GET /_api/openai/v1/models` lists the models this app may call, which is the
+manifest's allowlist. `helix capabilities` lists every model the deployment
+serves. Choose the cheapest one that does the job: a small, fast model is
+usually right for classification, extraction, and short text. The operator
+chooses whether calls go to first-party vendors or Azure AI Foundry. The model
+ids and the request format are the same either way.
 
 Every call is priced and counted against the app's daily USD budget
 (`llm.dollarsPerDay`). Once the budget is spent, new calls are refused and calls
 already running finish.
 
+**Set an output budget with `max_tokens` or `max_completion_tokens`.** If
+both are supplied, `max_completion_tokens` wins. Without either, Claude gets
+1024 tokens and non-reasoning OpenAI models use their own maximum. For
+reasoning models, including GPT-5 and later, the gateway applies the model's
+configured minimum completion budget even if you request less. That budget
+covers reasoning and visible output together; it is currently 25,000 tokens.
+
+### What is supported
+
+The API covers **text chat and structured output**:
+
+- `system` and `developer` messages. Both become the model's system prompt.
+- `temperature`, `top_p`, `stop`, `stream`, and
+  `stream_options.include_usage`.
+- `response_format` with `json_schema`. See [Structured output](#structured-output).
+
+The following unsupported features are **refused with a `400`**, and
+`error.param` names the field: tools and function calling, image or other
+array `content`, `n` other than `1`, `seed`, `logit_bias`, `presence_penalty`,
+`frequency_penalty`, `logprobs`, `top_logprobs`, and
+`response_format: { type: "json_object" }`. Explicit defaults are accepted:
+`n: 1`, `tool_choice: "none"`, an empty `tools` list, and
+`response_format: { type: "text" }`. Unknown fields are stripped; don't rely
+on features beyond the supported subset.
+
+Errors use OpenAI's envelope, so the SDK throws its usual typed errors. See
+[On the OpenAI-compatible API](./errors#on-the-openai-compatible-api).
+
 ### Streaming
 
-With `stream: true` (the default), the response is server-sent events:
+With `stream: true`, the response is OpenAI-style server-sent events. Each
+`data:` line is a `chat.completion.chunk`, the last chunk carries
+`finish_reason`, and the stream ends with `data: [DONE]`. The SDK parses this
+for you. With `stream_options: { include_usage: true }`, one more chunk with an
+empty `choices` array carries the token `usage`.
 
-```
-event: delta   data: {"text":"..."}                       zero or more
-event: done    data: {"stopReason":"...","usage":{...}}   terminal, success
-event: error   data: {"code":"...","message":"..."}       terminal, failure
-```
+If the call fails before the first chunk, you get a normal HTTP error status.
+If it fails mid-stream, the stream ends with an error object instead of
+`[DONE]`, and the SDK throws.
 
-`EventSource` can't send a POST, so read the stream from the `fetch` response
-body. With `stream: false` you get a single JSON body:
-`{ model, content, stopReason, usage }`.
+Without `stream`, the default is `false`, and you get a single
+`chat.completion` body.
 
 ### Structured output
 
-Add `responseFormat` to get JSON that matches a schema:
+Add `response_format` to get JSON that matches a schema:
 
 ```js
-body: JSON.stringify({
+const res = await client.chat.completions.create({
   model: "claude-haiku-4-5",
   messages: [{ role: "user", content: "Rome, 3 days" }],
-  maxTokens: 4096, // leave room for the JSON
-  stream: false,
-  responseFormat: {
+  max_tokens: 4096, // leave room for the JSON
+  response_format: {
     type: "json_schema", // the only mode
-    name: "itinerary", // optional, [A-Za-z0-9_-]{1,64}
-    schema: {
-      type: "object", // the root must be an object
-      properties: { days: { type: "array", items: { type: "string" } } },
-      required: ["days"],
-      additionalProperties: false, // required
+    json_schema: {
+      name: "itinerary", // [A-Za-z0-9_-]{1,64}
+      schema: {
+        type: "object", // the root must be an object
+        properties: { days: { type: "array", items: { type: "string" } } },
+        required: ["days"],
+        additionalProperties: false, // required
+      },
     },
   },
 });
+
+const choice = res.choices[0];
+if (choice.finish_reason !== "stop") throw new Error(`Reply ended: ${choice.finish_reason}`);
+if (!choice.message.content) throw new Error("The model returned no content");
+const itinerary = JSON.parse(choice.message.content);
 ```
 
-The JSON comes back as ordinary `content`, or as `delta` frames when streaming.
-Call `JSON.parse` on it yourself.
+The JSON comes back as ordinary `content`, or in `delta.content` when
+streaming. Call `JSON.parse` on it yourself.
 
-The schema is always **enforced**; there is no best-effort mode. It must stay
-within the strict subset:
+The schema is always **enforced**; there is no best-effort mode. `strict` is
+accepted and ignored, and `json_schema.description` is refused. The schema must
+stay within the strict subset:
 
 - every property is listed in `required`;
 - `additionalProperties: false`;
@@ -119,21 +191,45 @@ within the strict subset:
 - no `minLength`, `minimum`, or similar constraints;
 - under 32 KB and 12 levels deep.
 
-If the response is `400 validation_failed` and mentions
-`responseFormat.schema`, the provider rejected the schema. Fix it; retrying the
-same schema won't help.
+If the response is a `400` whose `error.param` names
+`response_format.json_schema.schema`, the provider rejected the schema. Fix it;
+retrying the same schema won't help.
 
-**Set `maxTokens` generously, and check `stopReason` before parsing.** Prose
-that hits the token limit is merely cut short. JSON that hits it can't be
-parsed, so `JSON.parse` throws. Check that `stopReason` is not `"max_tokens"`,
-in the response body or the `done` frame, before parsing.
+**Set `max_tokens` generously, and check `finish_reason` before parsing.**
+Prose that hits the token limit is merely cut short. JSON that hits it can't be
+parsed, so `JSON.parse` throws. Check that `finish_reason` is not `"length"`
+before parsing. A `"content_filter"` finish means the model refused the request.
 
 Not every model can enforce a schema. Asking one that can't returns `400`;
 those models still work for plain text.
 
-- **Can enforce a schema:** `claude-haiku-4-5`, `claude-opus-4-8`,
-  `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`, `claude-fable-5-1`.
+- **Can enforce a schema:** every `gpt-*` model, `claude-haiku-4-5`,
+  `claude-opus-4-8`, `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5`,
+  `claude-fable-5-1`.
 - **Cannot:** `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`.
+
+### Legacy: `/_api/llm/chat` {#legacy-llm-chat}
+
+`POST /_api/llm/chat` is the platform's original, provider-neutral LLM route.
+It runs the same model allowlist, budget, and metering as the OpenAI-compatible
+API, and apps that already call it keep working. **New code should not use
+it.** When you next change an app that does, move it to
+`/_api/openai/v1/chat/completions`. The two map one to one:
+
+| `/_api/llm/chat` | `/_api/openai/v1/chat/completions` |
+| --- | --- |
+| top-level `system` | a `{ role: "system" }` message |
+| `maxTokens` | `max_tokens` or `max_completion_tokens` (same model-specific defaults) |
+| `stream` defaults to `true` | `stream` defaults to `false` |
+| `event: delta` → `{ text }` | `choices[0].delta.content` |
+| `event: done` → `{ stopReason, usage }` | the last chunk's `finish_reason`; `usage` with `stream_options.include_usage` |
+| `stopReason: "max_tokens"` | `finish_reason: "length"` |
+| `stopReason: "refusal"` | `finish_reason: "content_filter"` |
+| `{ model, content, stopReason, usage }` | `choices[0].message.content`, `choices[0].finish_reason`, `usage` |
+| `responseFormat: { type, name, schema }` | `response_format: { type: "json_schema", json_schema: { name, schema } }` |
+| platform errors (`{ error: { code, message } }`) | OpenAI errors (`{ error: { message, type, param, code } }`) |
+
+The legacy route's schemas are still in the [app API reference](./api-reference).
 
 ## Storing data
 

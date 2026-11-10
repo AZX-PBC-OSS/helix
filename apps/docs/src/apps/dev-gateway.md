@@ -41,13 +41,24 @@ and switch it at build time:
 ```js
 const API = import.meta.env.DEV ? "https://dev-api.example.com/<slug>" : "";
 
-await fetch(`${API}/_api/llm/chat`, {
-  method: "POST",
+await fetch(`${API}/_api/data/user/settings`, {
   headers: {
-    "content-type": "application/json",
     ...(API && { authorization: `Bearer ${import.meta.env.VITE_HELIX_DEV_TOKEN}` }),
   },
-  body: JSON.stringify({ model: "claude-haiku-4-5", messages: [{ role: "user", content: "hi" }] }),
+});
+```
+
+For language models, the OpenAI SDK sends its `apiKey` as exactly that bearer
+header, so the dev token goes in `apiKey`. In production the key is ignored and
+the session cookie authenticates:
+
+```js
+import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: `${API || location.origin}/_api/openai/v1`,
+  apiKey: API ? import.meta.env.VITE_HELIX_DEV_TOKEN : "unused",
+  dangerouslyAllowBrowser: true,
 });
 ```
 

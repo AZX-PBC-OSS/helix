@@ -22,11 +22,13 @@ function openAiError(description: string): ResponseSpec {
 }
 
 const COMPAT =
-  "An OpenAI-compatible subset over the same policy, budget and metering as `/_api/llm/chat`. " +
+  "The recommended way to call a model, for every model the deployment serves, Claude " +
+  "included. An OpenAI-compatible subset over the same policy, budget and metering as the " +
+  "legacy `/_api/llm/chat`. " +
   "Point an OpenAI client's `baseURL` at `<app origin>/_api/openai/v1`; the session cookie " +
   "authenticates, and the SDK's `apiKey` is ignored. Errors raised by this surface use " +
-  "OpenAI's error envelope; the session gate's 401 and the edge's 500 keep the platform's " +
-  "`ApiError` envelope.";
+  "OpenAI's error envelope; the session gate's 401, JSON body-parser errors, and the edge's 500 keep " +
+  "the platform's `ApiError` envelope. Routing failures may return plain text or HTML.";
 
 const CHUNK_STREAM =
   "Sent when `stream` is true. Each event is a `data:` line holding one " +
@@ -44,7 +46,7 @@ export const createOpenAiChatCompletion = appRoute({
   summary: "Create a chat completion (OpenAI-compatible)",
   description:
     `${COMPAT}\n\nText chat only: tools, multimodal content, \`json_object\`, and the ` +
-    "sampling parameters the platform cannot honor (`n`, `seed`, `logit_bias`, the " +
+    "sampling parameters the platform cannot honor (`n` other than 1, `seed`, `logit_bias`, the " +
     "penalties, `logprobs`) are refused with a 400 rather than dropped. The request must " +
     "carry the app's own `Origin` (CSRF check).",
   externalDocs,

@@ -2,6 +2,12 @@
 
 > **Related ADRs:** [ADR-0008](../adr/0008-llm-key-via-egress.md) (LLM key via egress) · [ADR-0021](../adr/0021-metering-ledger.md) (metering ledger) · [ADR-0014](../adr/0014-same-origin-api-gateway.md) (same-origin API gateway) · [ADR-0033](../adr/0033-openai-compatible-gateway-surface.md) (OpenAI-compatible surface + multi-provider routing) · [ADR-0034](../adr/0034-structured-output-on-the-llm-gateway.md) (structured output).
 
+> **For app authors: use the [OpenAI-compatible surface](#openai-compatible-surface)
+> (`/_api/openai/v1`).** It serves every model, Claude included. `POST /_api/llm/chat` is the
+> legacy route: it stays served so existing apps keep working, but the public docs and the deploy
+> skill steer all new code away from it, and existing callers should migrate. The policy,
+> metering and provider sections below apply to both, since they share one handler.
+
 `POST /_api/llm/chat` sends a language-model request through the platform.
 The edge resolves the caller, checks the request origin and app's model allowlist,
 enforces its daily budget, and records usage. Egress supplies the vendor
@@ -150,15 +156,16 @@ await client.chat.completions.create({ model: "claude-opus-4-8", messages, strea
   `[DONE]` (or a single `chat.completion`). Errors are OpenAI-shaped (`{error:{message,type,...}}`).
 - **Scope: text chat + structured output.** `tools` (a non-empty list), an affirmative `tool_choice`,
   `role:"tool"`, multimodal (array) content, and the behaviour-changing sampling params
-  (`seed`, `n`, `logit_bias`, `presence_penalty`, `frequency_penalty`, `logprobs`,
+  (`seed`, `n` other than `1`, `logit_bias`, `presence_penalty`, `frequency_penalty`, `logprobs`,
   `top_logprobs`) are rejected with a clear `400` (naming the field in `error.param`) — never silently
   dropped. Opting *out* of tools (`tool_choice:"none"`, empty `tools:[]`) is served. `system`/
   `developer` messages are hoisted into the neutral top-level `system`; `temperature`, `top_p`, and
   `stop` are forwarded to the vendor. `response_format` **is** served — see
   [Structured output](#structured-output) below.
 - **`max_tokens` follows OpenAI convention.** Omit it and the model's own maximum applies (not a
-  forced default) — `max_tokens`/`max_completion_tokens` → the neutral optional `maxTokens`, and the
-  OpenAI body builder omits the upstream cap when it's unset. o-series reasoning models instead take
+  forced default) on non-reasoning OpenAI models; Claude defaults to 1024.
+  `max_tokens`/`max_completion_tokens` → the neutral optional `maxTokens`.
+  Reasoning models (o-series and GPT-5 onward) instead take
   `max_completion_tokens`, **floored** (catalog `minCompletionTokens`, ~25k) so reasoning tokens can't
   starve visible output and leave a billed-empty answer.
 

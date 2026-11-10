@@ -48,7 +48,7 @@ In the portal **Dev mode** tab:
 Point your app's Helix calls at the dev-gateway and send the token as a bearer. The app slug is in the **path** (the host is fixed):
 
 ```
-POST   https://dev-api.local.helix.azxlabs.io:8082/<slug>/_api/llm/chat
+POST   https://dev-api.local.helix.azxlabs.io:8082/<slug>/_api/openai/v1/chat/completions
 GET/PUT/DELETE  …:8082/<slug>/_api/data/user/<key>
 POST   …:8082/<slug>/_api/data/collections/<name>
 GET/PUT …:8082/<slug>/_api/data/shared/<key>

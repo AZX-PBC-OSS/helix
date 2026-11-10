@@ -88,7 +88,7 @@ export function DevModeTab({ app }: { app: App }) {
       </Text>
 
       {/* The dev-gateway base URL — not a secret, so shown persistently (the app
-          slug is in the path, the host is fixed). Append /_api/llm/chat,
+          slug is in the path, the host is fixed). Append /_api/openai/v1,
           /_api/data/*, /_api/fetch/<url>.
 
           The dev gateway is an opt-in deployment (deployDevGateway in the Bicep),
@@ -98,9 +98,10 @@ export function DevModeTab({ app }: { app: App }) {
       {devApiBase ? (
         <>
           <Text size="xs" c="dark.2" mb={6} lh={1.5}>
-            Point your app's Helix calls here (append <Code>/_api/llm/chat</Code>,{" "}
+            Point your app's Helix calls here (append <Code>/_api/openai/v1</Code>,{" "}
             <Code>/_api/data/…</Code>, <Code>/_api/fetch/…</Code>) and send your dev token as a
-            bearer.
+            bearer. With the OpenAI SDK, use <Code>{"<base>/_api/openai/v1"}</Code> as its{" "}
+            <Code>baseURL</Code> and the token as its <Code>apiKey</Code>.
           </Text>
           <Group gap={8} wrap="nowrap" mb={18}>
             <Code style={{ flex: 1, overflowX: "auto", whiteSpace: "nowrap" }}>{devApiBase}</Code>

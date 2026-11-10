@@ -2,26 +2,14 @@ import "./style.css";
 
 /**
  * A static chatbot that calls an LLM through the AZX gateway. There is no API
- * key in this code: the app POSTs to a same-origin gateway path, and the edge
- * injects the vendor key, enforces the app's model allowlist + budget, and
- * streams the reply back. The session cookie rides along automatically.
+ * key in this code: the app POSTs to a same-origin gateway path. The edge
+ * enforces the app's model allowlist and budget, and egress injects the vendor
+ * key. The gateway streams the reply back. The session cookie rides along automatically.
  *
- * It exercises BOTH gateway surfaces to show they are the same policy/metering
- * spine with a different wire format:
- *   - **Agnostic** — `POST /_api/llm/chat`, the platform's neutral shape, named-
- *     event SSE (`event: delta`).
- *   - **OpenAI** — `POST /_api/openai/v1/chat/completions`, the OpenAI wire, with
- *     `chat.completion.chunk` frames + `[DONE]`.
- * The model (a `claude-*` or `gpt-*`/`o*` id) routes to its vendor independently
- * of which surface you pick — the model list comes from the app's own allowlist
- * via `GET /_api/openai/v1/models`.
+ * Models use the OpenAI-compatible chat/completions format. The model id
+ * selects the vendor; the picker lists the app's allowlisted models from
+ * `GET /_api/openai/v1/models`.
  */
-
-const ENDPOINTS = {
-  native: { label: "Agnostic — /_api/llm/chat", url: "/_api/llm/chat" },
-  openai: { label: "OpenAI — /_api/openai/v1", url: "/_api/openai/v1/chat/completions" },
-} as const;
-type EndpointKey = keyof typeof ENDPOINTS;
 
 type Role = "user" | "assistant";
 interface Message {
@@ -34,7 +22,6 @@ const form = document.querySelector<HTMLFormElement>("#chat-form")!;
 const input = document.querySelector<HTMLInputElement>("#chat-input")!;
 const sendBtn = document.querySelector<HTMLButtonElement>("#send")!;
 const whoamiEl = document.querySelector<HTMLParagraphElement>("#whoami")!;
-const endpointSel = document.querySelector<HTMLSelectElement>("#endpoint")!;
 const modelSel = document.querySelector<HTMLSelectElement>("#model")!;
 const jsonModeEl = document.querySelector<HTMLInputElement>("#json-mode")!;
 const schemaBoxEl = document.querySelector<HTMLDivElement>("#schema-box")!;
@@ -42,11 +29,6 @@ const schemaEl = document.querySelector<HTMLTextAreaElement>("#schema")!;
 const schemaStatusEl = document.querySelector<HTMLParagraphElement>("#schema-status")!;
 
 const history: Message[] = [];
-
-let endpoint: EndpointKey = "native";
-endpointSel.addEventListener("change", () => {
-  endpoint = endpointSel.value as EndpointKey;
-});
 
 /** Append a bubble and return its content node so streaming can grow it. */
 function addBubble(role: Role | "error", text = ""): HTMLElement {
@@ -144,39 +126,29 @@ function dataOf(record: string): string {
   return lines.join("\n");
 }
 
-/** Native surface: `event: delta` records carry `{ text }`; `event: error` throws. */
-function nativeRecord(record: string, onDelta: (text: string) => void): void {
-  let event = "message";
-  for (const line of record.split("\n")) {
-    if (line.startsWith("event:")) event = line.slice(6).trim();
-  }
-  const data = dataOf(record);
-  if (!data) return;
-  const parsed = JSON.parse(data) as Record<string, unknown>;
-  if (event === "delta") onDelta(String(parsed.text ?? ""));
-  else if (event === "error") throw new Error(String(parsed.message ?? "stream error"));
-}
-
 /** OpenAI surface: `data: {chunk}` frames; `[DONE]` ends; an `error` object throws. */
-function openAiRecord(record: string, onDelta: (text: string) => void): void {
+function openAiRecord(record: string, onDelta: (text: string) => void): boolean {
   const data = dataOf(record);
-  if (!data || data === "[DONE]") return;
+  if (data === "[DONE]") return true;
+  if (!data) return false;
   const parsed = JSON.parse(data) as {
-    choices?: Array<{ delta?: { content?: string } }>;
+    choices?: Array<{ delta?: { content?: string }; finish_reason?: string | null }>;
     error?: { message?: string };
   };
   if (parsed.error) throw new Error(parsed.error.message ?? "stream error");
   for (const choice of parsed.choices ?? []) {
     if (choice.delta?.content) onDelta(choice.delta.content);
+    if (choice.finish_reason === "length") {
+      throw new Error("The reply was cut short by the model's output cap. Try a shorter request.");
+    }
+    if (choice.finish_reason === "content_filter") {
+      throw new Error("The model declined to answer this request.");
+    }
   }
+  return false;
 }
 
-/**
- * "JSON mode" (ADR-0034): constrain the reply to a schema. The same intent is
- * spelled differently on each surface — neutral `responseFormat` vs OpenAI's
- * `response_format` — and either way the JSON arrives through the ordinary delta
- * frames, so the SSE readers above need no special case.
- */
+/** Schema-constrained JSON arrives through the same text deltas as a prose reply. */
 const DEFAULT_SCHEMA = {
   type: "object",
   properties: {
@@ -201,19 +173,16 @@ function currentSchema(): Record<string, unknown> | null {
   }
 }
 
-function jsonModeBody(surface: EndpointKey): Record<string, unknown> | null {
+function jsonModeBody(): Record<string, unknown> | null {
   if (!jsonModeEl.checked) return {};
   const schema = currentSchema();
   if (!schema) return null; // don't spend a call on a body we know is malformed
-  // The gateway always enforces, so neither shape carries a `strict` flag.
-  return surface === "openai"
-    ? {
-        response_format: {
-          type: "json_schema",
-          json_schema: { name: "answer", schema },
-        },
-      }
-    : { responseFormat: { type: "json_schema", name: "answer", schema } };
+  return {
+    response_format: {
+      type: "json_schema",
+      json_schema: { name: "answer", schema },
+    },
+  };
 }
 
 schemaEl.value = JSON.stringify(DEFAULT_SCHEMA, null, 2);
@@ -240,7 +209,7 @@ async function send(text: string): Promise<void> {
     return;
   }
 
-  const jsonBody = jsonModeBody(endpoint);
+  const jsonBody = jsonModeBody();
   if (jsonBody === null) {
     addBubble("error", "Fix the response schema — it isn't valid JSON.");
     return;
@@ -255,24 +224,23 @@ async function send(text: string): Promise<void> {
 
   const reply = addBubble("assistant");
   let accumulated = "";
-  const ep = ENDPOINTS[endpoint];
-  const parseRecord = endpoint === "openai" ? openAiRecord : nativeRecord;
+  let completed = false;
 
   try {
-    const res = await fetch(ep.url, {
+    const res = await fetch("/_api/openai/v1/chat/completions", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         model,
         messages: outgoing,
+        max_tokens: 4096,
         stream: true,
         ...jsonBody,
       }),
     });
 
     if (!res.ok || !res.body) {
-      // Both surfaces put a human message at `error.message`; a 401 is the
-      // session gate (same on either surface), regardless of body shape.
+      // The session gate can return a 401 before the OpenAI handler runs.
       const err = (await res.json().catch(() => null)) as
         | { error?: { code?: string; message?: string } }
         | null;
@@ -284,13 +252,15 @@ async function send(text: string): Promise<void> {
       return;
     }
 
-    await readSse(res.body, (record) =>
-      parseRecord(record, (delta) => {
+    await readSse(res.body, (record) => {
+      const done = openAiRecord(record, (delta) => {
         accumulated += delta;
         reply.textContent = accumulated;
         reply.parentElement?.scrollIntoView({ block: "end" });
-      }),
-    );
+      });
+      completed ||= done;
+    });
+    if (!completed) throw new Error("The stream ended before the reply was complete. Try again.");
     if (accumulated) {
       // Re-render prettified once complete (partial JSON can't be parsed mid-stream).
       // History keeps the model's raw text — prettifying is display-only.

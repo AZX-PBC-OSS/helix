@@ -32,8 +32,11 @@ export const llmChat = appRoute({
   method: "POST",
   path: "/_api/llm/chat",
   tags,
-  summary: "Run a chat completion",
+  summary: "Run a chat completion (legacy)",
   description:
+    "**Legacy: do not use in new code.** Call `POST /_api/openai/v1/chat/completions` " +
+    "instead; it serves the same models under the same policy, budget and metering, and " +
+    "existing callers of this route should move to it. " +
     "The platform's provider-neutral LLM call. `model` must be on the app's manifest " +
     "allowlist; the edge routes it to the vendor that serves it and meters the call against " +
     "the app's budget. The request must carry the app's own `Origin` (CSRF check).",

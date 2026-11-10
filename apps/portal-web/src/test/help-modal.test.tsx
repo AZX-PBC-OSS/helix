@@ -139,7 +139,7 @@ describe("HelpModal", () => {
 
     expect(await screen.findByText("https://<slug>.apps.example.com")).toBeDefined();
     expect(
-      await screen.findByText("https://dev-api.apps.example.com/<slug>/_api/llm/chat"),
+      await screen.findByText("https://dev-api.apps.example.com/<slug>/_api/openai/v1"),
     ).toBeDefined();
   });
 

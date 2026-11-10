@@ -54,8 +54,10 @@ at `/`.
 
 As you write the code:
 
-- Call models with `POST /_api/llm/chat`. It is provider-neutral, so don't add
-  a vendor SDK. See [Calling a language model](./gateway#calling-a-language-model).
+- Call models through the OpenAI-compatible API at `/_api/openai/v1`: the
+  `openai` SDK with `baseURL` set to it, or a plain `fetch`. It serves Claude
+  models too. Don't use the legacy `/_api/llm/chat` route in new code. See
+  [Calling a language model](./gateway#calling-a-language-model).
 - Store data with `/_api/data/*`. Per-user state goes in the `user` scope.
   Shared writes use compare-and-swap. See [Storing data](./gateway#storing-data).
 - Call other APIs with `fetch('/_api/fetch/https://api.example.com/…')`. See

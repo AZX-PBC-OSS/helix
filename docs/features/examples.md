@@ -10,14 +10,14 @@ Dynamic requests use the `/_api/*` gateway. See the
 | --- | --- | --- |
 | `hello-world` | The smallest deployable bundle (HTML + CSS + a line of JS). | — |
 | `notes` | A realistic self-contained SPA (localStorage, multiple asset types). | — |
-| `chatbot` | Streams Claude through the gateway — no key in the app, manifest-granted, metered. | `/_api/llm/chat` |
+| `chatbot` | Streams Claude through the gateway — no key in the app, manifest-granted, metered. | `/_api/openai/v1/chat/completions` |
 | `waitlist` | A **public** contact harvester: write-only collections + owner-seeded shared read. | `/_api/data/*` |
 | `oversell` | The write-concurrency contract (ADR-0041) and the growing-shared-namespace pattern (ADR-0042): CAS on shared keys, prefix grants + the list verb, with one-click probes that force every failure. | `/_api/data/*` |
 | `github-stars` | Calls a public API **directly** — CSP-blocked until an admin grants the origin (approval loop). | — (CSP) |
 | `fetch-proxy` | Calls the GitHub API **through the proxy** — keyless, then secret-injected, then via the transparent shim. | `/_api/fetch/*` |
 | `helix-help` | A docs-grounded chatbot: fetches the public docs site's markdown pages at runtime through the proxy, embeds them in the system prompt, and answers over the OpenAI-compatible surface — no key, no RAG. | `/_api/fetch/*` + `/_api/openai/v1/*` |
 | `offline` | Cold-boots with no network on the platform's scope-confined service worker; six probes separate what the platform caches from what the app still owns. | — (`/_helix/sw.js`) |
-| `asana-report` | Reads a real Asana project's activity (stories per task, range-filtered) through a provider-bound connection and streams a `gpt-5-nano` report into shared storage; reports list/read without any connection. | `/_api/fetch/*` + `/_api/llm/chat` + `/_api/data/*` |
+| `asana-report` | Reads a real Asana project's activity (stories per task, range-filtered) through a provider-bound connection and streams a `gpt-5-nano` report into shared storage; reports list/read without any connection. | `/_api/fetch/*` + `/_api/openai/v1/chat/completions` + `/_api/data/*` |
 
 ## How they fit the platform
 
@@ -31,9 +31,9 @@ Dynamic requests use the `/_api/*` gateway. See the
 
 ### `chatbot` — the LLM gateway in practice
 
-Ships only a frontend; it `POST`s to `/_api/llm/chat` and renders the SSE stream. The app never
-holds an API key — the edge proxies to the vendor, enforces the manifest's model allowlist +
-token budget, and meters the call. See [llm-gateway.md](./llm-gateway.md).
+Ships only a frontend; it `POST`s to `/_api/openai/v1/chat/completions` and renders the SSE stream. The app never
+holds an API key — the edge enforces the model allowlist and daily budget, meters the call,
+and sends it through egress, which injects the vendor key. See [llm-gateway.md](./llm-gateway.md).
 
 ### `waitlist` — the app-data gateway in practice
 
