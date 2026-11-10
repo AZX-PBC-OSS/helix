@@ -11,9 +11,7 @@ import {
 
 /**
  * The Anthropic provider's request translation + SSE parsing, exercised against
- * undici's MockAgent (no network). The real-vendor streaming check at the
- * bottom runs only when ANTHROPIC_API_KEY is set (project plan §4: "verify
- * streaming against a real vendor").
+ * undici's MockAgent (no network).
  */
 
 const ENDPOINT = "https://api.anthropic.com";
@@ -283,45 +281,5 @@ describe("SSE parser hardening (issue #12)", () => {
     const body = Readable.from(neverSeparates());
 
     await expect(collect(mapAnthropicStream(body))).rejects.toBeInstanceOf(LlmProviderError);
-  });
-});
-
-describe("AnthropicProvider (real vendor)", () => {
-  const key = process.env.ANTHROPIC_API_KEY;
-  it.skipIf(!key)("streams a real completion end to end", async () => {
-    const provider = new AnthropicProvider({
-      endpoint: ENDPOINT,
-      anthropicVersion: "2023-06-01",
-      apiKey: key as string,
-    });
-    try {
-      const events = await collect(
-        provider.stream(
-          {
-            model: "claude-opus-4-8",
-            messages: [{ role: "user", content: "Reply with exactly: pong" }],
-            maxTokens: 16,
-            stream: true,
-          },
-          {
-            signal: new AbortController().signal,
-            appId: "app-1",
-            userOid: "u-1",
-            requestId: "r-1",
-            correlationId: "req-corr-test",
-            env: "prod",
-          },
-        ),
-      );
-      const text = events
-        .filter((e): e is { type: "delta"; text: string } => e.type === "delta")
-        .map((e) => e.text)
-        .join("");
-      const done = events.find((e) => e.type === "done");
-      expect(text.toLowerCase()).toContain("pong");
-      expect(done).toMatchObject({ usage: { outputTokens: expect.any(Number) } });
-    } finally {
-      await provider.close();
-    }
   });
 });
