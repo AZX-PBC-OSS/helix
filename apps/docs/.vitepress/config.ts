@@ -87,6 +87,7 @@ export default defineConfig({
             { text: "Deploy from GitHub", link: "/apps/deploy-from-github" },
             { text: "The dev gateway", link: "/apps/dev-gateway" },
             { text: "App API reference", link: "/apps/api-reference" },
+            { text: "Ejecting an app", link: "/apps/eject" },
           ],
         },
       ],

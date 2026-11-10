@@ -142,3 +142,9 @@ To call the real gateway from a local dev server before you deploy, see the
 The [example apps](https://github.com/AZX-PBC-OSS/helix/tree/main/examples)
 are small, deployable references for each capability. Cloning one and changing
 it is often faster than starting from nothing.
+
+## Taking your app elsewhere
+
+Your frontend can move with you. To leave Helix, host it elsewhere and implement
+the APIs it uses on your own backend, guided by the published OpenAPI contracts.
+See [Ejecting an app](./eject) for the steps.
