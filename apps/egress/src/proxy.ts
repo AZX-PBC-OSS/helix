@@ -1,3 +1,4 @@
+import { ResourceDeadline } from "./resourceDeadline.js";
 import { addAbortSignal } from "node:stream";
 import { ServiceOAuthError } from "./serviceOAuthTransport.js";
 import type { ResolvedConnection } from "./secrets.js";
@@ -641,39 +642,43 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     // pooled socket until the dispatcher's own timeouts, long after the edge
     // (a cancelled or timed-out job, a closed browser) stopped waiting.
 
-    const resourceSignal = serviceOAuth
-      ? AbortSignal.any([callerGone.signal, AbortSignal.timeout(30_000)])
-      : callerGone.signal;
-    if (serviceOAuth && requestBody) addAbortSignal(resourceSignal, requestBody);
+    const deadline = new ResourceDeadline(callerGone.signal);
+    const replayable =
+      !!serviceOAuth &&
+      (BODYLESS.has(method) ||
+        (method === "POST" && serviceOAuth.replaySafePostPaths.includes(target.pathname)));
+    // Non-replayable uploads stream under the normal dispatcher timeouts.
+    const dispatch = () => {
+      const send = (signal: AbortSignal) =>
+        request(target.href, {
+          method,
+          headers,
+          body: requestBody,
+          dispatcher,
+          signal,
+        });
+      return replayable ? deadline.run(send) : send(callerGone.signal);
+    };
     try {
-      // Dial the real origin: undici pools by origin (keep-alive), derives the
-      // Host header and TLS SNI from it, and the connector rewrites the socket
-      // target to the validated IP.
-      const replayable =
-        serviceOAuth &&
-        (BODYLESS.has(method) ||
-          (method === "POST" && serviceOAuth.replaySafePostPaths.includes(target.pathname)));
       // Only approved read-only POSTs are buffered; all other uploads keep streaming.
       if (replayable && requestBody) {
-        const chunks: Buffer[] = [];
-        let size = 0;
-        for await (const chunk of requestBody) {
-          size += Buffer.byteLength(chunk);
-          if (size > Math.min(262_144, deps.limits.maxBodyBytes)) {
-            requestCapTripped = true;
-            throw new Error("replay body too large");
+        const upload = requestBody;
+        requestBody = await deadline.run(async (signal) => {
+          addAbortSignal(signal, upload);
+          const chunks: Buffer[] = [];
+          let size = 0;
+          for await (const chunk of upload) {
+            size += Buffer.byteLength(chunk);
+            if (size > Math.min(262_144, deps.limits.maxBodyBytes)) {
+              requestCapTripped = true;
+              throw new Error("replay body too large");
+            }
+            chunks.push(Buffer.from(chunk));
           }
-          chunks.push(Buffer.from(chunk));
-        }
-        requestBody = Buffer.concat(chunks);
+          return Buffer.concat(chunks);
+        });
       }
-      let upstream = await request(target.href, {
-        method,
-        headers,
-        body: requestBody,
-        dispatcher,
-        signal: resourceSignal,
-      });
+      let upstream = await dispatch();
 
       if (
         serviceOAuth &&
@@ -682,20 +687,16 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
         await serviceOAuth.reject();
         if (replayable && !serviceOAuth.recovered && !callerGone.signal.aborted) {
           discardBody(upstream.body);
-          const recovered = await waitForCaller(serviceOAuth.recover(), resourceSignal);
-          if (!recovered)
+          const recovered = await deadline.run((signal) =>
+            waitForCaller(serviceOAuth.recover(), signal),
+          );
+          if (!recovered?.oauth)
             return fail(reply, 403, "forbidden", "connection not found or not granted");
           headers.authorization = `Bearer ${recovered.value}`;
-          upstream = await request(target.href, {
-            method,
-            headers,
-            body: requestBody,
-            dispatcher,
-            signal: resourceSignal,
-          });
+          upstream = await dispatch();
           // One retry only. A second authentication rejection affects the next call.
           if (serviceTokenRejected(upstream.statusCode, upstream.headers["www-authenticate"]))
-            await recovered.oauth?.reject();
+            await recovered.oauth.reject();
         }
       }
 

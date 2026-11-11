@@ -50,8 +50,10 @@ export class ServiceOAuthManager {
   #sweep: Promise<void> | undefined;
   constructor(
     readonly pool: Pool,
-    readonly store: SecretStore,
+    readonly credentialStore: SecretStore,
+    readonly tokenStore: SecretStore,
     readonly exchange: ServiceTokenExchange,
+    readonly lockPool: Pool = pool,
   ) {}
 
   start(): void {
@@ -90,7 +92,7 @@ export class ServiceOAuthManager {
     );
   }
   async #open(row: TokenRow & { access: string }, recovered: boolean): Promise<ServiceOAuthAccess> {
-    return { value: await this.store.open(row.access), generation: row.generation, recovered };
+    return { value: await this.tokenStore.open(row.access), generation: row.generation, recovered };
   }
 
   async resolve(target: ServiceOAuthTarget, rejected?: number): Promise<ServiceOAuthAccess> {
@@ -128,7 +130,7 @@ export class ServiceOAuthManager {
     return serviceOAuthSpan(SPAN_SERVICE_OAUTH_RECOVERY, target.env, async (outcome) => {
       try {
         return await withAdvisoryLock(
-          this.pool,
+          this.lockPool,
           serviceOAuthLockKey(target.id, target.env),
           async (client, alive) => {
             instruments().serviceOAuthLockWait.record(performance.now() - started, {
@@ -161,7 +163,7 @@ export class ServiceOAuthManager {
             try {
               const credential = parseServiceOAuthCredential(
                 target.recipe,
-                await this.store.open(target.material),
+                await this.credentialStore.open(target.material),
               );
               let token: IssuedServiceToken | undefined;
               let refreshed = false;
@@ -172,7 +174,7 @@ export class ServiceOAuthManager {
                   token = await this.#exchange(
                     target,
                     credential,
-                    await this.store.open(row.refresh),
+                    await this.tokenStore.open(row.refresh),
                     signal,
                     "refreshed",
                   );
@@ -198,11 +200,11 @@ export class ServiceOAuthManager {
               }
               signal.throwIfAborted();
               if (!alive()) throw new ServiceOAuthError("temporary_failure");
-              const access = await this.store.seal(token.access);
+              const access = await this.tokenStore.seal(token.access);
               sealed.push(access);
               let refresh = refreshed ? row.refresh : null;
               if (token.refresh) {
-                refresh = await this.store.seal(token.refresh);
+                refresh = await this.tokenStore.seal(token.refresh);
                 sealed.push(refresh);
               }
               signal.throwIfAborted();
@@ -235,10 +237,11 @@ export class ServiceOAuthManager {
                 error instanceof ServiceOAuthError
                   ? error
                   : new ServiceOAuthError("temporary_failure");
-              // Clear uncertain refresh material. The trigger retires references atomically.
+              // Preserve a refresh token only after a definite throttle/outage response.
+              // Uncertain or rejected tokens are retired by the update trigger.
               await client.query(
                 `UPDATE service_oauth_tokens SET status = $5, "retryAfter" = $6,
-              refresh = NULL, access = NULL, attempt = NULL
+              refresh = CASE WHEN $7 THEN refresh ELSE NULL END, access = NULL, attempt = NULL
               WHERE "secretId" = $1 AND "credentialGeneration" = $2 AND generation = $3 AND attempt = $4`,
                 [
                   target.id,
@@ -247,6 +250,7 @@ export class ServiceOAuthManager {
                   attempt,
                   failure.outcome === "needs_attention" ? "needs_attention" : "temporary_failure",
                   new Date(Date.now() + failure.retryMs),
+                  failure.outcome === "temporary_failure" && !failure.allowFallback,
                 ],
               );
               throw failure;
@@ -296,8 +300,8 @@ export class ServiceOAuthManager {
     // A vault success followed by DB loss has the documented seal→ledger crash residual.
     try {
       await client.query(
-        `INSERT INTO service_oauth_retirements(material)
-        SELECT $1 WHERE NOT EXISTS (SELECT 1 FROM service_oauth_tokens WHERE access = $1 OR refresh = $1)
+        `INSERT INTO service_oauth_retirements("materialHash", material)
+        SELECT sha256(convert_to($1, 'UTF8')), $1 WHERE NOT EXISTS (SELECT 1 FROM service_oauth_tokens WHERE access = $1 OR refresh = $1)
         ON CONFLICT DO NOTHING`,
         [material],
       );
@@ -313,14 +317,14 @@ export class ServiceOAuthManager {
   async sweep(): Promise<void> {
     await serviceOAuthSpan(SPAN_SERVICE_OAUTH_RETIRE, undefined, async (outcome) => {
       try {
-        const rows = await this.pool.query<{ material: string }>(
-          'SELECT material FROM service_oauth_retirements ORDER BY "createdAt" LIMIT 64',
+        const rows = await this.pool.query<{ materialHash: Buffer; material: string }>(
+          'SELECT "materialHash", material FROM service_oauth_retirements ORDER BY "createdAt" LIMIT 64',
         );
         for (const row of rows.rows) {
           // Destroy is idempotent. Keep the durable mark until it succeeds, even across a crash.
-          await this.store.destroy(row.material);
-          await this.pool.query("DELETE FROM service_oauth_retirements WHERE material = $1", [
-            row.material,
+          await this.tokenStore.destroy(row.material);
+          await this.pool.query('DELETE FROM service_oauth_retirements WHERE "materialHash" = $1', [
+            row.materialHash,
           ]);
         }
         outcome("retired");

@@ -251,7 +251,10 @@ and environment. Egress checks those identities on every use; same-name
 replacement or app-scoped shadowing of a global credential cannot inherit the
 approval. Save the manifest again to request approval for a replacement or newly
 configured environment. Credential rotation preserves the approved configuration
-and invalidates issued tokens immediately in Postgres.
+and invalidates issued tokens immediately in Postgres. Origins use their canonical
+scheme/host/port for these checks. Ordinary static-secret replacements remain
+self-service. An existing OAuth approval fence still blocks a static replacement
+or shadow until that change is explicitly approved.
 
 ### Recovery and replay limits
 
@@ -264,7 +267,9 @@ and before dispatch; already dispatched requests may finish.
 Token state is keyed by secret ID, which identifies its environment. Local
 promise coalescing and a namespaced Postgres session lock coordinate replicas.
 Recovery gets 20 seconds, including lock waiting (at most five seconds), and at
-most two token exchanges. Tokens need explicit numeric expiry metadata with at
+most two token exchanges. Lock holders use a separate two-connection pool so
+slow exchanges cannot consume the five-connection secret-resolution pool.
+Tokens need explicit numeric expiry metadata with at
 least ten seconds of lifetime; egress renews within five seconds of expiry.
 Scopes explicitly returned by the vendor must include the configured scopes;
 omission means the requested scope remains in effect. No JWT claims determine
@@ -287,14 +292,18 @@ Other uploads and all responses retain streaming. If the resource rejects a toke
 server error or ambiguous network failure. A request that already acquired or
 refreshed a token cannot restart recovery after dispatch. Retries remain inside
 the admitted proxy operation and its one edge metering event. Service-account
-resource dispatch, replay buffering, and recovery after dispatch share a 30-second
-deadline; the initial token recovery has its own 20-second budget.
+replay buffering, replayable dispatch up to response headers, and recovery after
+dispatch share a 30-second deadline. The timer is removed when headers arrive;
+response streams and non-replayable uploads keep the normal dispatcher timeouts
+and caller cancellation. The initial token recovery has its own 20-second budget.
 
 Apps receive `service_account_unavailable` for temporary failures and
 `service_account_rejected` when stored credentials or configuration need attention
 (both HTTP 503). Temporary failures have a shared 30-second cooldown. Token-endpoint throttling
 and server failures do not immediately fall back; Retry-After can extend the
-cooldown up to five minutes. Definitively rejected credentials or unusable grant
+cooldown up to five minutes. These responses are classified from their headers
+without reading an outage page, and retain the refresh token for the next attempt.
+Ambiguous or rejected refresh results do not retain it. Definitively rejected credentials or unusable grant
 responses produce `needs_attention`; rotate credentials to resume. Metadata
 shows `unconfigured`, `ready`, `recovering`, `temporary_failure`, or
 `needs_attention`. This reflects observed use and makes no test call.
@@ -302,13 +311,20 @@ shows `unconfigured`, `ready`, `recovering`, `temporary_failure`, or
 ### Custody and rollout
 
 `service_oauth_tokens` holds sealed references separately from stored grant
-credentials. Only egress can read token references; portal reads status columns.
+credentials. Egress reads configured credentials from the connections store, but
+seals, opens and destroys issued tokens through its writable delegated store
+(`AZURE_DELEGATED_KEY_VAULT_URL` in Azure). The connections vault remains read-only
+for egress. Missing token custody fails OAuth calls closed; it never falls back
+to writing the connections vault. Only egress can read token references; portal reads status columns.
 The edge has no grant on token state, cleanup records or approval bindings.
 Egress still cannot modify app-secret material or credential generation.
 Rotation and deletion append displaced references to
 `service_oauth_retirements` in the same database transaction, including cascading
 app deletion. The minute sweep destroys up to 64 references per pass and keeps
-records until destruction succeeds. Retained refresh references are not retired.
+records until destruction succeeds. A SHA-256 digest keys each retirement record,
+so large envelope ciphertext never becomes a btree key. Retained refresh
+references are not retired. Egress can insert and update token state, but cannot
+delete it; owner-run rotation triggers and foreign-key cascades perform deletion.
 
 There is no atomic vault/database transaction. A crash between sealing and
 recording a reference can still strand a vault entry, as in delegated custody.
@@ -316,7 +332,7 @@ An ambiguous publication is never treated as permission to destroy the result;
 cleanup checks current references. Key Vault deletion retains its existing soft
 delete/purge-protection semantics.
 
-Apply the additive migration first, deploy egress consumers, then enable portal
+Apply the additive migrations first, deploy egress consumers, then enable portal
 writers and UI. Older egress parsers reject the unknown recipe, so rolling back
 egress fails these connections closed; the four existing kinds remain readable.
 Keep the migration and cleanup worker during rollback, and delete/replace OAuth

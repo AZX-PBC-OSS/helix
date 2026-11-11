@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { ServiceOAuthRecipeSchema } from "@azx-pbc/shared";
-import type { SecretStore } from "@azx-pbc/secret-store";
+import { DevEnvelopeSecretStore, type SecretStore } from "@azx-pbc/secret-store";
 import { ServiceOAuthManager, type ServiceOAuthTarget } from "./serviceOAuth.js";
 import { ServiceOAuthError, type ServiceTokenExchange } from "./serviceOAuthTransport.js";
 import { createEgressPool } from "./pool.js";
@@ -47,8 +47,8 @@ const recipe = ServiceOAuthRecipeSchema.parse({
 const ids: string[] = [];
 let target: ServiceOAuthTarget;
 const exchange = vi.fn<ServiceTokenExchange>();
-const first = new ServiceOAuthManager(pool1, store, exchange);
-const second = new ServiceOAuthManager(pool2, store, exchange);
+const first = new ServiceOAuthManager(pool1, store, store, exchange);
+const second = new ServiceOAuthManager(pool2, store, store, exchange);
 const issued = (refresh: string | undefined = "refresh-SENTINEL") => ({
   access: `access-SENTINEL-${randomUUID()}`,
   refresh,
@@ -154,6 +154,7 @@ describe("service-account shared recovery", () => {
   });
   it("honors shared rate-limit cooldown without a fallback exchange", async () => {
     await first.resolve(target);
+    const previous = await state();
     await expire();
     exchange.mockImplementation(async () => {
       throw new ServiceOAuthError("temporary_failure", 120_000, false);
@@ -162,6 +163,14 @@ describe("service-account shared recovery", () => {
     await expect(second.resolve(target)).rejects.toMatchObject({ outcome: "temporary_failure" });
     expect(exchange).toHaveBeenCalledTimes(2);
     expect((await state()).retryAfter.getTime()).toBeGreaterThan(Date.now() + 110_000);
+    expect((await state()).refresh).toBe(previous.refresh);
+    await owner.query(`UPDATE service_oauth_tokens SET "retryAfter"=now() WHERE "secretId"=$1`, [
+      target.id,
+    ]);
+    exchange.mockImplementation(async () => issued());
+    await second.resolve(target);
+    expect(exchange.mock.calls[2]?.[2]).toBe("refresh-SENTINEL");
+    expect((await state()).status).toBe("ready");
   });
   it("cools down after an issued token is rejected at the resource", async () => {
     const token = await first.resolve(target);
@@ -279,11 +288,106 @@ describe("service-account shared recovery", () => {
       await expect(
         pool1.query(`UPDATE app_secrets SET "credentialGeneration" = 9 WHERE id=$1`, [target.id]),
       ).rejects.toThrow(/permission denied/);
+      await expect(
+        pool1.query(`DELETE FROM service_oauth_tokens WHERE "secretId"=$1`, [target.id]),
+      ).rejects.toThrow(/permission denied/);
       await expect(pool1.query(`DELETE FROM secret_connection_bindings`)).rejects.toThrow(
         /permission denied/,
       );
     } finally {
       await edge.end();
+    }
+  });
+  it("uses writable token custody separately and retires large envelope tokens through renewal, rotation and deletion", async () => {
+    const credentialStore: SecretStore = {
+      open: store.open,
+      seal: vi.fn(async () => {
+        throw new Error("credential vault is read-only");
+      }),
+      destroy: vi.fn(async () => {
+        throw new Error("credential vault is read-only");
+      }),
+    };
+    const tokenStore = new DevEnvelopeSecretStore({ masterKey: randomBytes(32) });
+    const destroy = vi.spyOn(tokenStore, "destroy");
+    const manager = new ServiceOAuthManager(pool2, credentialStore, tokenStore, exchange);
+    exchange.mockImplementation(async () => ({
+      access: randomBytes(4096).toString("base64"),
+      refresh: randomBytes(4096).toString("base64"),
+      expiresAt: new Date(Date.now() + 3600_000),
+    }));
+    try {
+      const firstToken = await manager.resolve(target);
+      const previous = await state();
+      expect(previous.access.length).toBeGreaterThan(8192);
+      expect((await manager.resolve(target)).value).toBe(firstToken.value);
+      await expire();
+      await manager.resolve(target);
+      await owner.query(`UPDATE app_secrets SET material=$2 WHERE id=$1`, [
+        target.id,
+        await store.seal(
+          JSON.stringify({ kind: recipe.kind, username: "rotated", password: "rotated" }),
+        ),
+      ]);
+      target = {
+        ...target,
+        credentialGeneration: 2,
+        material: (await owner.query("SELECT material FROM app_secrets WHERE id=$1", [target.id]))
+          .rows[0].material,
+      };
+      await manager.resolve(target);
+      await owner.query("DELETE FROM app_secrets WHERE id=$1", [target.id]);
+      await manager.sweep();
+      expect(destroy).toHaveBeenCalledWith(previous.access);
+      expect(destroy).toHaveBeenCalledWith(previous.refresh);
+      expect(credentialStore.seal).not.toHaveBeenCalled();
+      expect(credentialStore.destroy).not.toHaveBeenCalled();
+    } finally {
+      await manager.close();
+    }
+  });
+  it("accepts large material-only retirement inserts from an older egress during rollout", async () => {
+    const material = randomBytes(4096).toString("hex");
+    try {
+      for (let i = 0; i < 2; i++)
+        await pool1.query(
+          "INSERT INTO service_oauth_retirements(material) VALUES($1) ON CONFLICT DO NOTHING",
+          [material],
+        );
+      const rows = (
+        await owner.query(
+          'SELECT "materialHash" FROM service_oauth_retirements WHERE material=$1',
+          [material],
+        )
+      ).rows;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].materialHash).toHaveLength(32);
+    } finally {
+      await owner.query("DELETE FROM service_oauth_retirements WHERE material=$1", [material]);
+    }
+  });
+  it("leaves resolver queries available while a recovery holds its separate pool", async () => {
+    let release!: () => void, entered!: () => void;
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    const ready = new Promise<void>((r) => {
+      entered = r;
+    });
+    exchange.mockImplementation(async () => {
+      entered();
+      await hold;
+      return issued();
+    });
+    const manager = new ServiceOAuthManager(pool1, store, store, exchange, pool2);
+    const work = manager.resolve(target);
+    try {
+      await ready;
+      expect((await pool1.query("SELECT 1 AS available")).rows[0].available).toBe(1);
+    } finally {
+      release();
+      await work;
+      await manager.close();
     }
   });
   it("records bounded physical exchanges and never credential or token attributes", async () => {

@@ -74,7 +74,7 @@ export interface SecretResolver {
   configureTransport?(dispatcher: Agent): void;
   /**
    * `origin` is the instruction's edge-signed target origin. The Postgres
-   * resolver ignores it; the managed-identity wrapper (ADR-0046) checks it
+   * resolver checks approval bindings; the managed-identity wrapper (ADR-0046) checks it
    * against the rule's host suffix before minting a token, so a connection
    * name alone can never draw a token onto a foreign origin.
    */
@@ -92,18 +92,29 @@ export interface SecretResolver {
 export class PgSecretResolver implements SecretResolver {
   readonly #pool: Pool;
   readonly #store: SecretStore;
+  readonly #tokenStore: SecretStore | null;
+  readonly #oauthPool: Pool;
   #oauth: ServiceOAuthManager | undefined;
 
-  constructor(databaseUrl: string, store: SecretStore, opts: EgressPoolOpts = {}) {
+  constructor(
+    databaseUrl: string,
+    store: SecretStore,
+    opts: EgressPoolOpts & { tokenStore?: SecretStore | null } = {},
+  ) {
     this.#pool = createEgressPool(databaseUrl, { ...opts, max: opts.max ?? 5 });
     this.#store = store;
+    this.#tokenStore = opts.tokenStore ?? null;
+    this.#oauthPool = createEgressPool(databaseUrl, { ...opts, max: 2, label: "service-oauth" });
   }
 
   configureTransport(dispatcher: Agent): void {
+    if (!this.#tokenStore) return;
     this.#oauth ??= new ServiceOAuthManager(
       this.#pool,
       this.#store,
+      this.#tokenStore,
       serviceTokenExchange(dispatcher),
+      this.#oauthPool,
     );
     this.#oauth.start();
   }
@@ -179,14 +190,10 @@ export class PgSecretResolver implements SecretResolver {
     }
     if (injection.kind === "oauth-service-account") {
       if (capability !== "fetch" || !transport) return null;
-      this.#oauth ??= new ServiceOAuthManager(
-        this.#pool,
-        this.#store,
-        serviceTokenExchange(transport.dispatcher),
-      );
-      this.#oauth.start();
+      if (!this.#tokenStore) throw new ServiceOAuthError("temporary_failure");
+      this.configureTransport(transport.dispatcher);
       const target: ServiceOAuthTarget = { ...row, env, recipe: injection };
-      const token = await this.#oauth.resolve(target, transport.rejectedGeneration);
+      const token = await this.#oauth!.resolve(target, transport.rejectedGeneration);
       // Every hit and every completed recovery rechecks current identity, generation and grant.
       const authorized = await this.#pool.query(
         `SELECT 1 FROM app_secrets s
@@ -261,6 +268,6 @@ export class PgSecretResolver implements SecretResolver {
 
   async close(): Promise<void> {
     await this.#oauth?.close();
-    await this.#pool.end();
+    await Promise.all([this.#pool.end(), this.#oauthPool.end()]);
   }
 }

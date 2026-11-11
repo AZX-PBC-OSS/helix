@@ -1,5 +1,6 @@
 import { request, type Agent } from "undici";
 import { z } from "zod";
+import { discardBody } from "@azx-pbc/shared/bodyCap";
 import { type ServiceOAuthRecipe, type ServiceOAuthCredential } from "@azx-pbc/shared";
 
 export class ServiceOAuthError extends Error {
@@ -70,6 +71,23 @@ export function serviceTokenExchange(dispatcher: Agent): ServiceTokenExchange {
         headersTimeout: 10_000,
         bodyTimeout: 10_000,
       });
+      if (response.statusCode === 429 || response.statusCode >= 500) {
+        discardBody(response.body);
+        const retry = response.headers["retry-after"];
+        const seconds = typeof retry === "string" ? Number(retry) : NaN;
+        const time = typeof retry === "string" ? Date.parse(retry) - Date.now() : NaN;
+        throw new ServiceOAuthError(
+          "temporary_failure",
+          Math.min(
+            300_000,
+            Math.max(
+              30_000,
+              Number.isFinite(seconds) ? seconds * 1000 : Number.isFinite(time) ? time : 0,
+            ),
+          ),
+          false,
+        );
+      }
       let raw: unknown;
       try {
         const chunks: Buffer[] = [];
@@ -86,22 +104,6 @@ export function serviceTokenExchange(dispatcher: Agent): ServiceTokenExchange {
         }
       } finally {
         response.body.destroy();
-      }
-      if (response.statusCode === 429 || response.statusCode >= 500) {
-        const retry = response.headers["retry-after"];
-        const seconds = typeof retry === "string" ? Number(retry) : NaN;
-        const time = typeof retry === "string" ? Date.parse(retry) - Date.now() : NaN;
-        throw new ServiceOAuthError(
-          "temporary_failure",
-          Math.min(
-            300_000,
-            Math.max(
-              30_000,
-              Number.isFinite(seconds) ? seconds * 1000 : Number.isFinite(time) ? time : 0,
-            ),
-          ),
-          false,
-        );
       }
       if (response.statusCode !== 200) {
         const code = raw && typeof raw === "object" && "error" in raw ? raw.error : undefined;

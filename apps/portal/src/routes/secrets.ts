@@ -106,27 +106,30 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     return recipe;
   };
 
-  const toMetadata = (row: SecretRow, boundApps: string[] = []): SecretMetadata => ({
-    id: row.id,
-    name: row.name,
-    scope: row.scope as SecretScope,
-    env: row.env === "dev" ? "dev" : "prod",
-    injection: readRecipe(row),
-    createdBy: row.createdBy,
-    createdAt: row.createdAt.toISOString(),
-    rotatedAt: row.rotatedAt ? row.rotatedAt.toISOString() : null,
-    lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
-    ...(readRecipe(row)?.kind === "oauth-service-account"
-      ? {
-          oauthStatus: ServiceOAuthStatusSchema.parse({
-            status: row.oauthTokens?.status ?? "unconfigured",
-            expiresAt: row.oauthTokens?.expiresAt?.toISOString() ?? null,
-            retryAfter: row.oauthTokens?.retryAfter?.toISOString() ?? null,
-          }),
-        }
-      : {}),
-    boundApps,
-  });
+  const toMetadata = (row: SecretRow, boundApps: string[] = []): SecretMetadata => {
+    const injection = readRecipe(row);
+    return {
+      id: row.id,
+      name: row.name,
+      scope: row.scope as SecretScope,
+      env: row.env === "dev" ? "dev" : "prod",
+      injection,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt.toISOString(),
+      rotatedAt: row.rotatedAt ? row.rotatedAt.toISOString() : null,
+      lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
+      ...(injection?.kind === "oauth-service-account"
+        ? {
+            oauthStatus: ServiceOAuthStatusSchema.parse({
+              status: row.oauthTokens?.status ?? "unconfigured",
+              expiresAt: row.oauthTokens?.expiresAt?.toISOString() ?? null,
+              retryAfter: row.oauthTokens?.retryAfter?.toISOString() ?? null,
+            }),
+          }
+        : {}),
+      boundApps,
+    };
+  };
 
   // Custody must be configured (a KEK in dev / Key Vault in prod) to seal.
   const store = (): SecretStore => {

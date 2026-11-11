@@ -11,7 +11,7 @@ u.username = "helix_egress";
 u.password = "helix_egress";
 const owner = new Pool({ connectionString: ownerUrl, max: 1 });
 const store = new DevEnvelopeSecretStore({ masterKey: randomBytes(32) });
-const resolver = new PgSecretResolver(u.href, store, { max: 2 });
+const resolver = new PgSecretResolver(u.href, store, { max: 2, tokenStore: store });
 const dispatcher = new MockAgent();
 dispatcher.disableNetConnect();
 const transport = { dispatcher: dispatcher as unknown as Agent };
@@ -82,6 +82,16 @@ describe("service-account authorization on cache hits", () => {
     expect(await resolve(appIds[0], "prod", "https://other.example")).toBeNull();
     expect(await resolver.resolve(appIds[0]!, name, "llm", "prod", origin, transport)).toBeNull();
   });
+  it("fails closed without writable token custody even when configured credentials exist", async () => {
+    const readonlyResolver = new PgSecretResolver(u.href, store);
+    try {
+      await expect(
+        readonlyResolver.resolve(appIds[0]!, name, "fetch", "prod", origin, transport),
+      ).rejects.toMatchObject({ outcome: "temporary_failure" });
+    } finally {
+      await readonlyResolver.close();
+    }
+  });
   it("revokes one grantee immediately without affecting other grantees", async () => {
     await owner.query(`DELETE FROM app_secret_grants WHERE "appId"=$1 AND "secretId"=$2`, [
       appIds[0],
@@ -90,6 +100,36 @@ describe("service-account authorization on cache hits", () => {
     expect(await resolve()).toBeNull();
     expect((await resolve(appIds[1]))?.value).toBe("issued-token");
     expect(tokenCalls).toBe(1);
+  });
+  it("permits static global shadowing and same-name app replacement without an OAuth fence", async () => {
+    const id = randomUUID(),
+      staticName = `static-${id}`;
+    await owner.query(
+      `INSERT INTO app_secrets(id,scope,env,name,material,injection,"createdBy") VALUES($1,'global','prod',$2,$3,$4,'test')`,
+      [id, staticName, await store.seal("global"), { kind: "header-bearer" }],
+    );
+    try {
+      await owner.query(
+        `INSERT INTO app_secret_grants("appId","secretId","grantedBy") VALUES($1,$2,'test')`,
+        [appIds[1], id],
+      );
+      const read = () =>
+        resolver.resolve(appIds[1]!, staticName, "fetch", "prod", origin, transport);
+      expect((await read())?.value).toBe("global");
+      for (const value of ["shadow", "replacement"]) {
+        await owner.query(`DELETE FROM app_secrets WHERE "appId"=$1 AND name=$2`, [
+          appIds[1],
+          staticName,
+        ]);
+        await owner.query(
+          `INSERT INTO app_secrets(id,scope,"appId",env,name,material,injection,"createdBy") VALUES($1,'app',$2,'prod',$3,$4,$5,'test')`,
+          [randomUUID(), appIds[1], staticName, await store.seal(value), { kind: "header-bearer" }],
+        );
+        expect((await read())?.value).toBe(value);
+      }
+    } finally {
+      await owner.query("DELETE FROM app_secrets WHERE id=$1", [id]);
+    }
   });
   it("does not permit a same-name app secret to inherit the approved global identity", async () => {
     const id = randomUUID();

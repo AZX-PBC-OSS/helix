@@ -201,7 +201,7 @@ each is the target app's ingress FQDN, so there is nothing to configure:
 | --- | --- | --- | --- |
 | `EDGE_PORTAL_URL` | edge, dev-gateway | the portal's ingress FQDN | `/connections/*` proxy and consent surfaces answer fail-closed 503 |
 | `PORTAL_EGRESS_URL` | portal | egress's ingress FQDN | the OAuth callback's code-exchange delegation is unwired; completion refuses |
-| `AZURE_DELEGATED_KEY_VAULT_URL` | egress | the `kv-delegated` vault URI | no delegated store is built; delegated-token operations fail closed |
+| `AZURE_DELEGATED_KEY_VAULT_URL` | egress | the `kv-delegated` vault URI | no token store is built; delegated and service-account OAuth token operations fail closed |
 
 The fetch-proxy body cap is set on every hop that enforces it, from one
 parameter:

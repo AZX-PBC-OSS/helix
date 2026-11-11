@@ -931,8 +931,9 @@ model ServiceOAuthTokens {
 }
 
 model ServiceOAuthRetirement {
-  material  String   @id
-  createdAt DateTime @default(now())
+  materialHash Bytes    @id
+  material     String
+  createdAt    DateTime @default(now())
 
   @@map("service_oauth_retirements")
 }

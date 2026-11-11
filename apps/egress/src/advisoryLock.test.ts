@@ -27,6 +27,16 @@ describe("session advisory lock lifecycle", () => {
     expect(client.release).toHaveBeenCalledExactlyOnceWith(undefined);
     expect(client.listenerCount("error")).toBe(0);
   });
+  it("reuses a healthy session after an application refusal", async () => {
+    const { pool, client } = fixture();
+    await expect(
+      withAdvisoryLock(pool, "1", async () => {
+        throw new Error("needs_attention");
+      }),
+    ).rejects.toThrow("needs_attention");
+    expect(client.release).toHaveBeenCalledExactlyOnceWith(undefined);
+    expect(client.query.mock.calls.map((c) => c[0])).toContain("RESET lock_timeout");
+  });
   it.each(["set_config", "pg_advisory_lock", "pg_advisory_unlock", "RESET"])(
     "destroys exactly once when %s fails",
     async (fail) => {

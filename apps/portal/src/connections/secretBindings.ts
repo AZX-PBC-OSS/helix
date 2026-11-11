@@ -55,16 +55,21 @@ export async function secretBindingStatuses(db: Db, appId: string, caps: Capabil
         const name = o.connection!;
         const [stamps, bindings] = await Promise.all([
           resolvedSecretStamps(db, appId, name),
-          db.secretConnectionBinding.findMany({ where: { appId, origin: o.origin, name } }),
+          db.secretConnectionBinding.findMany({
+            where: { appId, origin: new URL(o.origin).origin, name },
+          }),
         ]);
         const guarded =
           bindings.length > 0 || stamps.some((s) => s.injection.kind === "oauth-service-account");
         const effective =
           !guarded ||
           (stamps.length > 0 &&
-            stamps.every((s) =>
-              bindings.some((b) => b.env === s.env && b.secretId === s.secretId),
-            ));
+            stamps.every((s) => {
+              const binding = bindings.find((b) => b.env === s.env);
+              return s.injection.kind === "oauth-service-account" || binding
+                ? binding?.secretId === s.secretId
+                : true;
+            }));
         return {
           origin: o.origin,
           name,
@@ -109,7 +114,12 @@ export async function approveSecretBindings(db: Db, appId: string, deltas: Delta
       throw new AppError("conflict", "the connection changed after filing; resubmit the manifest");
     }
     for (const s of stamps) {
-      const key = { appId, origin: binding.origin, name: s.name, env: s.env };
+      const key = { appId, origin: new URL(binding.origin).origin, name: s.name, env: s.env };
+      if (s.injection.kind !== "oauth-service-account") {
+        // Explicit approval of a static replacement ends the old OAuth fence.
+        await db.secretConnectionBinding.deleteMany({ where: key });
+        continue;
+      }
       await db.secretConnectionBinding.upsert({
         where: { appId_origin_name_env: key },
         create: { ...key, secretId: s.secretId },

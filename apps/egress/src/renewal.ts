@@ -22,7 +22,7 @@ import {
 } from "@azx-pbc/shared/telemetry";
 import type { SecretStore } from "@azx-pbc/secret-store";
 import type { ProviderCacheReader } from "./providerCache.js";
-import { withPooledClient } from "./pool.js";
+import { discardPooledClient, withPooledClient } from "./pool.js";
 import { egressSpanAttributes } from "./spanAttributes.js";
 import { buildDelegatedClientConfiguration } from "./providerClient.js";
 import { instruments, tracer } from "./telemetry.js";
@@ -355,9 +355,14 @@ export class ConnectionRenewer {
       // The bounded acquire: `lock_timeout`, set as text via `set_config` (SET
       // takes no bind parameters). The acquire either returns having the lock
       // or throws — it never half-acquires.
-      await client.query(`SELECT set_config('lock_timeout', $1, false)`, [
-        String(this.#lockAcquireTimeoutMs),
-      ]);
+      try {
+        await client.query(`SELECT set_config('lock_timeout', $1, false)`, [
+          String(this.#lockAcquireTimeoutMs),
+        ]);
+      } catch (error) {
+        discardPooledClient(client, error);
+        throw error;
+      }
       try {
         await client.query(`SELECT pg_advisory_lock($1::bigint)`, [key]);
       } catch {
@@ -365,7 +370,12 @@ export class ConnectionRenewer {
         // proceed if a winner renewed already, otherwise fail temporarily.
         // Nothing was acquired, so there is nothing to unlock and the client
         // is returned cleanly.
-        await client.query("RESET lock_timeout");
+        try {
+          await client.query("RESET lock_timeout");
+        } catch (error) {
+          discardPooledClient(client, error);
+          throw error;
+        }
         const after = await this.#readRow(client, target).catch(() => null);
         if (after !== null && after.status === "live" && !isRenewalDue(after)) {
           return this.#proceedWithRow(after);

@@ -548,6 +548,13 @@ describe("service-account proxy recovery", () => {
           ? {
               value: "new-token",
               injection: { kind: "header-bearer" },
+              oauth: {
+                generation: 2,
+                recovered: true,
+                replaySafePostPaths: [],
+                recover: async () => null,
+                reject: async () => {},
+              },
             }
           : null,
     );
@@ -664,6 +671,28 @@ describe("service-account proxy recovery", () => {
         },
       });
       expect(response.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+  it("refuses a static replacement approved during recovery", async () => {
+    const fixture = serviceResolver();
+    fixture.recover.mockResolvedValueOnce({
+      value: "static-SENTINEL",
+      injection: { kind: "query", param: "key" },
+    });
+    const app = makeApp(true, fixture.resolver);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/proxy",
+        headers: {
+          [INSTRUCTION_HEADER]: await mint({ origin, connection: "service" }),
+          [TARGET_HEADER]: `${origin}/service-oauth/read`,
+        },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.body).not.toContain("SENTINEL");
     } finally {
       await app.close();
     }

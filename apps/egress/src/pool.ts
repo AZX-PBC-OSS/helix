@@ -44,6 +44,13 @@ export interface EgressPoolOpts {
   onIdleError?: (err: unknown) => void;
 }
 
+const BROKEN = new WeakMap<PoolClient, (error: Error) => void>();
+
+/** Cleanup could not restore a reusable session; destroy it on release. */
+export function discardPooledClient(client: PoolClient, error: unknown): void {
+  BROKEN.get(client)?.(error instanceof Error ? error : new Error("database session unusable"));
+}
+
 /**
  * Per-pool reporting sink, keyed by the Pool — how {@link withPooledClient}
  * reaches the handler its `createEgressPool` caller supplied.
@@ -120,14 +127,15 @@ export async function withPooledClient<T>(
     SINKS.get(pool)?.(err, "checked-out");
   };
   client.on("error", onError);
+  BROKEN.set(client, (error) => {
+    checkoutError ??= error;
+  });
   try {
     const value = await fn(client);
     if (checkoutError) throw checkoutError;
     return value;
-  } catch (error) {
-    checkoutError ??= error instanceof Error ? error : new Error("checked-out operation failed");
-    throw error;
   } finally {
+    BROKEN.delete(client);
     // Remove BEFORE releasing: `_release` re-attaches pg-pool's idle listener,
     // and a per-checkout listener left behind accumulates on a long-lived
     // pooled client until `MaxListenersExceededWarning` — a hot-path leak.

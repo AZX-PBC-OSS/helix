@@ -154,6 +154,16 @@ describe("withPooledClient", () => {
     expect(client.listenerCount("error")).toBe(0);
   });
 
+  it("does not discard a healthy session on an application error", async () => {
+    const client = new FakeClient();
+    await expect(
+      withPooledClient(rawPool(client), async () => {
+        throw new Error("cooldown");
+      }),
+    ).rejects.toThrow("cooldown");
+    expect(client.released).toBe(1);
+    expect(client.releaseArg).toBeUndefined();
+  });
   it("keeps the first error when the socket emits more than once", async () => {
     const client = new FakeClient();
     const first = new Error("first");

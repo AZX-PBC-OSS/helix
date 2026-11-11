@@ -54,14 +54,14 @@ const create = (slug: string, env = "prod") =>
     headers: owner,
     payload: { name: "service", injection: recipe, value, env },
   });
-const save = (slug: string) =>
+const save = (slug: string, origin = "https://api.example") =>
   t.app.inject({
     method: "PUT",
     url: `/api/v1/apps/${slug}/manifest`,
     headers: owner,
     payload: {
       capabilities: {
-        fetch: { origins: [{ origin: "https://api.example", connection: "service" }] },
+        fetch: { origins: [{ origin, connection: "service" }] },
       },
     },
   });
@@ -172,6 +172,66 @@ describe("service-account approval and lifecycle", () => {
       payload: { name: "bad", value },
     });
     expect(staticBlob.statusCode).toBe(400);
+  });
+  it("canonicalizes origins for approval, inspection and replacement approval", async () => {
+    const { slug, appId } = await setup();
+    await create(slug);
+    const origin = "https://API.example:443/";
+    expect((await approve((await save(slug, origin)).json().pending)).statusCode).toBe(200);
+    expect(await t.prisma.secretConnectionBinding.findMany({ where: { appId } })).toMatchObject([
+      { origin: "https://api.example" },
+    ]);
+    const inspect = () =>
+      t.app.inject({ method: "GET", url: `/api/v1/apps/${slug}/manifest`, headers: owner });
+    expect((await inspect()).json().secretBindings).toMatchObject([{ effective: true }]);
+    await t.app.inject({
+      method: "DELETE",
+      url: `/api/v1/apps/${slug}/secrets/service`,
+      headers: owner,
+    });
+    await create(slug);
+    expect((await inspect()).json().secretBindings).toMatchObject([{ effective: false }]);
+    const refile = await save(slug, origin);
+    expect(refile.json().pending).toBeTruthy();
+    expect((await approve(refile.json().pending)).statusCode).toBe(200);
+    expect((await inspect()).json().secretBindings).toMatchObject([{ effective: true }]);
+  });
+  it("keeps ordinary static replacement self-service but requires approval to replace OAuth with static", async () => {
+    const { slug, appId } = await setup();
+    const createStatic = () =>
+      t.app.inject({
+        method: "POST",
+        url: `/api/v1/apps/${slug}/secrets`,
+        headers: owner,
+        payload: { name: "service", value: "static-key" },
+      });
+    await createStatic();
+    expect((await approve((await save(slug)).json().pending)).statusCode).toBe(200);
+    expect(await t.prisma.secretConnectionBinding.count({ where: { appId } })).toBe(0);
+    await t.app.inject({
+      method: "DELETE",
+      url: `/api/v1/apps/${slug}/secrets/service`,
+      headers: owner,
+    });
+    await createStatic();
+    expect((await save(slug)).json().pending).toBeFalsy();
+    await t.app.inject({
+      method: "DELETE",
+      url: `/api/v1/apps/${slug}/secrets/service`,
+      headers: owner,
+    });
+    await create(slug);
+    expect((await approve((await save(slug)).json().pending)).statusCode).toBe(200);
+    await t.app.inject({
+      method: "DELETE",
+      url: `/api/v1/apps/${slug}/secrets/service`,
+      headers: owner,
+    });
+    await createStatic();
+    const refile = await save(slug);
+    expect(refile.json().pending).toBeTruthy();
+    expect((await approve(refile.json().pending)).statusCode).toBe(200);
+    expect(await t.prisma.secretConnectionBinding.count({ where: { appId } })).toBe(0);
   });
   it("allows global dev credentials and never allows OAuth under platform scope", async () => {
     const name = `oauth-${randomUUID().slice(0, 8)}`;

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Alert, PasswordInput, Select, Stack, Text, TextInput } from "@mantine/core";
 import {
   SERVICE_ACCOUNT_WARNING,
@@ -7,6 +8,34 @@ import {
 } from "@azx-pbc/shared";
 
 export { EMPTY_SERVICE_OAUTH } from "../lib/injection";
+
+function WordListInput({
+  label,
+  description,
+  value,
+  onChange,
+}: {
+  label: string;
+  description: string;
+  value: string[];
+  onChange(value: string[]): void;
+}) {
+  // Keep the editing text so typing a separator does not erase it before the next word.
+  const [draft, setDraft] = useState({ value, text: value.join(" ") });
+  return (
+    <TextInput
+      label={label}
+      description={description}
+      value={draft.value === value ? draft.text : value.join(" ")}
+      onChange={(event) => {
+        const next = event.currentTarget.value;
+        const words = next.split(/\s+/).filter(Boolean);
+        setDraft({ value: words, text: next });
+        onChange(words);
+      }}
+    />
+  );
+}
 
 export function ServiceOAuthConfiguration({
   value,
@@ -67,19 +96,17 @@ export function ServiceOAuthConfiguration({
           })
         }
       />
-      <TextInput
+      <WordListInput
         label="Required scopes"
         description="Space-separated; leave empty when the API needs none."
-        value={value.scopes.join(" ")}
-        onChange={(e) => onChange({ ...value, scopes: e.currentTarget.value.split(" ") })}
+        value={value.scopes}
+        onChange={(scopes) => onChange({ ...value, scopes })}
       />
-      <TextInput
+      <WordListInput
         label="Replay-safe POST paths"
         description="Optional, space-separated exact paths. Only include documented read-only operations; a rejected request can be sent twice. Maximum replay body: 256 KiB."
-        value={value.replaySafePostPaths.join(" ")}
-        onChange={(e) =>
-          onChange({ ...value, replaySafePostPaths: e.currentTarget.value.split(" ") })
-        }
+        value={value.replaySafePostPaths}
+        onChange={(replaySafePostPaths) => onChange({ ...value, replaySafePostPaths })}
       />
     </Stack>
   );
@@ -94,6 +121,31 @@ export function ServiceOAuthCredentials({
   value: string;
   onChange(value: string): void;
 }) {
+  useEffect(() => {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(value);
+    } catch {
+      return;
+    }
+    const parsed = ServiceOAuthCredentialSchema.safeParse(raw);
+    if (!parsed.success) return;
+    const next = parsed.data;
+    let changed = false;
+    if (recipe.clientAuthentication === "none" && next.clientSecret !== undefined) {
+      delete next.clientSecret;
+      changed = true;
+    }
+    if (
+      recipe.grantType !== "password" &&
+      (next.username !== undefined || next.password !== undefined)
+    ) {
+      delete next.username;
+      delete next.password;
+      changed = true;
+    }
+    if (changed) onChange(JSON.stringify(next));
+  }, [recipe.clientAuthentication, recipe.grantType, value, onChange]);
   let raw: unknown;
   try {
     raw = JSON.parse(value);

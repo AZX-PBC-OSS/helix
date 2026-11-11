@@ -122,6 +122,26 @@ describe("service-account OAuth wire protocol", () => {
       await new Promise<void>((r) => server.close(() => r()));
     }
   });
+  it.each([429, 503])("honors Retry-After on an oversized %s outage body", async (status) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(status, { "retry-after": "120" });
+      res.end("x".repeat(70_000));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const tokenEndpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      await expect(
+        exchange({ ...recipe, tokenEndpoint }, credential, "refresh", AbortSignal.timeout(1000)),
+      ).rejects.toMatchObject({
+        outcome: "temporary_failure",
+        retryMs: 120_000,
+        allowFallback: false,
+      });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
   it("applies private-address SSRF protection to token calls", async () => {
     const protectedDispatcher = makePinnedDispatcher(false, 1000);
     try {
