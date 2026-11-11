@@ -45,7 +45,7 @@ This directory records the significant architecture decisions for Helix (the AZX
 | [0028](0028-deployment-model-customer-deployed.md) | Deployment model: single-tenant, customer-deployed into the customer's cloud | Accepted |
 | [0029](0029-platform-secret-delivery.md) | Platform secret delivery: deployment-injected env vars, not ACA Key Vault references | Accepted |
 | [0030](0030-repo-backed-apps-pull-attested-artifacts.md) | Repo-backed apps: pull CI-built attested artifacts (no hosted build) | Superseded (by 0051) |
-| [0031](0031-connection-providers-delegated-auth.md) | Connection providers: MCP-first delegated auth, tenant-key as fallback | Proposed |
+| [0031](0031-connection-providers-delegated-auth.md) | Connection providers: MCP-first delegated auth, tenant-key as fallback | Accepted (delegated phases 1–4 implemented; service-account OAuth accepted, not yet implemented) |
 | [0032](0032-cli-naming-and-distribution.md) | CLI naming (`helix`) and distribution (public npm, bundled) | Accepted |
 | [0033](0033-openai-compatible-gateway-surface.md) | OpenAI-compatible gateway surface and multi-provider routing | Accepted |
 | [0034](0034-structured-output-on-the-llm-gateway.md) | Structured output on the LLM gateway (both surfaces) | Accepted |

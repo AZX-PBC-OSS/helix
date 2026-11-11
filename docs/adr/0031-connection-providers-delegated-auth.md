@@ -1,6 +1,6 @@
 # 0031. Connection providers: MCP-first delegated auth, tenant-key as fallback
 
-**Status:** Accepted (2026-09-25 — proposed 2026-07-29). Phases 1–4 are implemented — see the 2026-09-25 amendment below for the deviations implementation carries, and the 2026-08-04 amendment note above for what this ADR does and does not own. Phases 5–7 remain future work. The app-facing connection-status read (2026-09-28 amendment) is implemented.
+**Status:** Accepted (2026-09-25 — proposed 2026-07-29). Phases 1–4 are implemented — see the 2026-09-25 amendment below for the deviations implementation carries, and the 2026-08-04 amendment note above for what this ADR does and does not own. Phases 5–7 remain future work. The app-facing connection-status read (2026-09-28 amendment) is implemented. The 2026-11-10 amendment accepts service-account OAuth through secret-backed connections; it is not yet implemented.
 **Related:** ADR [0006](0006-secret-custody-seam.md) (`SecretStore` custody — the seam per-user tokens reuse), [0005](0005-ssrf-egress-controls.md) (SSRF + secret injection — the outbound mechanism), [0013](0013-egress-trust-model.md) (egress trust model — the attested instruction this extends), [0002](0002-postgres-role-split-rls.md) (role split — why `helix_edge` still cannot read a token), [0007](0007-portal-authz-v0.md) (portal authz v0 — **blocks** the group-policy half), [0016](0016-capability-manifest-approval-classifier.md) (approval classifier — catalog edits ride it), [0014](0014-same-origin-api-gateway.md) (same-origin gateway), [0017](0017-registry-listen-notify-projection.md) (LISTEN/NOTIFY projection — the no-redeploy mechanism), [0028](0028-deployment-model-customer-deployed.md) (customer-deployed — why registration is per-deployment), [0021](0021-metering-ledger.md) (metering — where "who used what" is already answered). **Design:** `docs/design/secrets-and-connections.md` §10 q2 and `docs/design/fetch-proxy.md` §10 q2 both defer "injection recipes beyond the three"; this ADR answers them and supersedes that deferral.
 
 > **Amendment (2026-08-04) — a stateless derived recipe landed ahead of this ADR, and is independent of it.**
@@ -256,7 +256,7 @@ Introduce a **connection provider catalog** as first-class control-plane data, w
 4. **First delegated provider: Asana or GitHub** on `rest-delegated`/OAuth — self-serve registration, refresh + single-flight, real consent flow. Chosen over Ashby first because the failure modes are cheaper to debug against non-sensitive data.
 5. **`mcp-remote` kind.** MCP client in egress, tool/doc discovery surfaced to app authors and agents, then Ashby (the highest-value case) via `mcp.ashbyhq.com/mcp/v1`.
 6. **`rest-tenant-key` + the group allowlist** — only when Clarify or a second tenant-key provider is actually in scope (see Consequences).
-7. **Later.** Inbound MCP (Helix as a remote MCP server); OAuth client-credentials for service-to-service providers; rotation/expiry policy off `rotatedAt`.
+7. **Later.** Inbound MCP (Helix as a remote MCP server); OAuth client-credentials for service-to-service providers (accepted through secret-backed connections in the 2026-11-10 amendment below; not yet implemented); rotation/expiry policy off `rotatedAt`.
 
 ## Open questions
 
@@ -278,3 +278,154 @@ Design conversation, 2026-07-28/29, from a request to make the backend pluggable
 3. **MCP was initially framed as a discoverability layer on top of the fetch-proxy.** The vendor survey inverted this: for Ashby, Asana, and GitHub the MCP surface delegates per-user while the REST surface does not, so MCP-first is the *authorization* decision as much as the discoverability one. This is the reason the ADR is titled the way it is.
 
 Vendor findings are dated 2026-07-29 and several are marked unverified in Open questions rather than assumed. Registration programmes change; re-verify before each provider lands.
+
+## Amendment (2026-11-10) — Service-account OAuth through secret-backed connections
+
+**Status: Accepted; not yet implemented.** This amendment resolves the
+service-account token-acquisition deferral in phase 7 and the secrets design
+§10 question 2. It adds a lifecycle for shared credentials alongside the existing
+per-user delegated lifecycle. It does not change the behavior of delegated
+connections or implement phase 6's provider group-policy engine.
+
+### Context and observed behavior
+
+Hosted apps need to call third-party APIs using shared service accounts that
+obtain bearer tokens through OAuth grants.
+Existing secret injection can present a fixed or locally derived credential,
+but cannot acquire and renew an access token for such an account.
+
+Authorized interoperability testing in a non-production environment established:
+
+- Standard form-encoded `grant_type=password`, `username`, and `password` fields
+  work without vendor-specific request-format overrides for the tested flow.
+- Responses include `access_token`, `token_type: Bearer`, `expires_in`,
+  `refresh_token`, `id_token`, and `scope`. The decoded access-token timestamps
+  agree with the advertised lifetime; actual expiry was not waited out, and
+  decoded claims were not independently signature-verified.
+- Multiple access tokens from successive password grants remained usable for
+  an authenticated read operation after issuance. Missing and invalid tokens
+  returned 401. Coexistence is an observation, not a cross-provider guarantee.
+- Successive standard `grant_type=refresh_token` exchanges through the same
+  endpoint succeeded. Each returned a different refresh token and a new access
+  token. Previously issued access tokens remained usable. Old refresh tokens
+  were not replayed; their invalidation and reuse detection settings remain
+  unverified.
+
+### Decision
+
+1. **Support service-account OAuth as a core capability.** Ship the
+   [client-credentials grant](https://www.rfc-editor.org/rfc/rfc6749.html#section-4.4),
+   explicit legacy
+   [password-grant support](https://www.rfc-editor.org/rfc/rfc6749.html#section-4.3),
+   and [refresh-token renewal](https://www.rfc-editor.org/rfc/rfc6749.html#section-6)
+   where supplied. Client credentials is the preferred option when the vendor
+   offers it. Password grants are a compatibility exception: current
+   [OAuth security guidance](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.4)
+   prohibits their use. Supporting the historical protocol does not make that
+   exception compliant with current security guidance. For client credentials,
+   obtaining another access token through the grant is the normal renewal path;
+   a refresh token is not required. Helix's existing use of client credentials
+   to authenticate its delegated OAuth client is distinct from implementing
+   the client-credentials grant.
+2. **Configure through the existing secret-backed connection model.** App
+   owners configure app-scoped credentials; administrators can configure global
+   credentials shared through existing grants. App use remains approval-gated.
+   The reserved internal `platform` secret scope is not repurposed. This feature
+   does not require onboarding through the delegated provider catalog. The
+   existing four injection kinds remain supported without behavioral changes.
+   Acquisition resolves an access token inside egress for bearer injection;
+   neither credentials nor tokens are returned to the app through configuration
+   or authentication APIs.
+3. **Make the shared authority explicit in Portal.** Configuration, connection
+   details, and approval views explain that upstream calls use the service
+   account's permissions, not each app user's permissions. Suggested wording:
+   “Requests through this connection use the configured service account's
+   permissions. The external API does not apply each app user's individual
+   permissions. Only connect accounts whose access is appropriate for everyone
+   allowed to use this connection.” Existing authorization and per-app audit
+   still apply; the warning does not grant access or implement upstream
+   row-level authorization.
+4. **Keep authentication configuration immutable after creation.** Token
+   endpoint, grant type, client-authentication method, and requested scopes are
+   configuration. Fundamental changes require a replacement and approval before
+   app use. Credential material remains rotatable through the existing model;
+   rotation invalidates the associated token state and caches. A token endpoint
+   is a credential recipient and must be part of the approved configuration,
+   including when its origin differs from the resource API. Apps cannot override
+   it per request.
+5. **Recover automatically before exposing authentication failure.** Use a
+   valid cached access token. On expiry or a clear upstream rejection of that
+   token, try refresh when available. If refresh is unavailable or unusable,
+   attempt the configured grant with the stored credentials. A refresh-token
+   rejection or uncertain rotation permits this fresh grant without operator
+   confirmation; do not blindly replay a refresh token that may have been
+   consumed. The choice favors service availability and means revoking only a
+   refresh token does not necessarily disable the connection while its stored
+   grant credentials remain usable. Local disabling/deletion must stop recovery.
+   Each request gets a bounded recovery sequence within a total deadline;
+   rate limits and backoff are respected. Temporary unavailability can recover
+   on later calls; rejected stored credentials require operator attention.
+   Successful fallback remains invisible to app users but observable to operators.
+6. **Coordinate the full acquisition and recovery sequence through Postgres.**
+   Reuse the existing session advisory-lock pattern and local in-flight request
+   coalescing. Use a separate lock namespace keyed by stable secret identity and
+   environment, rather than the delegated `(userOid, providerId, env)` key. Apps
+   granted the same global credential share its token state and lock. Acquire
+   before initial issuance as well as renewal, re-read authoritative state after
+   acquisition, and hold the lock across refresh, fallback grant, and publication
+   of the result. Shared state contains sealed token references, expiry, and
+   version information; a lock with only independent replica caches is
+   insufficient. Persist access/refresh replacement atomically with a conditional
+   write tied to the credential and token versions read. An old attempt cannot
+   overwrite rotation, deletion, or replacement. A delayed authentication failure
+   for an older access-token generation cannot invalidate a newer one. Store a
+   bounded shared retry cooldown so queued callers do not repeat a failed login
+   sequentially. Bound lock waits and the overall recovery time, and release the
+   database session safely on every exit path.
+7. **Keep recovery within the existing trust boundary.** All vendor token calls
+   originate in egress and use its protected, DNS-pinned transport with SSRF
+   checks, bounded responses, deadlines, and no credential forwarding through
+   redirects. Credentials stay write-only; tokens use the existing `SecretStore`
+   custody seam. The edge gains no credential-read access. Reuse custody and
+   coordination mechanisms without adopting the per-user connection identity or
+   changing its reconnect policy. A refresh response omitting a replacement
+   refresh token retains the existing one under the OAuth rules.
+8. **Bound replay of the resource request separately from token recovery.**
+   After a clear authentication rejection, allow a bounded retry with the
+   recovered token when the request can be safely replayed. Do not treat a
+   permission denial, generic server error, or ambiguous timeout as permission
+   to replay a possibly completed write. Body replay and streaming limits must
+   be explicit in implementation; token recovery is not an unbounded request
+   retry mechanism.
+9. **Ship instrumentation and adversarial tests with implementation.** Record
+   bounded acquisition/refresh/fallback outcomes, durations, and contention
+   through existing telemetry conventions. Never record credentials, tokens,
+   or raw vendor error bodies. Update the observability inventory and verify
+   behavior with telemetry disabled. Tests must cover concurrent replicas,
+   refresh rotation, uncertain results, fallback, stale-token failures,
+   credential rotation/deletion races, cooldowns, and request replay boundaries.
+
+### Consequences and implementation details still to resolve
+
+The feature adds shared token state and a network hop on acquisition to the
+secret-backed path. Reusing existing infrastructure still requires reviewing
+database grants, lock/session cleanup, sealed-material retirement, and connection
+pool capacity. The lock covers network time but must not require a long-lived
+database transaction. Vendor success followed by a process or storage failure
+cannot be made atomic with the vendor; the recovery state must account for that.
+
+The detailed schema, API/UI fields, initial client-authentication methods,
+scope/audience parameters, expiry handling when metadata is missing, deadline
+and cooldown values, token-cache invalidation mechanism, and replayable-body
+limits remain implementation design work. Defaults must not assume a token is a
+JWT or infer trusted expiry from an unverified decoded claim. No generic
+authentication scripting or vendor-specific serialization feature is approved
+by this amendment; add compatibility options only for demonstrated requirements.
+
+The existing response-body credential-reflection residual described in ADR-0005
+still applies to bearer injection. This amendment does not claim that an
+arbitrary upstream cannot echo a credential into an app-visible response.
+
+**Provenance:** Operator design discussion and authorized interoperability
+testing, 2026-11-10. The decisions above are accepted; no implementation or
+production validation is implied by that testing.
