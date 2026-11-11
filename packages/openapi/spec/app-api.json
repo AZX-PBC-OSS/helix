@@ -5575,7 +5575,9 @@
               "upstream_error",
               "connection_required",
               "provider_unavailable",
-              "provider_misconfigured"
+              "provider_misconfigured",
+              "service_account_unavailable",
+              "service_account_rejected"
             ]
           },
           "message": {

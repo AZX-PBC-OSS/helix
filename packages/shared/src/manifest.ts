@@ -415,6 +415,16 @@ export const AppManifestSchema = z.object({
    * server-side on the read (never stored). Absent when the manifest declares
    * no provider binding — every payload without one keeps its exact shape.
    */
+  secretBindings: z
+    .array(
+      z.object({
+        origin: z.string(),
+        name: z.string(),
+        effective: z.boolean(),
+        serviceAccount: z.boolean().optional(),
+      }),
+    )
+    .optional(),
   providerBindings: z.array(ProviderBindingStatusSchema).optional(),
 });
 export type AppManifest = z.infer<typeof AppManifestSchema>;

@@ -323,6 +323,14 @@ function bootstrapGrants(sql: string, sourceName: string): Array<Set<string>> {
     covered.add(match.index! + match[0].indexOf("GRANT"));
   }
 
+  // Status-only reads are an explicit column grant, never a table-wide SELECT.
+  const columns =
+    /GRANT\s+SELECT\s*\(\s*(?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*)(?:\s*,\s*(?:"[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*))*\s*\)\s+ON\s+[A-Za-z_][A-Za-z0-9_]*\s+TO\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*;/g;
+  for (const match of executing.matchAll(columns)) {
+    granteeSets.push(new Set(match[1]!.toUpperCase().split(/\s*,\s*/)));
+    covered.add(match.index!);
+  }
+
   const occurrences = [...executing.matchAll(/\bGRANT\b/gi)];
   const uncovered = occurrences.filter(({ index }) => index === undefined || !covered.has(index));
   if (uncovered.length > 0) {

@@ -27,6 +27,9 @@ const PORTAL_UNREADABLE = new Set([
   "rate_counters",
   "instruction_jti",
   "jobs_callback_jti",
+  // Service-account issued tokens: only status columns are readable by portal.
+  "service_oauth_tokens",
+  "service_oauth_retirements",
 ]);
 
 const owner = new Pool({ connectionString: OWNER_URL, max: 1 });
@@ -47,6 +50,28 @@ describe("helix_portal's table grants come from the migrations", () => {
     expect(rows.length).toBeGreaterThan(PORTAL_UNREADABLE.size);
     const unreadable = rows.filter((row) => !row.readable).map((row) => row.table);
     expect(unreadable.sort()).toEqual([...PORTAL_UNREADABLE].sort());
+  });
+
+  it("reads OAuth status columns but cannot read or change token custody", async () => {
+    const url = new URL(OWNER_URL);
+    url.username = "helix_portal";
+    url.password = "helix_portal";
+    const portal = new Pool({ connectionString: url.href, max: 1 });
+    try {
+      await expect(
+        portal.query(
+          'SELECT "secretId", status, "expiresAt", "retryAfter" FROM service_oauth_tokens',
+        ),
+      ).resolves.toBeDefined();
+      await expect(
+        portal.query("SELECT access, refresh FROM service_oauth_tokens"),
+      ).rejects.toThrow(/permission denied/);
+      await expect(portal.query("DELETE FROM service_oauth_tokens")).rejects.toThrow(
+        /permission denied/,
+      );
+    } finally {
+      await portal.end();
+    }
   });
 
   it("can mint, rotate and revoke dev tokens (app_dev_token full DML)", async () => {

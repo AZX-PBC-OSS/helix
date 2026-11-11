@@ -247,3 +247,33 @@ Per-service variables (OIDC endpoints, feature flags, database URLs) are read
 in each service's `config.ts`: [`apps/edge/src/config.ts`](https://github.com/AZX-PBC-OSS/helix/blob/main/apps/edge/src/config.ts),
 [`apps/portal/src/config.ts`](https://github.com/AZX-PBC-OSS/helix/blob/main/apps/portal/src/config.ts),
 [`apps/egress/src/config.ts`](https://github.com/AZX-PBC-OSS/helix/blob/main/apps/egress/src/config.ts).
+
+## Service-account OAuth
+
+Configure these credentials in the portal, not in service environment variables.
+App owners use Connection secrets; administrators use Secrets with the Global
+scope and an explicit app grant. Choose the correct tier: the hosted app uses
+`prod`, including a locally hosted app; the development gateway uses `dev`.
+
+Prefer client credentials. Password grants are available only as a legacy
+compatibility option. The portal stores the username/password and optional OAuth
+client credentials separately from the immutable token endpoint and scopes.
+Everyone using the connection exercises the same upstream account's permissions.
+
+Create the secret, bind its name to the API origin in the app manifest, and
+approve the request. Approval shows the token recipient as well as the resource
+origin. Replacing the secret or adding a new environment requires another
+manifest save and approval. Rotating credential values keeps the configuration
+and clears issued tokens and failure state.
+
+Status reflects actual calls: `temporary_failure` waits for a shared cooldown;
+`needs_attention` requires credential rotation or replacement of incorrect
+configuration. Revoking a refresh token alone is insufficient to disable access:
+Helix can acquire another token using the stored credentials. Revoke the global
+grant or delete the secret to stop new calls. Already dispatched requests can
+finish.
+
+Deploy the database migration first, egress second, and portal/API/UI writers
+last. Keep the token retirement ledger and egress sweep during rollback. The
+[contributor feature reference](https://github.com/AZX-PBC-OSS/helix/blob/main/docs/features/secrets-and-connections.md#service-account-oauth)
+documents retry, custody, and rollout limits.

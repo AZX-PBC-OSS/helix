@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AppSchema } from "./app.js";
+import { StoredInjectionRecipeSchema } from "./secrets.js";
 import { EnvSchema } from "./env.js";
 import { CapabilitiesSchema, type Capabilities, type FetchConnection } from "./manifest.js";
 import { AppManifestSchema } from "./manifest.js";
@@ -58,6 +59,14 @@ export type ProviderStamp = z.infer<typeof ProviderStampSchema>;
  * (`mcp[+pagerduty]`, `externalOrigins[-https://api.foo.com]`). `from`/`to` hold
  * the scalar values for conflict detection and diff render.
  */
+export const SecretStampSchema = z.object({
+  name: z.string(),
+  env: EnvSchema,
+  secretId: z.uuid(),
+  injection: StoredInjectionRecipeSchema,
+});
+export type SecretStamp = z.infer<typeof SecretStampSchema>;
+
 export const DeltaSchema = z.object({
   path: z.string(),
   from: z.union([z.string(), z.number(), z.boolean()]).optional(),
@@ -75,6 +84,7 @@ export const DeltaSchema = z.object({
    * newer configuration. Consumers read the rule itself from
    * {@link isProviderBindingEffective}; none re-derives the comparison.
    */
+  secretStamps: z.array(SecretStampSchema).optional(),
   providerStamps: z.array(ProviderStampSchema).optional(),
   /**
    * The requesting app's visibility **at filing**: `true` when the app was

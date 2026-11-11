@@ -1433,3 +1433,21 @@ export const REPO_DEPLOY_OUTCOMES = [
   "replayed",
 ] as const;
 export type RepoDeployOutcome = (typeof REPO_DEPLOY_OUTCOMES)[number];
+
+export const SPAN_SERVICE_OAUTH_RECOVERY = "helix.egress.service_oauth.recovery";
+export const SPAN_SERVICE_OAUTH_EXCHANGE = "helix.egress.service_oauth.exchange";
+export const SPAN_SERVICE_OAUTH_RETIRE = "helix.egress.service_oauth.retire";
+export const INSTR_SERVICE_OAUTH_EXCHANGES = "helix.egress.service_oauth.exchanges";
+export const INSTR_SERVICE_OAUTH_DURATION = "helix.egress.service_oauth.duration";
+export const INSTR_SERVICE_OAUTH_LOCK_WAIT = "helix.egress.service_oauth.lock_wait";
+export const SERVICE_OAUTH_OUTCOMES = [
+  "cached",
+  "acquired",
+  "refreshed",
+  "fallback",
+  "temporary_failure",
+  "needs_attention",
+  "not_authorized",
+  "retired",
+] as const;
+export type ServiceOAuthOutcome = (typeof SERVICE_OAUTH_OUTCOMES)[number];

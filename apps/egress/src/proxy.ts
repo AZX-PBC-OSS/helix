@@ -1,3 +1,6 @@
+import { addAbortSignal } from "node:stream";
+import { ServiceOAuthError } from "./serviceOAuthTransport.js";
+import type { ResolvedConnection } from "./secrets.js";
 import { type IncomingHttpHeaders } from "node:http";
 import {
   context,
@@ -170,6 +173,8 @@ function applyInjection(
   value: string,
 ): Injected {
   switch (recipe.kind) {
+    case "oauth-service-account":
+      throw new Error("OAuth must resolve before injection");
     case "header-bearer":
       headers["authorization"] = `Bearer ${value}`;
       return { headerNames: ["authorization"], queryParam: null };
@@ -276,6 +281,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
 
   // The delegated resolution, built against the shared
   // dispatcher so the renewer's vendor calls ride the same pinned transport.
+  deps.resolver?.configureTransport?.(dispatcher);
   const delegated = deps.delegated?.(dispatcher) ?? null;
 
   /**
@@ -397,7 +403,16 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     let injected = NOTHING_INJECTED;
     // Set for a recipe whose credential is derived from the local clock, so the
     // response can be checked for skew (see below).
+    const callerGone = new AbortController();
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableEnded) callerGone.abort();
+    });
+    // The caller may already have gone while the instruction and the secret
+    // were being resolved; that `close` fired before the listener above.
+    if (reply.raw.destroyed) callerGone.abort();
+
     let clockDerived = false;
+    let serviceOAuth: ResolvedConnection["oauth"];
     // Set when the call dispatched on a DELEGATED token — the connection row
     // the pre-expiry-401 flag targets if the vendor answers 401 before expiry.
     let delegatedDispatch: { connectionId: string } | null = null;
@@ -420,14 +435,35 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       // name back to the untrusted app. Log the detail, return an opaque 502.
       let resolved: Awaited<ReturnType<typeof deps.resolver.resolve>>;
       try {
-        resolved = await deps.resolver.resolve(
-          instruction.appId,
-          instruction.connection,
-          instruction.capability,
-          instruction.env,
-          instruction.origin,
+        resolved = await waitForCaller(
+          deps.resolver.resolve(
+            instruction.appId,
+            instruction.connection,
+            instruction.capability,
+            instruction.env,
+            instruction.origin,
+            { dispatcher },
+          ),
+          callerGone.signal,
         );
       } catch (err) {
+        if (callerGone.signal.aborted) {
+          reply.hijack();
+          reply.raw.destroy();
+          return;
+        }
+        if (err instanceof ServiceOAuthError) {
+          return fail(
+            reply,
+            err.outcome === "not_authorized" ? 403 : 503,
+            err.outcome === "not_authorized"
+              ? "forbidden"
+              : err.outcome === "needs_attention"
+                ? "service_account_rejected"
+                : "service_account_unavailable",
+            `service account: ${err.outcome}`,
+          );
+        }
         if (err instanceof RecipeDriftError) {
           // Not a custody failure. Logging it beside the vault probes below would
           // point an operator at Key Vault for a bad row, so it gets the same
@@ -470,6 +506,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
           .getActiveSpan()
           ?.setAttributes(egressSpanAttributes({ [ATTR_CREDENTIAL_SOURCE]: resolved.source }));
       }
+      serviceOAuth = resolved.oauth;
       clockDerived = resolved.injection.kind === "hmac-timestamp";
       try {
         injected = applyInjection(target, headers, resolved.injection, resolved.value);
@@ -593,7 +630,7 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     // upload can't stream unbounded egress-billed bandwidth past the cap. A trip
     // destroys req.raw and errors the undici upload → the catch maps it to 413.
     let requestCapTripped = false;
-    const requestBody = BODYLESS.has(method)
+    let requestBody: Buffer | ReturnType<typeof capBody> | undefined = BODYLESS.has(method)
       ? undefined
       : capBody(req.raw, deps.limits.maxBodyBytes, "request", () => {
           requestCapTripped = true;
@@ -603,25 +640,64 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
     // request. Without this, an upstream that never sends headers holds the
     // pooled socket until the dispatcher's own timeouts, long after the edge
     // (a cancelled or timed-out job, a closed browser) stopped waiting.
-    const callerGone = new AbortController();
-    reply.raw.once("close", () => {
-      if (!reply.raw.writableEnded) callerGone.abort();
-    });
-    // The caller may already have gone while the instruction and the secret
-    // were being resolved; that `close` fired before the listener above.
-    if (reply.raw.destroyed) callerGone.abort();
 
+    const resourceSignal = serviceOAuth
+      ? AbortSignal.any([callerGone.signal, AbortSignal.timeout(30_000)])
+      : callerGone.signal;
+    if (serviceOAuth && requestBody) addAbortSignal(resourceSignal, requestBody);
     try {
       // Dial the real origin: undici pools by origin (keep-alive), derives the
       // Host header and TLS SNI from it, and the connector rewrites the socket
       // target to the validated IP.
-      const upstream = await request(target.href, {
+      const replayable =
+        serviceOAuth &&
+        (BODYLESS.has(method) ||
+          (method === "POST" && serviceOAuth.replaySafePostPaths.includes(target.pathname)));
+      // Only approved read-only POSTs are buffered; all other uploads keep streaming.
+      if (replayable && requestBody) {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        for await (const chunk of requestBody) {
+          size += Buffer.byteLength(chunk);
+          if (size > Math.min(262_144, deps.limits.maxBodyBytes)) {
+            requestCapTripped = true;
+            throw new Error("replay body too large");
+          }
+          chunks.push(Buffer.from(chunk));
+        }
+        requestBody = Buffer.concat(chunks);
+      }
+      let upstream = await request(target.href, {
         method,
         headers,
         body: requestBody,
         dispatcher,
-        signal: callerGone.signal,
+        signal: resourceSignal,
       });
+
+      if (
+        serviceOAuth &&
+        serviceTokenRejected(upstream.statusCode, upstream.headers["www-authenticate"])
+      ) {
+        await serviceOAuth.reject();
+        if (replayable && !serviceOAuth.recovered && !callerGone.signal.aborted) {
+          discardBody(upstream.body);
+          const recovered = await waitForCaller(serviceOAuth.recover(), resourceSignal);
+          if (!recovered)
+            return fail(reply, 403, "forbidden", "connection not found or not granted");
+          headers.authorization = `Bearer ${recovered.value}`;
+          upstream = await request(target.href, {
+            method,
+            headers,
+            body: requestBody,
+            dispatcher,
+            signal: resourceSignal,
+          });
+          // One retry only. A second authentication rejection affects the next call.
+          if (serviceTokenRejected(upstream.statusCode, upstream.headers["www-authenticate"]))
+            await recovered.oauth?.reject();
+        }
+      }
 
       // Response cap, fast-path: a truthful oversized content-length is rejected
       // cleanly (before any body is committed) without draining the connection.
@@ -706,6 +782,18 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
       });
       return reply.send(cappedBody);
     } catch (err) {
+      if (err instanceof ServiceOAuthError) {
+        return fail(
+          reply,
+          err.outcome === "not_authorized" ? 403 : 503,
+          err.outcome === "not_authorized"
+            ? "forbidden"
+            : err.outcome === "needs_attention"
+              ? "service_account_rejected"
+              : "service_account_unavailable",
+          `service account: ${err.outcome}`,
+        );
+      }
       if (requestCapTripped) {
         return fail(reply, 413, "too_large", "request body exceeds the size cap");
       }
@@ -834,4 +922,24 @@ export function makeProxyHandler(deps: ProxyDeps): ProxyHandler {
   }
 
   return { handler: proxyHandler, dispatcher };
+}
+
+/** A cancelled waiter leaves the coalesced recovery running for other callers. */
+function waitForCaller<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(new ServiceOAuthError("temporary_failure"));
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+function serviceTokenRejected(status: number, challenge: string | string[] | undefined): boolean {
+  if (status !== 401) return false;
+  if (challenge === undefined) return true;
+  return (
+    typeof challenge === "string" &&
+    /^Bearer\b/i.test(challenge) &&
+    /\berror="?invalid_token"?(?:[\s,]|$)/i.test(challenge)
+  );
 }

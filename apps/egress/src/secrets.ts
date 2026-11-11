@@ -1,3 +1,6 @@
+import type { Agent } from "undici";
+import { ServiceOAuthManager, type ServiceOAuthTarget } from "./serviceOAuth.js";
+import { serviceTokenExchange, ServiceOAuthError } from "./serviceOAuthTransport.js";
 import { Pool } from "pg";
 import {
   type Env,
@@ -42,6 +45,13 @@ export interface ResolvedConnection {
    * dimension only — bounded to those two values.
    */
   source?: "secret" | "managed-identity";
+  oauth?: {
+    generation: number;
+    recovered: boolean;
+    replaySafePostPaths: string[];
+    recover(): Promise<ResolvedConnection | null>;
+    reject(): Promise<void>;
+  };
 }
 
 /**
@@ -61,6 +71,7 @@ export class RecipeDriftError extends Error {
 }
 
 export interface SecretResolver {
+  configureTransport?(dispatcher: Agent): void;
   /**
    * `origin` is the instruction's edge-signed target origin. The Postgres
    * resolver ignores it; the managed-identity wrapper (ADR-0046) checks it
@@ -73,6 +84,7 @@ export interface SecretResolver {
     capability: InstructionCapability,
     env: Env,
     origin: string,
+    transport?: { dispatcher: Agent },
   ): Promise<ResolvedConnection | null>;
   close(): Promise<void>;
 }
@@ -80,10 +92,20 @@ export interface SecretResolver {
 export class PgSecretResolver implements SecretResolver {
   readonly #pool: Pool;
   readonly #store: SecretStore;
+  #oauth: ServiceOAuthManager | undefined;
 
   constructor(databaseUrl: string, store: SecretStore, opts: EgressPoolOpts = {}) {
     this.#pool = createEgressPool(databaseUrl, { ...opts, max: opts.max ?? 5 });
     this.#store = store;
+  }
+
+  configureTransport(dispatcher: Agent): void {
+    this.#oauth ??= new ServiceOAuthManager(
+      this.#pool,
+      this.#store,
+      serviceTokenExchange(dispatcher),
+    );
+    this.#oauth.start();
   }
 
   async resolve(
@@ -91,6 +113,8 @@ export class PgSecretResolver implements SecretResolver {
     connection: string,
     capability: InstructionCapability,
     env: Env,
+    origin = "",
+    transport?: { dispatcher: Agent; rejectedGeneration?: number },
   ): Promise<ResolvedConnection | null> {
     const row =
       capability === "llm"
@@ -98,8 +122,13 @@ export class PgSecretResolver implements SecretResolver {
           // A platform secret is reachable from nowhere else — fetch never sees it —
           // and is tier-agnostic, so a dev LLM call reuses the same key.
           (
-            await this.#pool.query<{ id: string; material: string; injection: unknown }>(
-              `SELECT id, material, injection FROM app_secrets
+            await this.#pool.query<{
+              id: string;
+              material: string;
+              injection: unknown;
+              credentialGeneration: number;
+            }>(
+              `SELECT id, material, injection, "credentialGeneration" FROM app_secrets
                  WHERE scope = 'platform' AND name = $1 LIMIT 1`,
               [connection],
             )
@@ -109,15 +138,25 @@ export class PgSecretResolver implements SecretResolver {
           // connection secret. Two narrow queries rather than an OR so the
           // (appId, env, name) index is used and the intent is explicit.
           ((
-            await this.#pool.query<{ id: string; material: string; injection: unknown }>(
-              `SELECT id, material, injection FROM app_secrets
+            await this.#pool.query<{
+              id: string;
+              material: string;
+              injection: unknown;
+              credentialGeneration: number;
+            }>(
+              `SELECT id, material, injection, "credentialGeneration" FROM app_secrets
                  WHERE scope = 'app' AND "appId" = $1 AND env = $2 AND name = $3 LIMIT 1`,
               [appId, env, connection],
             )
           ).rows[0] ??
           (
-            await this.#pool.query<{ id: string; material: string; injection: unknown }>(
-              `SELECT s.id, s.material, s.injection FROM app_secrets s
+            await this.#pool.query<{
+              id: string;
+              material: string;
+              injection: unknown;
+              credentialGeneration: number;
+            }>(
+              `SELECT s.id, s.material, s.injection, s."credentialGeneration" FROM app_secrets s
                  JOIN app_secret_grants g ON g."secretId" = s.id AND g."appId" = $1
                 WHERE s.scope = 'global' AND s.env = $2 AND s.name = $3 LIMIT 1`,
               [appId, env, connection],
@@ -127,6 +166,57 @@ export class PgSecretResolver implements SecretResolver {
     if (!row) return null;
 
     const injection = StoredInjectionRecipeSchema.parse(row.injection);
+    if (capability === "fetch") {
+      const bindings = await this.#pool.query<{ secretId: string }>(
+        `SELECT "secretId" FROM secret_connection_bindings WHERE "appId" = $1 AND origin = $2 AND name = $3 AND env = $4`,
+        [appId, origin, connection, env],
+      );
+      if (
+        (injection.kind === "oauth-service-account" || bindings.rows.length > 0) &&
+        bindings.rows[0]?.secretId !== row.id
+      )
+        return null;
+    }
+    if (injection.kind === "oauth-service-account") {
+      if (capability !== "fetch" || !transport) return null;
+      this.#oauth ??= new ServiceOAuthManager(
+        this.#pool,
+        this.#store,
+        serviceTokenExchange(transport.dispatcher),
+      );
+      this.#oauth.start();
+      const target: ServiceOAuthTarget = { ...row, env, recipe: injection };
+      const token = await this.#oauth.resolve(target, transport.rejectedGeneration);
+      // Every hit and every completed recovery rechecks current identity, generation and grant.
+      const authorized = await this.#pool.query(
+        `SELECT 1 FROM app_secrets s
+        JOIN secret_connection_bindings b ON b."secretId" = s.id AND b."appId" = $2 AND b.origin = $3 AND b.env = $4 AND b.name = s.name
+        WHERE s.id = $1 AND s."credentialGeneration" = $5 AND
+          ((s.scope = 'app' AND s."appId" = $2) OR (s.scope = 'global' AND
+           EXISTS (SELECT 1 FROM app_secret_grants g WHERE g."secretId" = s.id AND g."appId" = $2) AND
+           NOT EXISTS (SELECT 1 FROM app_secrets a WHERE a.scope = 'app' AND a."appId" = $2 AND a.env = $4 AND a.name = s.name)))`,
+        [row.id, appId, origin, env, row.credentialGeneration],
+      );
+      if (authorized.rowCount !== 1) throw new ServiceOAuthError("not_authorized");
+      await this.#pool
+        .query(`UPDATE app_secrets SET "lastUsedAt" = now() WHERE id = $1`, [row.id])
+        .catch(() => {});
+      return {
+        value: token.value,
+        injection: { kind: "header-bearer" },
+        source: "secret",
+        oauth: {
+          ...token,
+          replaySafePostPaths: injection.replaySafePostPaths,
+          recover: () =>
+            this.resolve(appId, connection, capability, env, origin, {
+              ...transport,
+              rejectedGeneration: token.generation,
+            }),
+          reject: () => this.#oauth!.reject(target, token.generation, token.recovered),
+        },
+      };
+    }
     const value = await this.#store.open(row.material);
     // Defence in depth against recipe⇄material drift. The portal validates this
     // before sealing, but the recipe is fixed at create while the material is
@@ -170,6 +260,7 @@ export class PgSecretResolver implements SecretResolver {
   }
 
   async close(): Promise<void> {
+    await this.#oauth?.close();
     await this.#pool.end();
   }
 }

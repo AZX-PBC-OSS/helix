@@ -65,6 +65,7 @@ export function createEgressPool(databaseUrl: string, opts: EgressPoolOpts = {})
   const config: PoolConfig = {
     connectionString: databaseUrl,
     statement_timeout: statementTimeoutMs,
+    connectionTimeoutMillis: 5_000,
   };
   if (opts.max !== undefined) config.max = opts.max;
   const pool = new Pool(config);
@@ -120,7 +121,12 @@ export async function withPooledClient<T>(
   };
   client.on("error", onError);
   try {
-    return await fn(client);
+    const value = await fn(client);
+    if (checkoutError) throw checkoutError;
+    return value;
+  } catch (error) {
+    checkoutError ??= error instanceof Error ? error : new Error("checked-out operation failed");
+    throw error;
   } finally {
     // Remove BEFORE releasing: `_release` re-attaches pg-pool's idle listener,
     // and a per-checkout listener left behind accumulates on a long-lived

@@ -157,10 +157,12 @@ describe("withPooledClient", () => {
   it("keeps the first error when the socket emits more than once", async () => {
     const client = new FakeClient();
     const first = new Error("first");
-    await withPooledClient(rawPool(client), async (c) => {
-      (c as unknown as FakeClient).emit("error", first);
-      (c as unknown as FakeClient).emit("error", new Error("echo"));
-    });
+    await expect(
+      withPooledClient(rawPool(client), async (c) => {
+        (c as unknown as FakeClient).emit("error", first);
+        (c as unknown as FakeClient).emit("error", new Error("echo"));
+      }),
+    ).rejects.toBe(first);
     expect(client.releaseArg).toBe(first);
   });
 
@@ -172,9 +174,11 @@ describe("withPooledClient", () => {
     });
     const client = new FakeClient();
     (pool as unknown as { connect: () => Promise<FakeClient> }).connect = async () => client;
-    await withPooledClient(pool, async (c) => {
-      (c as unknown as FakeClient).emit("error", new Error("boom"));
-    });
+    await expect(
+      withPooledClient(pool, async (c) => {
+        (c as unknown as FakeClient).emit("error", new Error("boom"));
+      }),
+    ).rejects.toThrow("boom");
     expect(seen).toEqual([{ phase: "checked-out", label: "renewal" }]);
     await pool.end().catch(() => {});
   });

@@ -521,7 +521,9 @@ export function useCreateGlobalSecret() {
       value,
       injection,
       scope,
+      env,
     }: {
+      env?: "prod" | "dev";
       name: string;
       value: string;
       injection?: InjectionRecipe;
@@ -530,7 +532,13 @@ export function useCreateGlobalSecret() {
     }): Promise<SecretMetadata> =>
       fetchJson(SecretMetadataSchema, "/api/v1/secrets", {
         method: "POST",
-        body: { name, value, ...(injection ? { injection } : {}), ...(scope ? { scope } : {}) },
+        body: {
+          name,
+          value,
+          ...(env ? { env } : {}),
+          ...(injection ? { injection } : {}),
+          ...(scope ? { scope } : {}),
+        },
       }),
     onSuccess: () => invalidateGlobalSecrets(queryClient),
   });

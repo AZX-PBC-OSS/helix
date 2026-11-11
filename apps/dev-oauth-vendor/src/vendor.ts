@@ -27,6 +27,9 @@ export const VendorOptionsSchema = z.object({
   redirectUris: z.array(z.string().min(1)).default([]),
   apiTokenHeaderName: z.string().min(1).max(128).default(DEFAULT_API_TOKEN_HEADER),
   accessTokenTtlSeconds: z.number().int().positive().default(3600),
+  serviceAccounts: z.boolean().default(false),
+  serviceUsername: z.string().default("fixture-service"),
+  servicePassword: z.string().default("fixture-password"),
   grantCodeTtlSeconds: z.number().int().positive().default(600),
 });
 export type DevOAuthVendorOptions = z.input<typeof VendorOptionsSchema>;
@@ -83,8 +86,8 @@ function basicClientCredentials(header: string): { id: string; secret: string } 
     const sep = decoded.indexOf(":");
     if (sep === -1) return undefined;
     return {
-      id: decodeURIComponent(decoded.slice(0, sep)),
-      secret: decodeURIComponent(decoded.slice(sep + 1)),
+      id: decodeURIComponent(decoded.slice(0, sep).replaceAll("+", " ")),
+      secret: decodeURIComponent(decoded.slice(sep + 1).replaceAll("+", " ")),
     };
   } catch {
     return undefined;
@@ -219,7 +222,11 @@ export function buildVendor(
     const presentedId = basic?.id ?? form.get("client_id");
     const presentedSecret = basic?.secret ?? form.get("client_secret") ?? null;
     const authenticated =
-      presentedId === opts.clientId &&
+      (presentedId === opts.clientId ||
+        (opts.serviceAccounts &&
+          opts.clientSecret === null &&
+          presentedId === null &&
+          ["password", "refresh_token"].includes(form.get("grant_type") ?? ""))) &&
       (opts.clientSecret === null || presentedSecret === opts.clientSecret);
     if (!authenticated) {
       return reply.code(401).send({
@@ -265,6 +272,20 @@ export function buildVendor(
     }
 
     const grantType = form.get("grant_type");
+    if (opts.serviceAccounts && (grantType === "password" || grantType === "client_credentials")) {
+      if (
+        grantType === "password" &&
+        (form.get("username") !== opts.serviceUsername ||
+          form.get("password") !== opts.servicePassword)
+      ) {
+        return reply.code(400).send({ error: "invalid_grant" });
+      }
+      const scope = form.get("scope") ?? "";
+      const refreshToken =
+        grantType === "password" ? randomBytes(32).toString("base64url") : undefined;
+      if (refreshToken) refreshTokens.set(refreshToken, { clientId, scope });
+      return reply.send(issue(scope, refreshToken));
+    }
     if (grantType === "authorization_code") {
       const code = form.get("code");
       const grant = code !== null ? (grants.get(code) ?? undefined) : undefined;

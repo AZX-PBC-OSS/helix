@@ -1,3 +1,4 @@
+import { stampSecretDeltas, restampSecretBindings } from "../connections/secretBindings.js";
 import {
   applyDeltas,
   captureSnapshot,
@@ -374,6 +375,8 @@ export async function applyCapabilityChange(
     // went stale re-elevates on resubmit — the recovery path the sensitive-edit
     // invalidation leaves open (see restampStaleBindings).
     const restampedDeltas = await restampStaleBindings(tx, row.id, requested, elevatedDeltas);
+    const secretRestamps = await restampSecretBindings(tx, row.id, requested, elevatedDeltas);
+    restampedDeltas.push(...secretRestamps);
     const elevated = [...elevatedDeltas, ...restampedDeltas];
     const risk = restampedDeltas.length > 0 ? maxRisk([classifiedRisk, "high"]) : classifiedRisk;
     // Apply only the baseline deltas now; elevated ones wait for approval.
@@ -401,7 +404,11 @@ export async function applyCapabilityChange(
     if (elevated.length > 0) {
       // Stamp at filing, inside the txn that reads the visibility and the
       // provider rows — the stamps must describe the state the filer saw.
-      const stamped = await stampElevatedDeltas(tx, elevated, row.visibilityMode === "public");
+      const stamped = await stampSecretDeltas(
+        tx,
+        row.id,
+        await stampElevatedDeltas(tx, elevated, row.visibilityMode === "public"),
+      );
       // Snapshot the post-baseline state of the touched areas so a later approve
       // can detect a value that moved underneath the request.
       const baseSnapshot = captureSnapshot(

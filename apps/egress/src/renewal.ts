@@ -1,3 +1,4 @@
+import { unlockSession } from "./advisoryLock.js";
 import { createHash } from "node:crypto";
 import { SpanKind, SpanStatusCode } from "@opentelemetry/api";
 import { ResponseBodyError, WWWAuthenticateChallengeError, refreshTokenGrant } from "openid-client";
@@ -354,9 +355,9 @@ export class ConnectionRenewer {
       // The bounded acquire: `lock_timeout`, set as text via `set_config` (SET
       // takes no bind parameters). The acquire either returns having the lock
       // or throws — it never half-acquires.
-      await client
-        .query(`SELECT set_config('lock_timeout', $1, false)`, [String(this.#lockAcquireTimeoutMs)])
-        .catch(() => null);
+      await client.query(`SELECT set_config('lock_timeout', $1, false)`, [
+        String(this.#lockAcquireTimeoutMs),
+      ]);
       try {
         await client.query(`SELECT pg_advisory_lock($1::bigint)`, [key]);
       } catch {
@@ -364,6 +365,7 @@ export class ConnectionRenewer {
         // proceed if a winner renewed already, otherwise fail temporarily.
         // Nothing was acquired, so there is nothing to unlock and the client
         // is returned cleanly.
+        await client.query("RESET lock_timeout");
         const after = await this.#readRow(client, target).catch(() => null);
         if (after !== null && after.status === "live" && !isRenewalDue(after)) {
           return this.#proceedWithRow(after);
@@ -378,7 +380,7 @@ export class ConnectionRenewer {
         // rethrows so `withPooledClient` releases the client WITH an error
         // and pg-pool destroys the session: the lock dies with it rather
         // than the pool inheriting a lock-holder.
-        await client.query(`SELECT pg_advisory_unlock($1::bigint)`, [key]);
+        await unlockSession(client, key);
       }
     });
   }

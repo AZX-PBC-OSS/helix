@@ -109,7 +109,7 @@ export const listAdminSecrets = portalRoute({
   tags,
   summary: "List global and platform secrets",
   description:
-    "Metadata only, for the `prod` tier. `boundApps` lists the apps each global secret is granted to.",
+    "Metadata only, for both environment tiers. `boundApps` lists the apps each global secret is granted to.",
   responses: {
     200: jsonResponse(z.array(SecretMetadataSchema), "The global and platform secrets."),
   },
@@ -123,7 +123,7 @@ export const createAdminSecret = portalRoute({
   tags,
   summary: "Create a global or platform secret",
   description:
-    "Always in the `prod` tier. The value is sealed by the secret store and never returned. It must fit the injection recipe.",
+    "Global secrets use the selected environment tier; platform secrets use `prod`. The value is sealed by the secret store and never returned. It must fit the injection recipe.",
   body: jsonBody(AdminSecretCreateRequestSchema),
   responses: {
     201: jsonResponse(SecretMetadataSchema, "The new secret's metadata."),

@@ -1,3 +1,4 @@
+import { secretBindingStatuses } from "./secretBindings.js";
 import { z } from "zod";
 import {
   DeltaSchema,
@@ -68,7 +69,12 @@ export async function manifestWithBindings(
   const bindings = await providerBindingStatuses(prisma, appId, manifest.capabilities);
   // Omitted when the manifest declares no provider binding, so every
   // binding-free manifest response keeps its exact original shape.
-  return { ...manifest, ...(bindings.length > 0 ? { providerBindings: bindings } : {}) };
+  const secretBindings = await secretBindingStatuses(prisma, appId, manifest.capabilities);
+  return {
+    ...manifest,
+    ...(secretBindings.length ? { secretBindings } : {}),
+    ...(bindings.length > 0 ? { providerBindings: bindings } : {}),
+  };
 }
 
 /**

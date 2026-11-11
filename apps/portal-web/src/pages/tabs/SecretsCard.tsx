@@ -1,3 +1,9 @@
+import {
+  EMPTY_SERVICE_OAUTH,
+  ServiceOAuthConfiguration,
+  ServiceOAuthCredentials,
+  ServiceOAuthDetails,
+} from "../../components/ServiceOAuthFields";
 import { useState } from "react";
 import { Button, Card, Group, PasswordInput, Select, Stack, Text, TextInput } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
@@ -35,7 +41,7 @@ export function SecretsCard({ app }: { app: App }) {
   const [value, setValue] = useState("");
   const [env, setEnv] = useState<"prod" | "dev">("prod");
   const [kind, setKind] = useState<string>("header-bearer");
-  const [form, setForm] = useState({ ...EMPTY_INJECTION_FORM });
+  const [form, setForm] = useState({ ...EMPTY_INJECTION_FORM, oauth: { ...EMPTY_SERVICE_OAUTH } });
   // `hmac-timestamp` needs both halves of a key pair; the public half is not a
   // secret, so it gets a plain input and only the private half is masked.
   const [credential, setCredential] = useState("");
@@ -140,20 +146,31 @@ export function SecretsCard({ app }: { app: App }) {
                 </Button>
               </Group>
             </Group>
+            {s.injection?.kind === "oauth-service-account" && (
+              <ServiceOAuthDetails recipe={s.injection} status={s.oauthStatus} />
+            )}
             {rotating?.id === s.id && (
               <Group gap={8} mt={10} align="flex-end" wrap="nowrap">
-                <PasswordInput
-                  label="New value"
-                  description={
-                    s.injection?.kind === "hmac-timestamp"
-                      ? 'both halves as JSON: {"credential":"…","key":"…"}'
-                      : undefined
-                  }
-                  value={rotating.value}
-                  onChange={(e) => setRotating({ id: s.id, value: e.currentTarget.value })}
-                  style={{ flex: 1 }}
-                  size="xs"
-                />
+                {s.injection?.kind === "oauth-service-account" ? (
+                  <ServiceOAuthCredentials
+                    recipe={s.injection}
+                    value={rotating.value}
+                    onChange={(value) => setRotating({ id: s.id, value })}
+                  />
+                ) : (
+                  <PasswordInput
+                    label="New value"
+                    description={
+                      s.injection?.kind === "hmac-timestamp"
+                        ? 'both halves as JSON: {"credential":"…","key":"…"}'
+                        : undefined
+                    }
+                    value={rotating.value}
+                    onChange={(e) => setRotating({ id: s.id, value: e.currentTarget.value })}
+                    style={{ flex: 1 }}
+                    size="xs"
+                  />
+                )}
                 <Button
                   size="xs"
                   disabled={!rotating.value}
@@ -206,6 +223,12 @@ export function SecretsCard({ app }: { app: App }) {
             allowDeselect={false}
           />
         </Group>
+        {kind === "oauth-service-account" && (
+          <ServiceOAuthConfiguration
+            value={form.oauth}
+            onChange={(oauth) => setForm((f) => ({ ...f, oauth }))}
+          />
+        )}
         {kind === "header" && (
           <TextInput
             label="Header name"
@@ -261,13 +284,17 @@ export function SecretsCard({ app }: { app: App }) {
             classNames={{ input: "az-mono" }}
           />
         )}
-        <PasswordInput
-          label={pair ? "Private key" : "Value"}
-          placeholder="paste the credential — stored sealed, never shown again"
-          value={value}
-          onChange={(e) => setValue(e.currentTarget.value)}
-          size="xs"
-        />
+        {kind === "oauth-service-account" ? (
+          <ServiceOAuthCredentials recipe={form.oauth} value={value} onChange={setValue} />
+        ) : (
+          <PasswordInput
+            label={pair ? "Private key" : "Value"}
+            placeholder="paste the credential — stored sealed, never shown again"
+            value={value}
+            onChange={(e) => setValue(e.currentTarget.value)}
+            size="xs"
+          />
+        )}
         <Group justify="flex-end">
           <Button
             size="xs"
@@ -288,7 +315,7 @@ export function SecretsCard({ app }: { app: App }) {
                     setName("");
                     setValue("");
                     setCredential("");
-                    setForm({ ...EMPTY_INJECTION_FORM });
+                    setForm({ ...EMPTY_INJECTION_FORM, oauth: { ...EMPTY_SERVICE_OAUTH } });
                     setKind("header-bearer");
                     setEnv("prod");
                   },

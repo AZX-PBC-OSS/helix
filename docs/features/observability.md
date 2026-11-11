@@ -52,6 +52,9 @@ terminates untrusted traffic (decision 4).
 | `helix.jobs.submit.dev` | the dev gateway's `POST /:slug/_api/jobs/:server/types/:type` — the dev tier's submission route over the same forwarding seam |
 | `helix.jobs.snapshot.edge` / `.result.edge` / `.cancel.edge` | the app host's `GET /_api/jobs/:server/:jobId` (poll), `GET …/:jobId/result` (result read) and `DELETE …/:jobId` (cancellation) — the app-facing reference routes, each forwarding to the receiver's own `helix.jobs.snapshot` / `.result` / `.cancel` span |
 | `helix.jobs.snapshot.dev` / `.result.dev` / `.cancel.dev` | the dev gateway's `/:slug`-prefixed reference routes over the same forwarding seam |
+| `helix.egress.service_oauth.recovery` | Shared service-account acquisition/recovery, with bounded outcome and environment; duration includes lock waiting. |
+| `helix.egress.service_oauth.exchange` | One physical grant/refresh exchange, never one per waiter; outcomes `acquired`, `refreshed`, `fallback`, `temporary_failure`, `needs_attention`. |
+| `helix.egress.service_oauth.retire` | Independent sealed-token retirement pass; `retired` or `temporary_failure`. |
 | `helix.egress.proxy` | egress `POST /proxy` |
 | `helix.egress.resolution` | egress delegated-call resolution — the span the proxy opens around resolving a `provider`-bearing instruction's caller connection; nests inside the proxy span, with the renewal span inside it when a renewal runs |
 | `helix.egress.exchange` | egress `POST /exchange` — the code-exchange operation |
@@ -603,3 +606,17 @@ deadline (default 10 s, `SHUTDOWN_GRACE_MS`) and runs the `onClose` hooks — th
 final telemetry batch now lands on a real stop. The batch interval (1 s) is
 what still covers crashes, `SIGKILL` and never-delivered signals; see
 [`packages/telemetry/README.md`](../../packages/telemetry/README.md).
+
+### Service-account OAuth instruments
+
+| Instrument | Kind | Dimensions | Meaning |
+| --- | --- | --- | --- |
+| `helix.egress.service_oauth.exchanges` | Counter | `helix.env`, `helix.outcome` | Physical token exchanges, including successful fallback; waiters do not add attempts. |
+| `helix.egress.service_oauth.duration` | Histogram, ms | `helix.env` | Full recovery duration, including the advisory lock. |
+| `helix.egress.service_oauth.lock_wait` | Histogram, ms | `helix.env` | Time until the session advisory lock was acquired. |
+
+These spans contain no endpoint URLs, credentials, tokens, usernames or vendor
+error text. `needs_attention` indicates a configuration/credential intervention;
+`temporary_failure` indicates an outage/cooldown or cleanup failure. Status reads
+reflect use, not a separate polling probe. As with all platform instrumentation,
+the API facade remains inert without a provider or with telemetry disabled.

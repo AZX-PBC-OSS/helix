@@ -1,3 +1,9 @@
+import {
+  EMPTY_SERVICE_OAUTH,
+  ServiceOAuthConfiguration,
+  ServiceOAuthCredentials,
+  ServiceOAuthDetails,
+} from "../../components/ServiceOAuthFields";
 import { useState } from "react";
 import {
   Button,
@@ -52,10 +58,11 @@ export function SecretsPage() {
   const revoke = useRevokeSecret();
 
   const [scope, setScope] = useState<"global" | "platform">("global");
+  const [env, setEnv] = useState<"prod" | "dev">("prod");
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
   const [kind, setKind] = useState("header-bearer");
-  const [form, setForm] = useState({ ...EMPTY_INJECTION_FORM });
+  const [form, setForm] = useState({ ...EMPTY_INJECTION_FORM, oauth: { ...EMPTY_SERVICE_OAUTH } });
   // `hmac-timestamp` needs both halves of a key pair; the public half is not a
   // secret, so it gets a plain input and only the private half is masked.
   const [credential, setCredential] = useState("");
@@ -73,6 +80,7 @@ export function SecretsPage() {
     setKind(next === "platform" ? "header" : "header-bearer");
     setForm({
       ...EMPTY_INJECTION_FORM,
+      oauth: { ...EMPTY_SERVICE_OAUTH },
       ...(next === "platform" ? { headerName: "x-api-key" } : {}),
     });
     setCredential("");
@@ -132,13 +140,24 @@ export function SecretsPage() {
                 />
                 <Select
                   label="Injection"
-                  data={INJECTION_KINDS.map((k) => ({ value: k, label: INJECTION_LABELS[k] ?? k }))}
+                  data={INJECTION_KINDS.filter(
+                    (k) => scope !== "platform" || k !== "oauth-service-account",
+                  ).map((k) => ({ value: k, label: INJECTION_LABELS[k] ?? k }))}
                   value={kind}
                   onChange={(v) => setKind(v ?? "header-bearer")}
                   size="xs"
                   allowDeselect={false}
                 />
               </Group>
+              {scope === "global" && (
+                <Select
+                  label="Tier"
+                  value={env}
+                  data={["prod", "dev"]}
+                  allowDeselect={false}
+                  onChange={(v) => setEnv(v === "dev" ? "dev" : "prod")}
+                />
+              )}
               {scope === "platform" && (
                 <Hint icon="key" tone="neutral">
                   The edge resolves this by name via{" "}
@@ -146,6 +165,12 @@ export function SecretsPage() {
                   <span className="az-mono">anthropic</span>) and routes the LLM call through egress
                   — the edge never holds the key.
                 </Hint>
+              )}
+              {kind === "oauth-service-account" && (
+                <ServiceOAuthConfiguration
+                  value={form.oauth}
+                  onChange={(oauth) => setForm((f) => ({ ...f, oauth }))}
+                />
               )}
               {kind === "header" && (
                 <TextInput
@@ -202,13 +227,17 @@ export function SecretsPage() {
                   classNames={{ input: "az-mono" }}
                 />
               )}
-              <PasswordInput
-                label={pair ? "Private key" : "Value"}
-                placeholder="paste the credential — stored sealed, never shown again"
-                value={value}
-                onChange={(e) => setValue(e.currentTarget.value)}
-                size="xs"
-              />
+              {kind === "oauth-service-account" ? (
+                <ServiceOAuthCredentials recipe={form.oauth} value={value} onChange={setValue} />
+              ) : (
+                <PasswordInput
+                  label={pair ? "Private key" : "Value"}
+                  placeholder="paste the credential — stored sealed, never shown again"
+                  value={value}
+                  onChange={(e) => setValue(e.currentTarget.value)}
+                  size="xs"
+                />
+              )}
               <Group justify="flex-end">
                 <Button
                   size="xs"
@@ -219,6 +248,7 @@ export function SecretsPage() {
                     create.mutate(
                       {
                         name,
+                        env: scope === "platform" ? "prod" : env,
                         value: pair ? packHmacValue(credential, value) : value,
                         injection: buildInjection(kind, form),
                         scope,
@@ -389,20 +419,27 @@ function SecretCard({
         </Group>
       )}
 
+      {s.injection?.kind === "oauth-service-account" && (
+        <ServiceOAuthDetails recipe={s.injection} status={s.oauthStatus} />
+      )}
       {rotating !== null && (
         <Group gap={8} mt={12} align="flex-end" wrap="nowrap">
-          <PasswordInput
-            label="New value"
-            description={
-              s.injection?.kind === "hmac-timestamp"
-                ? 'both halves as JSON: {"credential":"…","key":"…"}'
-                : undefined
-            }
-            value={rotating}
-            onChange={(e) => setRotating(e.currentTarget.value)}
-            style={{ flex: 1 }}
-            size="xs"
-          />
+          {s.injection?.kind === "oauth-service-account" ? (
+            <ServiceOAuthCredentials recipe={s.injection} value={rotating} onChange={setRotating} />
+          ) : (
+            <PasswordInput
+              label="New value"
+              description={
+                s.injection?.kind === "hmac-timestamp"
+                  ? 'both halves as JSON: {"credential":"…","key":"…"}'
+                  : undefined
+              }
+              value={rotating}
+              onChange={(e) => setRotating(e.currentTarget.value)}
+              style={{ flex: 1 }}
+              size="xs"
+            />
+          )}
           <Button
             size="xs"
             disabled={!rotating}

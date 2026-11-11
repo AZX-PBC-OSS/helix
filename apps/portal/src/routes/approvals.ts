@@ -1,3 +1,4 @@
+import { approveSecretBindings } from "../connections/secretBindings.js";
 import type { FastifyInstance } from "fastify";
 import {
   applyDeltas,
@@ -285,6 +286,7 @@ export async function approvalRoutes(app: FastifyInstance): Promise<void> {
 
       // Apply: capability deltas → capabilities JSON; a visibility delta (only
       // → public reaches here) → the flat columns.
+      await approveSecretBindings(tx, request.appId, deltas);
       const capDeltas = deltas.filter((d) => d.path !== "visibility");
       const visDelta = deltas.find((d) => d.path === "visibility");
       const data: Prisma.AppUpdateManyMutationInput = {};
