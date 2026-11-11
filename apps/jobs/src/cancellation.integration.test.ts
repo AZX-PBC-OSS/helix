@@ -860,11 +860,18 @@ describe("the cancellation seam's telemetry", () => {
         return row.status === "cancelled";
       });
 
-      const spans = recording
-        .spans()
-        .filter(
-          (s) => s.name === "helix.jobs.execute" && s.attributes["helix.jobs.job_id"] === jobId,
-        );
+      const executionSpans = () =>
+        recording
+          .spans()
+          .filter(
+            (s) => s.name === "helix.jobs.execute" && s.attributes["helix.jobs.job_id"] === jobId,
+          );
+      // The database commit is visible before the execution span ends.
+      await waitFor(
+        "the cancellation execution span to end",
+        async () => executionSpans().length > 0,
+      );
+      const spans = executionSpans();
       expect(spans.length).toBeGreaterThanOrEqual(1);
       for (const span of spans) {
         const attrs = span.attributes;

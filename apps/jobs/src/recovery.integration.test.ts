@@ -718,9 +718,15 @@ describe("the recovery sweeper's telemetry", () => {
     await waitFor("the gate to terminate the past-deadline claim", async () =>
       Boolean((await recordRow(jobId)).status === "failed"),
     );
-    const spans = recording.spans().filter((s) => s.name === "helix.jobs.execute");
-    const gated = spans.find((s) => s.attributes["helix.jobs.job_id"] === jobId);
-    expect(gated?.attributes["helix.outcome"]).toBe("deadline_exceeded");
+    const executionSpan = () =>
+      recording
+        .spans()
+        .find(
+          (s) => s.name === "helix.jobs.execute" && s.attributes["helix.jobs.job_id"] === jobId,
+        );
+    // The database commit is visible before the execution span ends.
+    await waitFor("the deadline execution span to end", async () => executionSpan() !== undefined);
+    expect(executionSpan()?.attributes["helix.outcome"]).toBe("deadline_exceeded");
   });
 
   test("a fenced loser is dispositioned on the span and counted, outcome `fenced`", async () => {
