@@ -975,8 +975,22 @@ age rows before any pass sees them stops the jobs process while it backdates,
 as `src/retention.integration.test.ts` does, instead of relying on a gap
 between passes.
 
-At most five stacks run at once across all vitest workers
-(`HELIX_REAL_STACK_SLOTS` changes the cap). A stack holds about 35 Postgres
+Synchronize assertions with observable work instead of fixed sleeps. The
+lifecycle and outbound suites use `src/test/maintenanceBarrier.ts` to require
+terminal wrapper and runner records, run two pg-boss expiry/retry supervision
+passes, and observe a service recovery pass after each. Only the queue's
+monitor scheduling timestamps are backdated; job deadlines and heartbeat
+records are unchanged. Late-completion tests wait for the execution span
+that proves the handler reached its settlement fence.
+
+Keep unrelated scenarios on separate app fixtures so they do not wait for
+each other's throttle window. The capacity suite first proves refusal and
+non-extension against the real window, then backdates that bucket's expiry
+to exercise the normal reset path. Polling deadlines, simulated slow work,
+and waits that measure real timeout or health-staleness contracts remain.
+
+At most six stacks run at once locally across all vitest workers; CI sets five
+per shard (`HELIX_REAL_STACK_SLOTS` changes the cap). A stack holds about 35 Postgres
 connections and the dev and CI clusters allow 300, so without the cap the
 suites exhaust the cluster and fail with "remaining connection slots are
 reserved". A suite waits in `startRealStack()` for a free

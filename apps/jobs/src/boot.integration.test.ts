@@ -442,7 +442,10 @@ describe("the production boot path", () => {
         // The bounded retries continue while the store is down: the body's
         // own probe count climbs between two reads.
         const probesBefore = body.checks?.[0]?.metrics?.probes ?? 0;
-        await new Promise((r) => setTimeout(r, 3_000));
+        await eventually(async () => {
+          const current = await pollHealth(port, 10_000);
+          return (current.checks?.[0]?.metrics?.probes ?? 0) > probesBefore;
+        }, 10_000);
         const later = await pollHealth(port, 10_000);
         expect(later.checks?.[0]?.metrics?.probes ?? 0).toBeGreaterThan(probesBefore);
         expect(later.status).toBe("error");

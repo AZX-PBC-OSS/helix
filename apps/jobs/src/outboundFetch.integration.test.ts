@@ -33,6 +33,7 @@ import {
 } from "@azx-pbc/shared/jobsSigning";
 
 import { JOBS_JOB_RECORD_QUALIFIED } from "./policy.js";
+import { runRecoveryBarrier } from "./test/maintenanceBarrier.js";
 import {
   createLiveApp,
   mintLoopbackCert,
@@ -83,8 +84,8 @@ let untrustedCert: ReturnType<typeof mintLoopbackCert>;
 let bundleDir: string;
 let bundlePath: string;
 
-type AppKey = "results" | "failures" | "slow" | "secret" | "gov";
-const APP_KEYS: readonly AppKey[] = ["results", "failures", "slow", "secret", "gov"];
+type AppKey = "results" | "failures" | "slow" | "ssrf" | "secret" | "gov";
+const APP_KEYS: readonly AppKey[] = ["results", "failures", "slow", "ssrf", "secret", "gov"];
 
 interface AppUnderTest {
   readonly app: App;
@@ -92,8 +93,6 @@ interface AppUnderTest {
   session: AppSession;
   /** Every submission attempt this suite made on the app — the throttle counts refusals. */
   readonly attempts: { n: number };
-  /** The wall-clock of the app's own last submission attempt (the throttle's window). */
-  lastSubmitAt: number;
 }
 
 const apps = {} as Record<AppKey, AppUnderTest>;
@@ -121,7 +120,7 @@ const instructionTokens: string[] = [];
  * What the portal said when the `slow` app's private/metadata origin grants
  * were requested, if it refused them — reported, never swallowed.
  */
-let slowGrantReport: string | undefined;
+let ssrfGrantReport: string | undefined;
 
 // ── small helpers ────────────────────────────────────────────────────────────
 
@@ -129,8 +128,6 @@ const must = <T>(value: T | null | undefined, what: string): T => {
   if (value === null || value === undefined) throw new Error(`the suite never produced ${what}`);
   return value;
 };
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Record every HttpReply the suite receives, for the final leak scan. */
 function seen(reply: HttpReply, what?: string): HttpReply {
@@ -211,7 +208,6 @@ async function submit(app: AppUnderTest, url: string): Promise<string> {
       app.attempts.n,
       `submission attempts on "${app.slug}" stay inside the edge throttle`,
     ).toBeLessThanOrEqual(9);
-    app.lastSubmitAt = Date.now();
     return app.session
       .api("POST", SUBMIT_PATH, {
         headers: { "Content-Type": "application/json", "Idempotency-Key": key },
@@ -526,6 +522,7 @@ describe("the governed outbound fetch through the real stack", () => {
       results: `of-results-${randomBytes(3).toString("hex")}`,
       failures: `of-failures-${randomBytes(3).toString("hex")}`,
       slow: `of-slow-${randomBytes(3).toString("hex")}`,
+      ssrf: `of-ssrf-${randomBytes(3).toString("hex")}`,
       secret: `of-secret-${randomBytes(3).toString("hex")}`,
       gov: `of-gov-${randomBytes(3).toString("hex")}`,
     };
@@ -566,11 +563,13 @@ describe("the governed outbound fetch through the real stack", () => {
       { origin: DNS_FAILURE_ORIGIN },
     ]);
 
+    await saveManifest(slugs.slow, [{ origin: origin.origin }]);
+
     // The SSRF scenarios need the private/metadata origins granted; if the
     // portal refuses any of them, assert the refusal, drop them, and report —
     // the affected scenarios will then observe the allowlist refusal instead.
     {
-      const slowOrigins = [
+      const ssrfOrigins = [
         { origin: origin.origin },
         { origin: `http://localhost:${portOf(origin)}` },
         { origin: `http://[::1]:${portOf(origin)}` },
@@ -578,29 +577,29 @@ describe("the governed outbound fetch through the real stack", () => {
         { origin: PRIVATE_ORIGIN },
       ];
       const first = seen(
-        await bob.put(`/api/v1/apps/${slugs.slow}/manifest`, manifestBody(slowOrigins)),
-        "slow's manifest save with the private/metadata origins",
+        await bob.put(`/api/v1/apps/${slugs.ssrf}/manifest`, manifestBody(ssrfOrigins)),
+        "ssrf's manifest save with the private/metadata origins",
       );
       if (first.status === 200) {
         const pending = ManifestUpdateResultSchema.parse(first.json()).pending;
         if (pending !== null) {
           const approved = seen(
             await alice.post(`/api/v1/approvals/${pending}/approve`),
-            "the approval of slow's manifest",
+            "the approval of ssrf's manifest",
           );
-          expect(approved.status, "the approval of slow's manifest").toBe(200);
+          expect(approved.status, "the approval of ssrf's manifest").toBe(200);
         }
       } else {
-        slowGrantReport =
-          `the portal refused the private/metadata origin grants on the "slow" app ` +
+        ssrfGrantReport =
+          `the portal refused the private/metadata origin grants on the "ssrf" app ` +
           `(HTTP ${first.status}: ${first.text.slice(0, 300)}) — they were dropped; the SSRF ` +
           `scenarios aimed at them will observe the edge's allowlist refusal instead of egress's`;
-        console.log(slowGrantReport);
+        console.log(ssrfGrantReport);
         expect(
           first.status,
           "a private-origin refusal must be an explicit validation refusal",
         ).toBe(400);
-        await saveManifest(slugs.slow, [{ origin: origin.origin }]);
+        await saveManifest(slugs.ssrf, [{ origin: origin.origin }]);
       }
     }
 
@@ -621,7 +620,6 @@ describe("the governed outbound fetch through the real stack", () => {
         slug: slugs[key],
         session: await stack.appSession(slugs[key], "bob@azx.dev"),
         attempts: { n: 0 },
-        lastSubmitAt: 0,
       };
     }
 
@@ -633,6 +631,7 @@ describe("the governed outbound fetch through the real stack", () => {
       [origin, "/probe-results"],
       [origin, "/probe-failures"],
       [origin, "/probe-slow"],
+      [origin, "/probe-ssrf"],
       [holdOrigin, "/probe-secret"],
       [tlsOrigin, "/probe-secret-tls"],
       [holdOrigin, "/probe-gov"],
@@ -645,6 +644,7 @@ describe("the governed outbound fetch through the real stack", () => {
       results: [`${origin.origin}/probe-results`],
       failures: [`${origin.origin}/probe-failures`],
       slow: [`${origin.origin}/probe-slow`],
+      ssrf: [`${origin.origin}/probe-ssrf`],
       secret: [`${holdOrigin.origin}/probe-secret`, `${tlsOrigin.origin}/probe-secret-tls`],
       gov: [`${holdOrigin.origin}/probe-gov`, `${tlsOrigin.origin}/probe-gov-tls`],
     };
@@ -1447,8 +1447,7 @@ describe("the governed outbound fetch through the real stack", () => {
       hold.release();
 
       await expectFailed(slowApp.session.api, jobId, "timeout", 120_000);
-      const quietDeadline = Date.now() + 15_000;
-      while (Date.now() < quietDeadline) await sleep(1_000);
+      await runRecoveryBarrier(stack, jobsDb, [jobId]);
       expect(originGets(origin, "/crash"), "the remote effect was never issued again").toBe(1);
       await assertAllAlive("after the jobs crash");
     },
@@ -1460,12 +1459,7 @@ describe("the governed outbound fetch through the real stack", () => {
     "SSRF controls hold with the dev allowance off, and the refusals are legible in the audit",
     { timeout: 300_000 },
     async () => {
-      const slowApp = apps.slow;
-
-      // The throttle's fixed window counts attempts, never refunds: stay inside
-      // it by waiting out the remainder since this app's last submission.
-      const waitUntil = slowApp.lastSubmitAt + 60_000;
-      if (Date.now() < waitUntil) await sleep(waitUntil - Date.now());
+      const ssrfApp = apps.ssrf;
 
       stack.setServiceEnv("egress", {
         NODE_EXTRA_CA_CERTS: bundlePath,
@@ -1481,8 +1475,8 @@ describe("the governed outbound fetch through the real stack", () => {
         `${PRIVATE_ORIGIN}/ssrf-private`,
       ];
       for (const target of ssrfTargets) {
-        const jobId = await submit(slowApp, target);
-        await expectFailed(slowApp.session.api, jobId, "upstream_error");
+        const jobId = await submit(ssrfApp, target);
+        await expectFailed(ssrfApp.session.api, jobId, "upstream_error");
         await assertAllAlive(`after the SSRF refusal of ${target}`);
       }
       for (const path of ["/ssrf-loopback", "/ssrf-name", "/ssrf-v6", "/ssrf-private"]) {
@@ -1497,8 +1491,8 @@ describe("the governed outbound fetch through the real stack", () => {
         { timeoutMs: 30_000, pollMs: 1_000 },
         async () => {
           const res = seen(
-            await alice.get(`/api/v1/apps/${slowApp.slug}/audit?limit=200`),
-            "the slow app's admin audit read",
+            await alice.get(`/api/v1/apps/${ssrfApp.slug}/audit?limit=200`),
+            "the SSRF app's admin audit read",
           );
           expect(res.status, "the admin audit read").toBe(200);
           const rows = GatewayAuditPageSchema.parse(res.json()).rows.filter(

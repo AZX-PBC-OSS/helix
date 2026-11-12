@@ -25,6 +25,7 @@ import { deriveJobsInstructionKey, mintJobsInstruction } from "@azx-pbc/shared/j
 
 import { DIAGNOSTIC_PROGRESS_LABEL, type DiagnosticJobInput } from "./diagnostics.js";
 import { JOBS_APP_LIFECYCLE_QUALIFIED, JOBS_JOB_RECORD_QUALIFIED } from "./policy.js";
+import { runRecoveryBarrier, waitForExecutionOutcome } from "./test/maintenanceBarrier.js";
 import {
   createLiveApp,
   startRealStack,
@@ -105,7 +106,7 @@ const must = <T>(value: T | null | undefined, what: string): T => {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 beforeAll(async () => {
-  stack = await startRealStack({ label: "lifecycle", diagnostics: true });
+  stack = await startRealStack({ label: "lifecycle", diagnostics: true, telemetry: true });
 
   bob = await stack.portalAs("bob@azx.dev");
 
@@ -689,8 +690,9 @@ describe("owner cancellation", () => {
         expect(cFinal.error?.code).toBe("cancelled");
         expect(cFinal.cancellationRequested).toBe(true);
 
-        // With both slots free, the runner would have claimed C if it could.
-        await sleep(5_000);
+        // A new job completing proves the worker claimed work after C was cancelled.
+        const next = await submitDiagnostic(session, { steps: 1 });
+        await pollSnapshot(session.api, next.jobId, (s) => s.status === "succeeded", 30_000);
         expect((await readSnapshot(session.api, c.jobId)).status).toBe("cancelled");
       } finally {
         histories = await watcher.stop();
@@ -754,7 +756,6 @@ describe("owner cancellation", () => {
       const session = sessions.fence;
       // ignoreAbort keeps the attempt running past the abort, so the handler's
       // natural end lands AFTER the cancellation — the fence's whole point.
-      const submittedAt = Date.now();
       const accepted = await submitDiagnostic(session, {
         steps: 6,
         stepDelayMs: 1000,
@@ -774,10 +775,8 @@ describe("owner cancellation", () => {
         await pollSnapshot(session.api, jobId, (s) => s.status === "cancelled", 90_000);
         expect(Date.now() - ackAt, "the 60-second terminal bound").toBeLessThan(60_000);
 
-        // Let the handler run past its natural end (6 steps × 1000 ms, plus
-        // slack): the completion must never land.
-        const naturalEnd = submittedAt + 6_000 + 4_000;
-        if (Date.now() < naturalEnd) await sleep(naturalEnd - Date.now());
+        // Wait for the ignored-abort handler to return and actually hit the fence.
+        await waitForExecutionOutcome(stack, jobId, "terminal_fenced");
 
         expect((await readSnapshot(session.api, jobId)).status).toBe("cancelled");
 
@@ -834,9 +833,7 @@ describe("owner cancellation", () => {
         );
         expect(final.attempt, "the interrupted attempt was never resumed").toBe(1);
 
-        // Two pg-boss heartbeat windows: any restart-driven retry or late
-        // completion would have to show by now.
-        await sleep(20_000);
+        await runRecoveryBarrier(stack, jobsDb, [jobId]);
       } finally {
         histories = await watcher.stop();
       }
@@ -982,7 +979,7 @@ describe("recovery, retries and deadlines", () => {
         await pollSnapshot(session.api, jobId, (s) => s.status === "cancelled", 90_000);
         expect(Date.now() - ackAt, "the 60-second terminal bound").toBeLessThan(60_000);
 
-        await sleep(20_000);
+        await runRecoveryBarrier(stack, jobsDb, [jobId]);
       } finally {
         histories = await watcher.stop();
       }
@@ -1033,7 +1030,7 @@ describe("recovery, retries and deadlines", () => {
         const final = await pollSnapshot(session.api, jobId, (s) => s.status === "failed", 90_000);
         expect(final.error?.code).toBe("timeout");
 
-        await sleep(15_000);
+        await runRecoveryBarrier(stack, jobsDb, [jobId]);
       } finally {
         histories = await watcher.stop();
       }
@@ -1325,9 +1322,7 @@ describe("app lifecycle through the portal", () => {
         expect(d1Public.status, "the dev job's public snapshot").toBe("cancelled");
         expect(d1Public.cancellationRequested).toBe(true);
 
-        // Past any late revival window: a cancelled record that moves after
-        // the unarchive would show in the histories below.
-        await sleep(10_000);
+        await runRecoveryBarrier(stack, jobsDb, [p1.jobId, p2.jobId, p3.jobId, d1.jobId]);
       } finally {
         histories = await watcher.stop();
       }
@@ -1493,7 +1488,7 @@ describe("app lifecycle through the portal", () => {
       for (const id of watched) {
         fingerprints.set(id, recordFingerprint(must(settled.get(id), `job ${id}'s settled row`)));
       }
-      await sleep(10_000);
+      await runRecoveryBarrier(stack, jobsDb, [...watched]);
       for (const id of watched) {
         expect(
           recordFingerprint(await recordRow(id)),
@@ -1669,9 +1664,7 @@ describe("app lifecycle through the portal", () => {
         );
         expect(finished.cancellationRequested).toBe(false);
 
-        // Past pg-boss's heartbeat-based lost-claim detection: any
-        // restart-driven retry or late completion would have to show by now.
-        await sleep(20_000);
+        await runRecoveryBarrier(stack, jobsDb, [q1.jobId, q2.jobId, q3.jobId]);
       } finally {
         histories = await watcher.stop();
       }

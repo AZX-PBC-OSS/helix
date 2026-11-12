@@ -578,15 +578,15 @@ describe("the submission throttle", () => {
         edgeBefore.status,
       );
 
-      await waitFor(
-        stack,
-        "the app's submission window to reset",
-        { timeoutMs: 75_000 },
-        async () => {
-          const bucket = await readBucket(appBucketKey(appId));
-          return bucket === null || bucket.resetAtPassed ? true : undefined;
-        },
+      // Move the persisted expiry across the database clock. The refusal and
+      // non-extension assertions above used the real window; the next request
+      // must take the production reset path without spending a minute idle.
+      const aged = await platformDb.query(
+        `UPDATE rate_counters SET "resetAt" = now() - interval '1 millisecond'
+          WHERE "bucketKey" = $1 RETURNING "bucketKey"`,
+        [appBucketKey(appId)],
       );
+      expect(aged.rowCount, "the throttled window exists before its expiry is advanced").toBe(1);
       await ensureDeploymentHeadroom(2);
 
       // The reset admits the refused key as NEW work and keeps the original

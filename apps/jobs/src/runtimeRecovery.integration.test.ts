@@ -740,12 +740,15 @@ describe("runtime recovery of the jobs plane, through the real stack", () => {
 
       // The bounded retries are visible and continuing.
       const probesBefore = check(await healthOf("jobs"), JOBS_DATABASE_CHECK).metrics?.probes ?? 0;
-      await sleep(3_000);
-      const probesAfter = check(await healthOf("jobs"), JOBS_DATABASE_CHECK).metrics?.probes ?? 0;
-      expect(
-        probesAfter,
-        "the storage supervisor's probe count kept increasing while the store was absent",
-      ).toBeGreaterThan(probesBefore);
+      await waitFor(
+        stack,
+        "another storage probe while the store is absent",
+        { timeoutMs: 10_000 },
+        async () => {
+          const probes = check(await healthOf("jobs"), JOBS_DATABASE_CHECK).metrics?.probes ?? 0;
+          return probes > probesBefore ? true : undefined;
+        },
+      );
 
       const absentSnapshot = await timed(() => session.api("GET", statusPath(a.jobId)));
       expect(absentSnapshot.value.status, `the snapshot against the absent store`).toBe(503);
