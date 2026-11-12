@@ -552,9 +552,12 @@ lines in the workspace, not OTel signals, so the rules work with
 | `jobs-capacity` | `jobs_capacity` | Retained storage at its server-wide bound, or the measurement stale |
 | `jobs-cleanup` | `jobs_cleanup` | Expired content past its 48-hour removal deadline, or the cleanup loop stopped |
 | `jobs-lifecycle` | `jobs_lifecycle_delivery` (portal), `jobs_lifecycle_recovery`, `jobs_sweeper` | Delivery or archive cancellation pending over 60 s, or the sender or sweeper stopped |
-| `jobs-unobserved` | `jobs.health.observed`, and its absence | No relay line for a target in the window, no answer, an off-protocol answer, or a missing check. Missing evidence never reads as healthy |
+| `jobs-unobserved` | `jobs.health.observed`, and its absence | No clean reading of a target in its 30-minute window: no relay line, no answer, an off-protocol answer, or a missing check. Missing evidence never reads as healthy |
 
-Each rule takes the latest reading per target and check, and alerts split by
+Each rule fires on sustained failure only. A check rule fires when no reading
+of the check in its 15-minute window is `ok`. `jobs-unobserved` fires when no
+reading of a target in 30 minutes is clean. So a single dropped fetch or a
+skipped scheduler run, both routine on Azure, never pages. Alerts split by
 target, so each jobs server alerts on its own. The diagnostic step for each rule
 is in `infra/azure/README.md`. The edge's `jobs_reachability` check is not
 relayed. It is in the edge's public body and is capped at `degraded`, so the

@@ -273,9 +273,9 @@ describe("the KQL", () => {
       .filter(([, , value]) => value!.includes("|"))
       .map(([, name, value]) => ({ name: name!, value: value! }));
     expect(kqlVars.map((v) => v.name).sort()).toEqual([
-      "latestChecks",
       "relayLines",
       "unobservedQuery",
+      "windowChecks",
     ]);
 
     // `${relayLines}` is the module's one shared base query, and the event
@@ -308,7 +308,7 @@ describe("the KQL", () => {
     ).toContain("name: relayContainerName");
 
     // The two rule queries each filter on exactly one of the relay's events.
-    expect(resolve(alertsVar("latestChecks"))).toContain(
+    expect(resolve(alertsVar("windowChecks"))).toContain(
       `tostring(p.event) == "${RELAY_CHECK_EVENT}"`,
     );
     expect(resolve(alertsVar("unobservedQuery"))).toContain(
@@ -320,7 +320,7 @@ describe("the KQL", () => {
     // names in its join(), so `[^']` would stop at the first one.
     const inlineQueries = [...ALERTS.matchAll(/query: '(.*)'/g)].map((m) => m[1]!);
     expect(inlineQueries, "only the check rules carry an inline query literal").toHaveLength(1);
-    expect(inlineQueries[0]!.startsWith("${latestChecks} |")).toBe(true);
+    expect(inlineQueries[0]!.startsWith("${windowChecks} |")).toBe(true);
     for (const token of FORBIDDEN_KQL_TOKENS) {
       expect(inlineQueries[0], `the check query must not mention ${token}`).not.toMatch(
         new RegExp(token, "i"),
@@ -328,15 +328,20 @@ describe("the KQL", () => {
     }
   });
 
-  it("grades the latest reading per server and check, on anything but ok", () => {
-    // arg_max by targetKind, target, check: the latest reading wins, so a check that
-    // recovers inside the window stops matching on the next evaluation.
-    expect(alertsVar("latestChecks")).toMatch(
-      /arg_max\(TimeGenerated[^)]*\) by targetKind, target, check/,
+  it("fires per server and check only when no reading in the window is ok", () => {
+    // One summarize by targetKind, target, check: the count of ok readings
+    // decides, and arg_max carries the latest reading for the alert to show.
+    // Grading the latest reading alone paged every single dropped fetch.
+    const windowChecks = alertsVar("windowChecks");
+    expect(windowChecks).toMatch(
+      /summarize okReadings = countif\(status == "ok"\), arg_max\(TimeGenerated[^)]*\) by targetKind, target, check/,
     );
 
     const inlineQuery = ALERTS.match(/query: '(.*)'/)![1]!;
-    expect(inlineQuery).toContain('| where status != "ok"');
+    expect(inlineQuery).toContain("| where okReadings == 0");
+    expect(inlineQuery, "a lone bad latest reading must not fire").not.toContain(
+      'where status != "ok"',
+    );
     expect(inlineQuery, "the check filter must come from the rule's own checks list").toMatch(
       /where check in \(\$\{join\(map\(rule\.checks/,
     );
@@ -344,7 +349,7 @@ describe("the KQL", () => {
 });
 
 describe("the missing-evidence rule", () => {
-  it("reads an absent target as a row, and fires on any non-observed outcome or a missing check", () => {
+  it("reads an absent target as a row, and fires only when no reading in the window is clean", () => {
     const query = alertsVar("unobservedQuery");
     expect(query).toContain("join kind=leftouter");
 
@@ -356,7 +361,23 @@ describe("the missing-evidence rule", () => {
     expect(query).toContain("datatable(targetKind: string, target: string) [${expectedTargets}]");
 
     expect(query).toContain('iff(isempty(outcome), "no_observation", outcome)');
-    expect(query).toContain('where outcome != "observed" or missingChecks != "[]"');
+    // Clean = observed with every expected check. An absent target has a null
+    // count after the left-outer join, which must read as zero, not as no row.
+    expect(query).toContain(
+      'cleanReadings = countif(outcome == "observed" and missingChecks == "[]")',
+    );
+    expect(query).toContain("where coalesce(cleanReadings, 0) == 0");
+    expect(query, "a lone bad latest reading must not fire").not.toContain(
+      'where outcome != "observed"',
+    );
+  });
+
+  it("looks back far enough to ride out skipped scheduler runs", () => {
+    const block = ALERTS.match(
+      /resource unobservedAlert 'Microsoft\.Insights\/scheduledQueryRules@[0-9-]+' = \{[\s\S]*?\n\}/,
+    )![0]!;
+    expect(block).toContain("windowSize: unobservedWindowSize");
+    expect(ALERTS).toMatch(/^param unobservedWindowSize string = 'PT30M'$/m);
   });
 
   it("names every non-observed outcome in its description", () => {

@@ -1202,11 +1202,20 @@ against the shared health contract, and writes bounded JSON lines to stdout:
   (expected checks the body did not report).
 
 The relay has no identity and no secrets, and it never logs a URL or an error
-message. The rules read those lines from the workspace, take the latest reading
-per target and check in a 15-minute window, and split alerts by target, so each
-jobs server alerts separately. None reads an HTTP status or a submission
-refusal: an ordinary throttle (429) or unfinished-capacity refusal never fires a
-rule.
+message. The rules read those lines from the workspace and split alerts by
+target, so each jobs server alerts separately. None reads an HTTP status or a
+submission refusal: an ordinary throttle (429) or unfinished-capacity refusal
+never fires a rule.
+
+**The rules fire on sustained failure, not on one reading.** A check rule fires
+only when no reading of that check in its 15-minute window (three relay runs) is
+`ok`. `-alert-jobs-unobserved` fires only when a target has no clean reading in
+its 30-minute window (`unobservedWindowSize`). A single bad reading between good
+ones is routine on Azure and never pages. The internal ingress occasionally
+drops a relay fetch that the target answered in under a millisecond, and the
+job scheduler skips runs, sometimes four in a row. Either rule resolves as soon
+as one good reading lands. The cost is detection time: a failing check pages
+after 10 to 15 minutes, and a dead relay after up to 30.
 
 | Rule                     | Fires when                                                           | Checks                                                                        | Sev | First diagnostic step                                                                                                                                                                                      |
 | ------------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------------- | --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1214,10 +1223,13 @@ rule.
 | `-alert-jobs-capacity`   | retained storage at its server-wide bound, or its measurement stale  | `jobs_capacity`                                                               | 2   | Compare `retainedServer` with the bound. If `jobs_cleanup` is also failing, fix cleanup first; saturation clears as cleanup removes expired records                                                        |
 | `-alert-jobs-cleanup`    | expired content past its 48-hour removal deadline, or loop stopped   | `jobs_cleanup`                                                                | 2   | Read the jobs app's `jobs.cleanup.overdue`, `jobs.cleanup.pass_failed` and `jobs.cleanup.backlog` events                                                                                                   |
 | `-alert-jobs-lifecycle`  | lifecycle intent pending over 60 s, or the sender or sweeper stopped | `jobs_lifecycle_delivery` (portal), `jobs_lifecycle_recovery`, `jobs_sweeper` | 2   | For `portal`, the detail names each lagging server; read the portal's `jobs.delivery.*` events. For a jobs server, read its `jobs.recovery.*` events                                                       |
-| `-alert-jobs-unobserved` | no current reading for a target                                      | none (missing evidence)                                                       | 1   | `outcome` says which: `no_observation` (the relay is not running), `no_answer` (target down or unreachable), `off_protocol` (wrong service or invalid body), or a non-empty `missing` (check not reported) |
+| `-alert-jobs-unobserved` | no clean reading for a target in 30 minutes                          | none (missing evidence)                                                       | 1   | `outcome` says which: `no_observation` (the relay is not running), `no_answer` (target down or unreachable), `off_protocol` (wrong service or invalid body), or a non-empty `missing` (check not reported) |
 
 While `-alert-jobs-unobserved` fires for a target, the other four rules have no
 current reading for it and cannot fire. Treat it as the most urgent of the five.
+For the first 15 to 30 minutes of a relay outage, neither it nor the check rules
+fire. The check rules have no readings left to grade, and the unobserved
+window has not yet run dry.
 
 To see what the relay saw, query the workspace:
 

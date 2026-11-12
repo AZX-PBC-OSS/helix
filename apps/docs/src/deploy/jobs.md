@@ -367,7 +367,9 @@ With `deployAlerts` and `deployJobs` on, a relay job reads the jobs and
 portal health bodies every 5 minutes from inside the environment, and five
 log rules alert on them: `-alert-jobs-execution`, `-alert-jobs-capacity`,
 `-alert-jobs-cleanup`, `-alert-jobs-lifecycle` and `-alert-jobs-unobserved`.
-The
+They fire on sustained failure only. A check must read not-ok for its whole
+15-minute window, and a target must go 30 minutes without a clean reading. One
+missed reading never pages. The
 [alert table](https://github.com/AZX-PBC-OSS/helix/blob/main/infra/azure/README.md#background-jobs-health-bodies-from-inside-modules-alerts-jobs-bicep)
 in the Azure README gives each rule's condition, severity and first
 diagnostic step. Treat `-alert-jobs-unobserved` first: while it fires for a

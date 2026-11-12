@@ -20,11 +20,18 @@
 // `jobs_worker` grades the runner's supervision, so an ordinary throttle or
 // capacity refusal never shows up as a dead worker.
 //
-// Each rule takes the latest reading per (target, check) inside the window, so
-// a check that recovers stops matching on the next evaluation and
-// autoMitigate resolves the alert. Missing evidence has its own rule: a target
-// that did not answer, answered off-protocol, omitted an expected check, or
-// produced no relay line at all in the window.
+// Each rule fires on a SUSTAINED failure, never on one reading: a check rule
+// matches a (target, check) only when no reading of it in the window is `ok`,
+// and the missing-evidence rule matches a target only when no reading of it in
+// its window is clean. One bad sample between good ones is a blip, and on Azure
+// blips are routine: the environment's internal ingress drops roughly one
+// relay fetch in several hundred (the target answered in under a millisecond;
+// the reply never arrived), and the job scheduler skips runs, sometimes several
+// in a row. Grading the latest reading alone paged each of those as a Sev1 and
+// resolved it five minutes later. A check that recovers stops matching as soon
+// as one `ok` reading lands, and autoMitigate resolves the alert. Missing
+// evidence has its own rule: a target that did not answer, answered
+// off-protocol, omitted an expected check, or produced no relay line at all.
 
 @description('Azure region.')
 param location string
@@ -53,8 +60,11 @@ param relayCron string = '*/5 * * * *'
 @description('How often the rules evaluate (ISO 8601 duration).')
 param evaluationFrequency string = 'PT5M'
 
-@description('How far back each evaluation looks (ISO 8601 duration). Must cover at least two relay runs, or one missed run reads as missing evidence.')
+@description('How far back each check rule looks (ISO 8601 duration). A check rule fires only when every reading in the window is not ok, so this is also how long a check must stay failing before it pages: 15 minutes holds three relay runs.')
 param windowSize string = 'PT15M'
+
+@description('How far back the missing-evidence rule looks (ISO 8601 duration). It fires only when a target has no clean reading in the window, so this must outlast the scheduler skipping runs: Azure has been seen to skip four in a row (a 25-minute gap). It is also the longest a dead relay goes unreported.')
+param unobservedWindowSize string = 'PT30M'
 
 @description('Severity of the execution rule (storage, worker, intake): accepted work cannot run. 1 = error.')
 @allowed([0, 1, 2, 3, 4])
@@ -192,7 +202,11 @@ var checkRules = [
 // `missing` fields land as `targetKind` and `missingChecks`, and `missing` is
 // read with bracket access. what-if cannot see this: a query that does not parse
 // fails only at apply, on the rule's PUT.
-var latestChecks = '${relayLines} | where tostring(p.event) == "${checkEvent}" | extend targetKind = tostring(p.kind), target = tostring(p.target), check = tostring(p.check), status = tostring(p.status), detail = tostring(p.detail), metrics = tostring(p.metrics) | summarize arg_max(TimeGenerated, status, detail, metrics) by targetKind, target, check'
+//
+// Per (target, check): how many readings in the window were `ok`, plus the
+// latest reading, which is what the alert shows. The rules match on
+// `okReadings == 0`, so one good reading anywhere in the window holds the alert.
+var windowChecks = '${relayLines} | where tostring(p.event) == "${checkEvent}" | extend targetKind = tostring(p.kind), target = tostring(p.target), check = tostring(p.check), status = tostring(p.status), detail = tostring(p.detail), metrics = tostring(p.metrics) | summarize okReadings = countif(status == "ok"), arg_max(TimeGenerated, status, detail, metrics) by targetKind, target, check'
 
 resource checkAlerts 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = [
   for rule in checkRules: {
@@ -210,7 +224,7 @@ resource checkAlerts 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = [
       criteria: {
         allOf: [
           {
-            query: '${latestChecks} | where check in (${join(map(rule.checks, c => '"${c}"'), ', ')}) | where status != "ok" | project TimeGenerated, targetKind, target, check, status, detail, metrics'
+            query: '${windowChecks} | where check in (${join(map(rule.checks, c => '"${c}"'), ', ')}) | where okReadings == 0 | project TimeGenerated, targetKind, target, check, status, detail, metrics'
             timeAggregation: 'Count'
             // One alert per server and check, so two servers (or two checks)
             // failing at once are two alerts rather than one merged one.
@@ -241,8 +255,12 @@ resource checkAlerts 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = [
 // The expected targets come from the deployment, so a target with no relay
 // line at all in the window (the relay is not running, its image is missing,
 // or it never reached that target) is a row here, not silence.
+//
+// A reading is clean when the target was observed with every expected check.
+// The rule matches a target with no clean reading in the window; the latest
+// reading's outcome says why (`no_observation` when there is none at all).
 var expectedTargets = join(map(targets, t => '"${t.kind}", "${t.target}"'), ', ')
-var unobservedQuery = 'let observed = ${relayLines} | where tostring(p.event) == "${observedEvent}" | extend targetKind = tostring(p.kind), target = tostring(p.target), outcome = tostring(p.outcome), missingChecks = tostring(p["missing"]) | summarize arg_max(TimeGenerated, outcome, missingChecks) by targetKind, target; datatable(targetKind: string, target: string) [${expectedTargets}] | join kind=leftouter observed on targetKind, target | extend outcome = iff(isempty(outcome), "no_observation", outcome) | where outcome != "observed" or missingChecks != "[]" | project targetKind, target, outcome, missingChecks'
+var unobservedQuery = 'let observed = ${relayLines} | where tostring(p.event) == "${observedEvent}" | extend targetKind = tostring(p.kind), target = tostring(p.target), outcome = tostring(p.outcome), missingChecks = tostring(p["missing"]) | summarize cleanReadings = countif(outcome == "observed" and missingChecks == "[]"), arg_max(TimeGenerated, outcome, missingChecks) by targetKind, target; datatable(targetKind: string, target: string) [${expectedTargets}] | join kind=leftouter observed on targetKind, target | extend outcome = iff(isempty(outcome), "no_observation", outcome) | where coalesce(cleanReadings, 0) == 0 | project targetKind, target, outcome, missingChecks'
 
 resource unobservedAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = {
   name: '${namePrefix}-alert-jobs-unobserved'
@@ -250,12 +268,12 @@ resource unobservedAlert 'Microsoft.Insights/scheduledQueryRules@2022-06-15' = {
   kind: 'LogAlert'
   properties: {
     displayName: '${namePrefix} jobs health unobserved'
-    description: 'The jobs health relay has no current reading for a target: no relay line in the window (no_observation: the relay job is not running), the target did not answer (no_answer), answered as something other than the expected service (off_protocol), or answered without one of its expected checks (missing). Missing evidence is never read as healthy, and while this fires the other jobs rules cannot fire for that target.'
+    description: 'The jobs health relay has had no clean reading of a target for the whole window. The latest outcome says why: no relay line at all (no_observation: the relay job is not running), the target did not answer (no_answer), answered as something other than the expected service (off_protocol), or answered without one of its expected checks (missing). One bad reading between good ones does not fire this. Missing evidence is never read as healthy, and while this fires the other jobs rules cannot fire for that target.'
     severity: unobservedSeverity
     enabled: true
     scopes: [workspaceId]
     evaluationFrequency: evaluationFrequency
-    windowSize: windowSize
+    windowSize: unobservedWindowSize
     criteria: {
       allOf: [
         {
