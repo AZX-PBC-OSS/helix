@@ -76,7 +76,12 @@ new grant or a scope change needs admin approval.
   means `base: "./"` plus `build.outDir: "dist/app"`. Setting only the base
   produces URLs that look right and all return 404.
 - **Add a root `index.html` that redirects into the scope.** The platform won't
-  add one, so without it the bare domain returns 404.
+  add one, so without it the bare domain returns 404. **Redirect to
+  `/app/index.html`, not `/app/`.** A URL maps directly to a file in the bundle,
+  and an app without the `offline` grant has no file at `app/` — the miss falls
+  back to the bundle root's `index.html`, which redirects again and loops. With
+  the grant, the platform falls back to the scope's own shell, so `/app/` works;
+  the redirect to `/app/index.html` is still correct either way.
 - **Add a web app manifest** with `start_url: /app/`, because an offline start
   from the bare domain isn't possible:
 
