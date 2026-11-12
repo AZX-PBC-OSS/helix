@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { type Server, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { SignJWT } from "jose";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { startRecordingTelemetry, type RecordingTelemetry } from "@azx-pbc/telemetry/testing";
 import {
   INSTRUCTION_AUDIENCE,
@@ -31,6 +31,21 @@ let origin: string;
 beforeAll(async () => {
   recording = startRecordingTelemetry();
   upstream = createServer((req, res) => {
+    if (req.url?.startsWith("/service-oauth")) {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => {
+        const denied = req.url!.includes("permission");
+        const old = req.headers.authorization === "Bearer old-token";
+        res.statusCode = denied ? 403 : old ? 401 : 200;
+        if (old && !req.url!.includes("bare"))
+          res.setHeader("www-authenticate", 'Bearer error="invalid_token"');
+        res.end(
+          JSON.stringify({ received: Buffer.concat(chunks).toString(), success: !old && !denied }),
+        );
+      });
+      return;
+    }
     // A throttling route: egress must label the proxied 429 so alerting on
     // `helix.outcome` can distinguish a vendor throttle from a clean pass.
     if (req.url === "/throttle") {
@@ -521,5 +536,186 @@ describe("egress /proxy — the caller hanging up", () => {
 
     await app.close();
     await new Promise<void>((resolve) => hung.close(() => resolve()));
+  });
+});
+
+describe("service-account proxy recovery", () => {
+  function serviceResolver(recovered = false, granted = true) {
+    const reject = vi.fn(async () => {});
+    const recover = vi.fn(
+      async (): Promise<ResolvedConnection | null> =>
+        granted
+          ? {
+              value: "new-token",
+              injection: { kind: "header-bearer" },
+              oauth: {
+                generation: 2,
+                recovered: true,
+                replaySafePostPaths: [],
+                recover: async () => null,
+                reject: async () => {},
+              },
+            }
+          : null,
+    );
+    const resolver: SecretResolver = {
+      close: async () => {},
+      resolve: async () => ({
+        value: "old-token",
+        injection: { kind: "header-bearer" },
+        oauth: {
+          generation: 1,
+          recovered,
+          replaySafePostPaths: ["/service-oauth/read"],
+          recover,
+          reject,
+        },
+      }),
+    };
+    return { resolver, recover, reject };
+  }
+  it.each(["/service-oauth/bare", "/service-oauth/challenge"])(
+    "recovers a rejected GET once at %s",
+    async (path) => {
+      const fixture = serviceResolver();
+      const app = makeApp(true, fixture.resolver);
+      try {
+        const response = await app.inject({
+          method: "GET",
+          url: "/proxy",
+          headers: {
+            [INSTRUCTION_HEADER]: await mint({ origin, connection: "service" }),
+            [TARGET_HEADER]: `${origin}${path}`,
+          },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(fixture.recover).toHaveBeenCalledTimes(1);
+        expect(fixture.reject).toHaveBeenCalledTimes(1);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+  it("replays the bounded body of an explicitly approved read-only POST", async () => {
+    const fixture = serviceResolver();
+    const app = makeApp(true, fixture.resolver);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/proxy",
+        payload: '{"query":"read"}',
+        headers: {
+          "content-type": "application/json",
+          [METHOD_HEADER]: "POST",
+          [INSTRUCTION_HEADER]: await mint({ origin, connection: "service" }),
+          [TARGET_HEADER]: `${origin}/service-oauth/read`,
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().received).toBe('{"query":"read"}');
+      expect(fixture.recover).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+  it.each(["write", "permission"])("does not replay a %s", async (path) => {
+    const fixture = serviceResolver();
+    const app = makeApp(true, fixture.resolver);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/proxy",
+        payload: "data",
+        headers: {
+          "content-type": "text/plain",
+          [METHOD_HEADER]: "POST",
+          [INSTRUCTION_HEADER]: await mint({ origin, connection: "service" }),
+          [TARGET_HEADER]: `${origin}/service-oauth/${path}`,
+        },
+      });
+      expect(response.statusCode).toBe(path === "permission" ? 403 : 401);
+      expect(fixture.recover).not.toHaveBeenCalled();
+      if (path === "permission") expect(fixture.reject).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+  it("does not restart the ladder after this operation already recovered", async () => {
+    const fixture = serviceResolver(true);
+    const app = makeApp(true, fixture.resolver);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/proxy",
+        headers: {
+          [INSTRUCTION_HEADER]: await mint({ origin, connection: "service" }),
+          [TARGET_HEADER]: `${origin}/service-oauth/read`,
+        },
+      });
+      expect(response.statusCode).toBe(401);
+      expect(fixture.recover).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+  it("stops before replay when the grant was revoked during recovery", async () => {
+    const fixture = serviceResolver(false, false);
+    const app = makeApp(true, fixture.resolver);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/proxy",
+        headers: {
+          [INSTRUCTION_HEADER]: await mint({ origin, connection: "service" }),
+          [TARGET_HEADER]: `${origin}/service-oauth/read`,
+        },
+      });
+      expect(response.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+  it("refuses a static replacement approved during recovery", async () => {
+    const fixture = serviceResolver();
+    fixture.recover.mockResolvedValueOnce({
+      value: "static-SENTINEL",
+      injection: { kind: "query", param: "key" },
+    });
+    const app = makeApp(true, fixture.resolver);
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/proxy",
+        headers: {
+          [INSTRUCTION_HEADER]: await mint({ origin, connection: "service" }),
+          [TARGET_HEADER]: `${origin}/service-oauth/read`,
+        },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.body).not.toContain("SENTINEL");
+    } finally {
+      await app.close();
+    }
+  });
+  it("refuses a replay-safe POST above the replay cap before dispatch", async () => {
+    const fixture = serviceResolver();
+    const app = makeApp(true, fixture.resolver);
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: "/proxy",
+        payload: "x".repeat(262145),
+        headers: {
+          "content-type": "text/plain",
+          [METHOD_HEADER]: "POST",
+          [INSTRUCTION_HEADER]: await mint({ origin, connection: "service" }),
+          [TARGET_HEADER]: `${origin}/service-oauth/read`,
+        },
+      });
+      expect(response.statusCode).toBe(413);
+      expect(fixture.recover).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
   });
 });

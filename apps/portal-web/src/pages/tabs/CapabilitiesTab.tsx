@@ -1,3 +1,4 @@
+import { SERVICE_ACCOUNT_WARNING } from "@azx-pbc/shared";
 import { useMemo, useState } from "react";
 import {
   Box,
@@ -691,9 +692,20 @@ export function CapabilitiesTab({ app }: { app: App }) {
                       ? manifest.data?.providerBindings?.find(
                           (b) => b.origin === o.origin && b.ref === o.provider,
                         )
-                      : undefined;
+                      : o.credential === "secret"
+                        ? manifest.data?.secretBindings?.find(
+                            (b) => b.origin === o.origin && b.name === o.connection,
+                          )
+                        : undefined;
                   return (
                     <Stack key={i} gap={6}>
+                      {manifest.data?.secretBindings?.some(
+                        (b) => b.origin === o.origin && b.name === o.connection && b.serviceAccount,
+                      ) && (
+                        <Text size="xs" c="orange">
+                          {SERVICE_ACCOUNT_WARNING}
+                        </Text>
+                      )}
                       <Group gap={8} align="flex-end" wrap="wrap">
                         <TextInput
                           label={i === 0 ? "Proxied origin" : undefined}

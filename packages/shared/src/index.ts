@@ -51,3 +51,5 @@ export * from "./platformSettings.js";
 // out of the barrel for the same reason — `node:crypto` + `jose` — via the
 // `@azx-pbc/shared/jobsSigning` and `@azx-pbc/shared/jobsSigningVectors`
 // subpaths.
+
+export * from "./serviceOAuth.js";

@@ -1,3 +1,4 @@
+import { ServiceOAuthDetails } from "../../components/ServiceOAuthFields";
 import { useMemo, useState } from "react";
 import {
   Box,
@@ -335,6 +336,20 @@ function ApprovalCard({ request: a }: { request: ApprovalRequest }) {
             </Button>
           </Group>
 
+          {a.deltas.flatMap((d) =>
+            (d.secretStamps ?? [])
+              .filter((s) => s.injection.kind === "oauth-service-account")
+              .map((s) =>
+                s.injection.kind === "oauth-service-account" ? (
+                  <div key={`${d.path}:${s.env}`}>
+                    <Text size="sm" fw={600}>
+                      {s.name} · {s.env}
+                    </Text>
+                    <ServiceOAuthDetails recipe={s.injection} />
+                  </div>
+                ) : null,
+              ),
+          )}
           {showDetails && <DetailsPanel request={a} />}
 
           {noteFor && (

@@ -61,3 +61,13 @@ that. Show it to the user.
 The `/_api/jobs/*` routes have their own codes, such as `idempotency_conflict`
 and `jobs_unavailable`, and their own retry rules. See
 [Errors from the jobs routes](./jobs#errors-from-the-jobs-routes).
+
+### Service-account authentication
+
+The fetch gateway returns HTTP 503 with `service_account_unavailable` when token
+acquisition is temporarily unavailable, or `service_account_rejected` when the
+configured credentials or authentication configuration need attention. The app
+should display a useful failure message without collecting credentials itself.
+An owner can inspect the connection's status in the portal and rotate or replace
+it. Replacement requires approval. Temporary failures respect a shared cooldown,
+so repeatedly retrying immediately will not force another login.

@@ -1,5 +1,10 @@
 import { z } from "zod";
 
+import {
+  ServiceOAuthRecipeSchema,
+  ServiceOAuthStatusSchema,
+  parseServiceOAuthCredential,
+} from "./serviceOAuth.js";
 import { EnvSchema } from "./env.js";
 
 /**
@@ -104,9 +109,9 @@ const headerTemplate = (from: RecipeSource) =>
  * Three of the four are **static** shapes — the stored value is presented
  * verbatim. `hmac-timestamp` is a **stateless derivation**: computed per request,
  * but from the credential and the clock alone, with no token cache, no network
- * call, and no request context. Recipes that are *stateful or networked* (OAuth
- * client-credentials, SigV4 with session tokens, mTLS) remain deferred — see
- * design §10 q2.
+ * call, and no request context. The service-account OAuth variant resolves issued tokens before bearer
+ * injection; its separate manager owns the state and network hops. SigV4 with
+ * session tokens and mTLS remain deferred.
  */
 const injectionRecipe = (from: RecipeSource) =>
   z.discriminatedUnion("kind", [
@@ -175,6 +180,7 @@ const injectionRecipe = (from: RecipeSource) =>
         (r) => r.timestampHeader !== r.authHeader,
         "timestampHeader and authHeader must differ — the second write overwrites the first",
       ),
+    ServiceOAuthRecipeSchema,
   ]);
 
 /**
@@ -216,7 +222,13 @@ export const HeaderNameSchema = headerName("request");
  * maintained because the order is the UI select order; a test asserts it against
  * the union's discriminators so it cannot drift.
  */
-export const INJECTION_KINDS = ["header-bearer", "header", "query", "hmac-timestamp"] as const;
+export const INJECTION_KINDS = [
+  "header-bearer",
+  "header",
+  "query",
+  "hmac-timestamp",
+  "oauth-service-account",
+] as const;
 
 /**
  * The `value` for an `hmac-timestamp` secret: both halves of the key pair.
@@ -275,6 +287,20 @@ export function parseHmacCredential(value: string): HmacCredential {
  * never interpolates the material.
  */
 export function validateMaterialForRecipe(recipe: InjectionRecipe, value: string): void {
+  if (recipe.kind === "oauth-service-account") {
+    parseServiceOAuthCredential(recipe, value);
+    return;
+  }
+  const blob = safeJsonObject(value);
+  if (
+    blob &&
+    typeof blob === "object" &&
+    ("clientSecret" in blob ||
+      "password" in blob ||
+      ("kind" in blob && blob.kind === "oauth-service-account"))
+  ) {
+    throw new Error("OAuth credentials require the service-account recipe");
+  }
   if (recipe.kind === "hmac-timestamp") {
     parseHmacCredential(value);
     return;
@@ -334,6 +360,7 @@ export const SecretMetadataSchema = z.object({
   createdAt: z.string(),
   rotatedAt: z.string().nullable().optional(),
   lastUsedAt: z.string().nullable().optional(),
+  oauthStatus: ServiceOAuthStatusSchema.optional(),
   boundApps: z.array(z.string()).default([]),
 });
 export type SecretMetadata = z.infer<typeof SecretMetadataSchema>;
@@ -373,7 +400,11 @@ export const ADMIN_SECRET_SCOPES = ["global", "platform"] as const;
 /** Admin create body: the shared create shape plus the target scope (default `global`). */
 export const AdminSecretCreateRequestSchema = SecretCreateRequestSchema.extend({
   scope: z.enum(ADMIN_SECRET_SCOPES).default("global"),
-});
+}).refine(
+  (v) =>
+    v.scope !== "platform" || (v.injection.kind !== "oauth-service-account" && v.env === "prod"),
+  "platform secrets require prod and do not support service-account OAuth",
+);
 export type AdminSecretCreateRequest = z.infer<typeof AdminSecretCreateRequestSchema>;
 
 /** A grant of a `global` secret to an app. */

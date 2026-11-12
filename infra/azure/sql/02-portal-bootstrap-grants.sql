@@ -53,4 +53,8 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'sessions') THEN
     REVOKE INSERT, UPDATE ON sessions FROM helix_portal;
   END IF;
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'service_oauth_tokens') THEN
+    REVOKE ALL ON service_oauth_tokens, service_oauth_retirements FROM helix_portal;
+    GRANT SELECT ("secretId", status, "expiresAt", "retryAfter") ON service_oauth_tokens TO helix_portal;
+  END IF;
 END $$;

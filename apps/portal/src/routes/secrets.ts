@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import {
   ADMIN_SECRET_SCOPES,
+  ServiceOAuthStatusSchema,
   type InjectionRecipe,
   StoredInjectionRecipeSchema,
   type SecretMetadata,
@@ -63,6 +64,7 @@ interface SecretRow {
   createdAt: Date;
   rotatedAt: Date | null;
   lastUsedAt: Date | null;
+  oauthTokens?: { status: string; expiresAt: Date | null; retryAfter: Date | null } | null;
 }
 
 export async function secretRoutes(app: FastifyInstance): Promise<void> {
@@ -104,18 +106,30 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     return recipe;
   };
 
-  const toMetadata = (row: SecretRow, boundApps: string[] = []): SecretMetadata => ({
-    id: row.id,
-    name: row.name,
-    scope: row.scope as SecretScope,
-    env: row.env === "dev" ? "dev" : "prod",
-    injection: readRecipe(row),
-    createdBy: row.createdBy,
-    createdAt: row.createdAt.toISOString(),
-    rotatedAt: row.rotatedAt ? row.rotatedAt.toISOString() : null,
-    lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
-    boundApps,
-  });
+  const toMetadata = (row: SecretRow, boundApps: string[] = []): SecretMetadata => {
+    const injection = readRecipe(row);
+    return {
+      id: row.id,
+      name: row.name,
+      scope: row.scope as SecretScope,
+      env: row.env === "dev" ? "dev" : "prod",
+      injection,
+      createdBy: row.createdBy,
+      createdAt: row.createdAt.toISOString(),
+      rotatedAt: row.rotatedAt ? row.rotatedAt.toISOString() : null,
+      lastUsedAt: row.lastUsedAt ? row.lastUsedAt.toISOString() : null,
+      ...(injection?.kind === "oauth-service-account"
+        ? {
+            oauthStatus: ServiceOAuthStatusSchema.parse({
+              status: row.oauthTokens?.status ?? "unconfigured",
+              expiresAt: row.oauthTokens?.expiresAt?.toISOString() ?? null,
+              retryAfter: row.oauthTokens?.retryAfter?.toISOString() ?? null,
+            }),
+          }
+        : {}),
+      boundApps,
+    };
+  };
 
   // Custody must be configured (a KEK in dev / Key Vault in prod) to seal.
   const store = (): SecretStore => {
@@ -229,6 +243,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     // (appId, env, name), so a name can appear once per tier.
     const rows = await app.prisma.appSecret.findMany({
       where: { scope: "app", appId: appRow.id },
+      include: { oauthTokens: { select: { status: true, expiresAt: true, retryAfter: true } } },
       orderBy: [{ env: "asc" }, { createdAt: "asc" }],
     });
     return responseBody(
@@ -342,8 +357,11 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
   contractRoute(app, portal.listAdminSecrets, async (req) => {
     requireAdmin(req);
     const rows = await app.prisma.appSecret.findMany({
-      where: { scope: { in: [...ADMIN_SECRET_SCOPES] }, env: "prod" },
-      include: { grants: { include: { app: true } } },
+      where: { scope: { in: [...ADMIN_SECRET_SCOPES] } },
+      include: {
+        oauthTokens: { select: { status: true, expiresAt: true, retryAfter: true } },
+        grants: { include: { app: true } },
+      },
       orderBy: [{ scope: "asc" }, { createdAt: "asc" }],
     });
     return responseBody(
@@ -365,9 +383,9 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
     // The partial unique index `app_secrets_admin_scope_name_key` is what actually holds
     // under concurrency (Postgres treats the NULL `appId` as distinct, so the model's
     // @@unique doesn't cover these scopes). Pinned to the prod tier — uniqueness is now
-    // per-env (dev-mode §6); step 2 parametrizes it.
+    // per environment. Platform vendor credentials remain prod-only.
     const existing = await app.prisma.appSecret.findFirst({
-      where: { scope: body.scope, env: "prod", name: body.name },
+      where: { scope: body.scope, env: body.env, name: body.name },
     });
     if (existing) {
       throw new AppError("conflict", `${body.scope} secret "${body.name}" already exists`);
@@ -380,7 +398,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         data: {
           scope: body.scope,
           appId: null,
-          env: "prod",
+          env: body.env,
           name: body.name,
           material,
           injection: body.injection,
@@ -395,7 +413,7 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
         appId: null,
         actor: actor.sub,
         scope: body.scope,
-        env: "prod",
+        env: body.env,
         name: body.name,
         reason: "create-rollback",
       });

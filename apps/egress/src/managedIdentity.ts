@@ -1,3 +1,4 @@
+import type { Agent } from "undici";
 import type { TokenProvider } from "@azx-pbc/secret-store";
 import type { ManagedIdentityConnectionRule } from "./config.js";
 import type { ResolvedConnection, SecretResolver } from "./secrets.js";
@@ -65,11 +66,15 @@ export class ManagedIdentityResolver implements SecretResolver {
     this.#rules = new Map(rules.map((r) => [r.connection, r.hostSuffix]));
   }
 
+  configureTransport(dispatcher: Agent): void {
+    this.#inner.configureTransport?.(dispatcher);
+  }
+
   async resolve(
     ...args: Parameters<SecretResolver["resolve"]>
   ): Promise<ResolvedConnection | null> {
-    const [appId, connection, capability, env, origin] = args;
-    const stored = await this.#inner.resolve(appId, connection, capability, env, origin);
+    const [, connection, capability, , origin] = args;
+    const stored = await this.#inner.resolve(...args);
     if (stored) return stored;
 
     if (capability !== "llm") return null;

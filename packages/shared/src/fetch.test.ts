@@ -19,8 +19,13 @@ const DELEGATED_CODES = [
 ] as const;
 
 describe("FETCH_ERROR_CODES", () => {
-  it("keeps every legacy code, in order, and widens by exactly the three delegated codes", () => {
-    expect(FETCH_ERROR_CODES).toEqual([...LEGACY_CODES, ...DELEGATED_CODES]);
+  it("keeps existing codes in order and adds bounded service-account failures", () => {
+    expect(FETCH_ERROR_CODES).toEqual([
+      ...LEGACY_CODES,
+      ...DELEGATED_CODES,
+      "service_account_unavailable",
+      "service_account_rejected",
+    ]);
   });
 
   it.each(LEGACY_CODES)("parses the legacy code %s unchanged", (code) => {

@@ -435,3 +435,24 @@ are small, deployable references for each capability:
 | `oversell` | The compare-and-swap write pattern |
 | `fetch-proxy` | Calling the GitHub API with an injected key |
 | `offline` | The offline service worker |
+
+## Service-account OAuth connections
+
+An owner can configure **Service account OAuth** under Connection secrets, then
+bind the secret name to a proxied API origin and request approval. Administrators
+can also grant a global service-account secret to several apps. The app calls the
+existing `/_api/fetch/<url>` gateway; it must never collect passwords, exchange
+tokens, or add an Authorization header itself.
+
+Every caller uses the configured service account's upstream permissions. Choose
+an account whose access is appropriate for everyone who can use the app. The
+platform supports client credentials and, for legacy APIs, password grants with
+refresh and automatic grant fallback. Prefer client credentials when supported.
+
+The platform can retry a read once after a clear authentication rejection. POST
+reads require the owner to configure and obtain approval for their exact paths;
+those request bodies are limited to 256 KiB. Other writes are not replayed.
+Permission denials and ambiguous network failures do not trigger automatic retries.
+Temporary authentication failures return 503; an owner can inspect the connection
+status and rotate rejected credentials in the portal. Replacing configuration
+requires a new approval even when the secret name stays the same.

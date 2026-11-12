@@ -160,6 +160,8 @@ export const FETCH_ERROR_CODES = [
   "connection_required",
   "provider_unavailable",
   "provider_misconfigured",
+  "service_account_unavailable",
+  "service_account_rejected",
 ] as const;
 export const FetchErrorCodeSchema = z.enum(FETCH_ERROR_CODES);
 export type FetchErrorCode = z.infer<typeof FetchErrorCodeSchema>;

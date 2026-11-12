@@ -1,3 +1,6 @@
+import { SpanStatusCode, context } from "@opentelemetry/api";
+import { ATTR_ENV, ATTR_OUTCOME, type ServiceOAuthOutcome } from "@azx-pbc/shared/telemetry";
+import { egressSpanAttributes } from "./spanAttributes.js";
 import {
   metrics,
   trace,
@@ -9,6 +12,9 @@ import {
 } from "@opentelemetry/api";
 import {
   DURATION_BUCKETS_MS,
+  INSTR_SERVICE_OAUTH_EXCHANGES,
+  INSTR_SERVICE_OAUTH_DURATION,
+  INSTR_SERVICE_OAUTH_LOCK_WAIT,
   INSTR_EGRESS_EXCHANGES,
   INSTR_EGRESS_PROXY_DURATION,
   INSTR_EGRESS_RENEWALS,
@@ -29,6 +35,9 @@ import { SERVICE_NAME } from "./serviceName.js";
 export const tracer: Tracer = trace.getTracer(SERVICE_NAME);
 
 export interface EgressInstruments {
+  serviceOAuthExchanges: Counter;
+  serviceOAuthDuration: Histogram;
+  serviceOAuthLockWait: Histogram;
   /** `outcome` only. Never `appId`: see the allowlist note below. */
   proxyDuration: Histogram;
   /** Reconcile attempts by `outcome` ∈ PROVIDERS_RECONCILE_OUTCOMES. */
@@ -71,6 +80,15 @@ export function instruments(): EgressInstruments {
   const meter = provider.getMeter(SERVICE_NAME);
   builtAgainst = provider;
   cached = {
+    serviceOAuthExchanges: meter.createCounter(INSTR_SERVICE_OAUTH_EXCHANGES),
+    serviceOAuthDuration: meter.createHistogram(INSTR_SERVICE_OAUTH_DURATION, {
+      unit: "ms",
+      advice: { explicitBucketBoundaries: [...DURATION_BUCKETS_MS] },
+    }),
+    serviceOAuthLockWait: meter.createHistogram(INSTR_SERVICE_OAUTH_LOCK_WAIT, {
+      unit: "ms",
+      advice: { explicitBucketBoundaries: [...DURATION_BUCKETS_MS] },
+    }),
     proxyDuration: meter.createHistogram(INSTR_EGRESS_PROXY_DURATION, {
       description: "Outbound proxy duration, measured to stream close.",
       unit: "ms",
@@ -95,4 +113,26 @@ export function instruments(): EgressInstruments {
     }),
   };
   return cached;
+}
+
+/** Only bounded outcomes leave the service-account custody path. */
+export async function serviceOAuthSpan<T>(
+  name: string,
+  env: string | undefined,
+  fn: (outcome: (value: ServiceOAuthOutcome) => void) => Promise<T>,
+): Promise<T> {
+  const span = tracer.startSpan(name);
+  let outcome: ServiceOAuthOutcome = "temporary_failure";
+  try {
+    return await context.with(trace.setSpan(context.active(), span), () =>
+      fn((value) => {
+        outcome = value;
+      }),
+    );
+  } finally {
+    span.setAttributes(egressSpanAttributes({ [ATTR_ENV]: env, [ATTR_OUTCOME]: outcome }));
+    if (outcome === "temporary_failure" || outcome === "needs_attention")
+      span.setStatus({ code: SpanStatusCode.ERROR });
+    span.end();
+  }
 }

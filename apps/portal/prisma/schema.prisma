@@ -40,8 +40,8 @@ enum VisibilityMode {
 /// `currentVersionId` is the live pointer — null before the first promote;
 /// "deploy" flips it, "rollback" flips it back (architecture §4.3).
 model App {
-  id                 String            @id @default(uuid()) @db.Uuid
-  slug               String            @unique
+  id                 String                    @id @default(uuid()) @db.Uuid
+  slug               String                    @unique
   displayName        String
   /// What the app is for, in one sentence. Plain text — the cap (500) lives in
   /// zod (`AppSchema.description`), not here, so re-tuning it needs no
@@ -74,7 +74,7 @@ model App {
   /// empty is also a legal (deny-everyone) `group` state. Cap lives in zod
   /// (`MAX_VISIBILITY_GROUPS`), not here — an array needs no migration to
   /// re-tune it (ADR-0040 §5).
-  visibilityGroupIds String[]        @default([])
+  visibilityGroupIds String[]                  @default([])
   // Shared-password credential for `password` visibility (docs/features/
   // authentication.md). `passwordHash`/`passwordSalt` (scrypt) are PROJECTED to
   // the edge to verify a login; `passwordEnc` (AES-256-GCM) is portal-only —
@@ -86,15 +86,16 @@ model App {
   passwordSetAt      DateTime?
   // The live version pointer. One-to-one with Version; SetNull so deleting a
   // version (only via app cascade in practice) can't dangle the pointer.
-  currentVersionId   String?           @unique @db.Uuid
-  currentVersion     Version?          @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
-  versions           Version[]         @relation("AppVersions")
+  currentVersionId   String?                   @unique @db.Uuid
+  currentVersion     Version?                  @relation("CurrentVersion", fields: [currentVersionId], references: [id], onDelete: SetNull)
+  versions           Version[]                 @relation("AppVersions")
   sessions           Session[]
   approvalRequests   ApprovalRequest[]
   /// Secrets owned by this app (`scope = 'app'`); global secrets have no owner.
   secrets            AppSecret[]
   /// Grants of `global` secrets to this app (the consuming side).
   grantedSecrets     AppSecretGrant[]
+  secretBindings     SecretConnectionBinding[]
   /// Dev-mode tokens for developing this app against its env=dev partition (§4).
   devTokens          AppDevToken[]
   /// The GitHub repo whose CI may upload previews of this app (ADR-0051).
@@ -103,14 +104,14 @@ model App {
   /// and enforces. JSON matches @azx-pbc/shared `CapabilitiesSchema`; the edge
   /// reads it through the registry projection. Defaults to the baseline (no
   /// capabilities). Manifest versioning/approvals are a v1 control-plane feature.
-  capabilities       Json              @default("{}")
+  capabilities       Json                      @default("{}")
   /// Optimistic-concurrency guard over the **effective policy state** — the
   /// `capabilities` blob plus the two `visibility*` columns (docs/design/
   /// approvals.md §5). Every path that reads those columns and writes them back
   /// compare-and-swaps on the value it read and bumps it, so two writers cannot
   /// silently lose each other's change; the loser gets a 409. Not projected to
   /// the edge — it exists only to serialise control-plane writes.
-  policyVersion      Int               @default(0)
+  policyVersion      Int                       @default(0)
   /// Archived apps return 410 + Clear-Site-Data at the edge (architecture §7).
   archivedAt         DateTime?
   /// The app's jobs lifecycle generation (background-jobs-plane design §5,
@@ -121,9 +122,9 @@ model App {
   /// Not projected to the edge by this column alone — the edge projection
   /// selects its own explicit column list, and the jobs routing tickets carry
   /// the generation there.
-  jobsGeneration     Int               @default(1)
-  createdAt          DateTime          @default(now())
-  updatedAt          DateTime          @updatedAt
+  jobsGeneration     Int                       @default(1)
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
 
   @@map("apps")
 }
@@ -577,25 +578,27 @@ model AppVisit {
 /// route's pre-check remains as a friendly 409; the index is what makes it safe
 /// under concurrency, because `seal()` writes to the vault before the row exists.
 model AppSecret {
-  id         String           @id @default(uuid()) @db.Uuid
-  scope      String
-  appId      String?          @db.Uuid
-  app        App?             @relation(fields: [appId], references: [id], onDelete: Cascade)
+  id                   String              @id @default(uuid()) @db.Uuid
+  scope                String
+  appId                String?             @db.Uuid
+  app                  App?                @relation(fields: [appId], references: [id], onDelete: Cascade)
   /// Partition tier (dev-mode design §6): 'prod' | 'dev'. A dev fetch resolves
   /// only dev connection secrets and vice-versa; egress scopes resolution by the
   /// env carried in the attested instruction. `platform` (LLM vendor) secrets are
   /// resolved by name only and are env-agnostic.
-  env        String           @default("prod")
-  name       String
-  material   String
+  env                  String              @default("prod")
+  name                 String
+  material             String
   /// @azx-pbc/shared InjectionRecipe — how the resolved secret is applied outbound.
-  injection  Json
-  createdBy  String
-  createdAt  DateTime         @default(now())
-  rotatedAt  DateTime?
+  injection            Json
+  createdBy            String
+  createdAt            DateTime            @default(now())
+  rotatedAt            DateTime?
   /// Stamped by the egress service on each successful injection (stale report, §6).
-  lastUsedAt DateTime?
-  grants     AppSecretGrant[]
+  lastUsedAt           DateTime?
+  grants               AppSecretGrant[]
+  credentialGeneration Int                 @default(1)
+  oauthTokens          ServiceOAuthTokens?
 
   @@unique([appId, env, name])
   @@map("app_secrets")
@@ -910,4 +913,39 @@ model BlockedSlugTerm {
   createdAt DateTime @default(now())
 
   @@map("blocked_slug_terms")
+}
+
+model ServiceOAuthTokens {
+  secretId             String    @id @db.Uuid
+  secret               AppSecret @relation(fields: [secretId], references: [id], onDelete: Cascade)
+  credentialGeneration Int
+  generation           Int       @default(0)
+  access               String?
+  refresh              String?
+  expiresAt            DateTime?
+  status               String    @default("unconfigured")
+  retryAfter           DateTime?
+  attempt              String?   @db.Uuid
+
+  @@map("service_oauth_tokens")
+}
+
+model ServiceOAuthRetirement {
+  materialHash Bytes    @id
+  material     String
+  createdAt    DateTime @default(now())
+
+  @@map("service_oauth_retirements")
+}
+
+model SecretConnectionBinding {
+  appId    String @db.Uuid
+  app      App    @relation(fields: [appId], references: [id], onDelete: Cascade)
+  origin   String
+  name     String
+  env      String
+  secretId String @db.Uuid
+
+  @@id([appId, origin, name, env])
+  @@map("secret_connection_bindings")
 }

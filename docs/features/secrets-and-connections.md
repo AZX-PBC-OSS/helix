@@ -218,3 +218,123 @@ credential — and the value was never in the bundle.
 - **Grant via the approval queue** (separation-of-duty between granting and
   approving admins) — design §10.
 - **Rotation policy / expiry** off `rotatedAt` — design §10.
+
+## Service-account OAuth
+
+Choose **Service account OAuth** when an API issues access tokens from stored
+service credentials. App owners configure it under Connection secrets; admins
+can create global credentials in either environment and grant them to apps.
+The reserved `platform` scope does not support this recipe.
+
+Requests use the service account's permissions. The external API does not apply
+each app user's permissions. Only connect accounts whose access is appropriate
+for everyone allowed to use the connection. The configuration, detail and approval
+views display this warning.
+
+The immutable `oauth-service-account` recipe contains `tokenEndpoint`,
+`grantType` (`client_credentials` or legacy `password`), `clientAuthentication`
+(`client_secret_basic`, `client_secret_post`, or `none` for password grants),
+`scopes`, and optional `replaySafePostPaths`. The endpoint must use HTTPS with no
+userinfo, query or fragment. No arbitrary OAuth parameters or request templates
+are accepted. Prefer client credentials: password grants are an explicit legacy
+compatibility exception to RFC 9700, not a recommended new integration pattern.
+
+Credentials are a sealed JSON envelope tagged `kind: oauth-service-account`.
+Authenticated clients supply `clientId` and `clientSecret`; password grants also
+supply `username` and `password`. With `clientAuthentication: none`, `clientId`
+is optional and no client secret is accepted. Both create and rotation validate
+the envelope. Static recipes refuse these credential objects.
+
+Saving a secret does not authorize its use. The manifest's origin binding must
+be approved. Approval snapshots the resolved secret's identity, configuration
+and environment. Egress checks those identities on every use; same-name
+replacement or app-scoped shadowing of a global credential cannot inherit the
+approval. Save the manifest again to request approval for a replacement or newly
+configured environment. Credential rotation preserves the approved configuration
+and invalidates issued tokens immediately in Postgres. Origins use their canonical
+scheme/host/port for these checks. Ordinary static-secret replacements remain
+self-service. An existing OAuth approval fence still blocks a static replacement
+or shadow until that change is explicitly approved.
+
+### Recovery and replay limits
+
+Egress uses a usable shared access token, otherwise refreshes it when possible,
+then falls back to the configured grant. Revoking only a refresh token may not
+stop access while the stored grant credentials work. Delete the secret or revoke
+an app's global grant to stop new use. Authorization is rechecked after recovery
+and before dispatch; already dispatched requests may finish.
+
+Token state is keyed by secret ID, which identifies its environment. Local
+promise coalescing and a namespaced Postgres session lock coordinate replicas.
+Recovery gets 20 seconds, including lock waiting (at most five seconds), and at
+most two token exchanges. Lock holders use a separate two-connection pool so
+slow exchanges cannot consume the five-connection secret-resolution pool.
+Tokens need explicit numeric expiry metadata with at
+least ten seconds of lifetime; egress renews within five seconds of expiry.
+Scopes explicitly returned by the vendor must include the configured scopes;
+omission means the requested scope remains in effect. No JWT claims determine
+expiry. Token responses are capped at 64 KiB and redirects are never followed.
+Every hop uses the existing DNS-pinned SSRF transport.
+
+A durable attempt marker precedes exchange. After a crash, a new owner uses the
+stored grant instead of replaying a possibly consumed refresh token. A refresh
+response without a refresh token retains the old one; a fresh grant without one
+clears the previous grant's refresh token. Conditional writes fence rotation,
+deletion and older token generations.
+
+A clear `Bearer invalid_token` challenge or a bare 401 can trigger one resource
+retry for GET/HEAD. Exact paths in `replaySafePostPaths` additionally permit
+read-only POST retries, buffering at most 256 KiB (or the deployment's smaller
+body cap). The owner must verify those operations are safe to repeat; approval
+includes these paths. Oversized replayable bodies return 413 before dispatch.
+Other uploads and all responses retain streaming. If the resource rejects a token issued during this operation, a shared
+30-second cooldown prevents repeated logins on every incoming call. No retry follows a 403, generic
+server error or ambiguous network failure. A request that already acquired or
+refreshed a token cannot restart recovery after dispatch. Retries remain inside
+the admitted proxy operation and its one edge metering event. Service-account
+replay buffering, replayable dispatch up to response headers, and recovery after
+dispatch share a 30-second deadline. The timer is removed when headers arrive;
+response streams and non-replayable uploads keep the normal dispatcher timeouts
+and caller cancellation. The initial token recovery has its own 20-second budget.
+
+Apps receive `service_account_unavailable` for temporary failures and
+`service_account_rejected` when stored credentials or configuration need attention
+(both HTTP 503). Temporary failures have a shared 30-second cooldown. Token-endpoint throttling
+and server failures do not immediately fall back; Retry-After can extend the
+cooldown up to five minutes. These responses are classified from their headers
+without reading an outage page, and retain the refresh token for the next attempt.
+Ambiguous or rejected refresh results do not retain it. Definitively rejected credentials or unusable grant
+responses produce `needs_attention`; rotate credentials to resume. Metadata
+shows `unconfigured`, `ready`, `recovering`, `temporary_failure`, or
+`needs_attention`. This reflects observed use and makes no test call.
+
+### Custody and rollout
+
+`service_oauth_tokens` holds sealed references separately from stored grant
+credentials. Egress reads configured credentials from the connections store, but
+seals, opens and destroys issued tokens through its writable delegated store
+(`AZURE_DELEGATED_KEY_VAULT_URL` in Azure). The connections vault remains read-only
+for egress. Missing token custody fails OAuth calls closed; it never falls back
+to writing the connections vault. Only egress can read token references; portal reads status columns.
+The edge has no grant on token state, cleanup records or approval bindings.
+Egress still cannot modify app-secret material or credential generation.
+Rotation and deletion append displaced references to
+`service_oauth_retirements` in the same database transaction, including cascading
+app deletion. The minute sweep destroys up to 64 references per pass and keeps
+records until destruction succeeds. A SHA-256 digest keys each retirement record,
+so large envelope ciphertext never becomes a btree key. Retained refresh
+references are not retired. Egress can insert and update token state, but cannot
+delete it; owner-run rotation triggers and foreign-key cascades perform deletion.
+
+There is no atomic vault/database transaction. A crash between sealing and
+recording a reference can still strand a vault entry, as in delegated custody.
+An ambiguous publication is never treated as permission to destroy the result;
+cleanup checks current references. Key Vault deletion retains its existing soft
+delete/purge-protection semantics.
+
+Apply the additive migrations first, deploy egress consumers, then enable portal
+writers and UI. Older egress parsers reject the unknown recipe, so rolling back
+egress fails these connections closed; the four existing kinds remain readable.
+Keep the migration and cleanup worker during rollback, and delete/replace OAuth
+connections before removing support. Do not drop the retirement ledger while it
+contains pending references.

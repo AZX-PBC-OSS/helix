@@ -89,7 +89,7 @@ let store: SecretStore | null = null;
 let tokenProvider: TokenProvider | null = null;
 let custody: "keyvault" | "dev" | "off" = "off";
 // The DELEGATED custody: the dedicated, egress-only
-// vault for user token material in prod; the dev envelope shares the app-
+// vault for user and service-account token material in prod; the dev envelope shares the app-
 // secrets KEK (dev envelope parity — no Azure needed). Sealed at
 // exchange receipt, opened at renewal/resolution, destroyed at retirement.
 let delegatedStore: SecretStore | null = null;
@@ -141,6 +141,7 @@ const onClientError = (err: unknown, label: string): void => {
 
 const pgResolver: PgSecretResolver | null = store
   ? new PgSecretResolver(config.databaseUrl, store, {
+      tokenStore: delegatedStore,
       statementTimeoutMs: config.statementTimeoutMs,
       onIdleError: (err) => onClientError(err, "secrets"),
     })

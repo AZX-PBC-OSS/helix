@@ -1,4 +1,13 @@
-import type { InjectionRecipe } from "@azx-pbc/shared";
+import type { InjectionRecipe, ServiceOAuthRecipe } from "@azx-pbc/shared";
+
+export const EMPTY_SERVICE_OAUTH: ServiceOAuthRecipe = {
+  kind: "oauth-service-account",
+  tokenEndpoint: "",
+  grantType: "client_credentials",
+  clientAuthentication: "client_secret_basic",
+  scopes: [],
+  replaySafePostPaths: [],
+};
 
 /**
  * Injection-recipe form logic, shared by the two secret-creation surfaces: the
@@ -12,6 +21,7 @@ import type { InjectionRecipe } from "@azx-pbc/shared";
 
 /** Field values a recipe form collects — a superset across all kinds. */
 export interface InjectionFormState {
+  oauth?: ServiceOAuthRecipe;
   headerName: string;
   queryParam: string;
   timestampHeader: string;
@@ -36,6 +46,7 @@ export const INJECTION_DEFAULTS = {
 /** Human labels for the recipe select, which is driven by `INJECTION_KINDS`. */
 export const INJECTION_LABELS: Record<string, string> = {
   "header-bearer": "Bearer token",
+  "oauth-service-account": "Service account OAuth",
   header: "Custom header",
   query: "Query parameter",
   "hmac-timestamp": "HMAC over timestamp",
@@ -44,6 +55,14 @@ export const INJECTION_LABELS: Record<string, string> = {
 /** Build a recipe from the form state, falling back to the placeholder values. */
 export function buildInjection(kind: string, form: InjectionFormState): InjectionRecipe {
   switch (kind) {
+    case "oauth-service-account": {
+      const r = form.oauth ?? EMPTY_SERVICE_OAUTH;
+      return {
+        ...r,
+        scopes: r.scopes.filter(Boolean),
+        replaySafePostPaths: r.replaySafePostPaths.filter(Boolean),
+      };
+    }
     case "header":
       return {
         kind: "header",
@@ -80,6 +99,10 @@ export function buildInjection(kind: string, form: InjectionFormState): Injectio
 export function describeInjection(r: InjectionRecipe | null): string {
   if (!r) return "recipe unreadable — recreate this secret";
   switch (r.kind) {
+    case "oauth-service-account":
+      return r.grantType === "password"
+        ? "Service account OAuth · Password (legacy)"
+        : "Service account OAuth · Client credentials";
     case "header-bearer":
       return "Authorization: Bearer …";
     case "header":

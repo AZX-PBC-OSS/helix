@@ -3029,6 +3029,32 @@
                       ],
                       "additionalProperties": false
                     },
+                    "secretBindings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "origin": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "effective": {
+                            "type": "boolean"
+                          },
+                          "serviceAccount": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "origin",
+                          "name",
+                          "effective"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
                     "providerBindings": {
                       "type": "array",
                       "items": {
@@ -3598,6 +3624,32 @@
                           ],
                           "additionalProperties": false
                         },
+                        "secretBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "origin": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "effective": {
+                                "type": "boolean"
+                              },
+                              "serviceAccount": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "origin",
+                              "name",
+                              "effective"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
                         "providerBindings": {
                           "type": "array",
                           "items": {
@@ -3665,6 +3717,176 @@
                                 "type": "boolean"
                               }
                             ]
+                          },
+                          "secretStamps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "env": {
+                                  "type": "string",
+                                  "enum": [
+                                    "prod",
+                                    "dev"
+                                  ]
+                                },
+                                "secretId": {
+                                  "type": "string",
+                                  "format": "uuid",
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                },
+                                "injection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header-bearer"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header"
+                                        },
+                                        "name": {},
+                                        "template": {
+                                          "default": "{}",
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "name",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "query"
+                                        },
+                                        "param": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "param"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "hmac-timestamp"
+                                        },
+                                        "timestampHeader": {},
+                                        "authHeader": {
+                                          "default": "authorization"
+                                        },
+                                        "template": {
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "timestampHeader",
+                                        "authHeader",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "oauth-service-account"
+                                        },
+                                        "tokenEndpoint": {
+                                          "type": "string",
+                                          "maxLength": 2048,
+                                          "format": "uri"
+                                        },
+                                        "grantType": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_credentials",
+                                            "password"
+                                          ]
+                                        },
+                                        "clientAuthentication": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_secret_basic",
+                                            "client_secret_post",
+                                            "none"
+                                          ]
+                                        },
+                                        "scopes": {
+                                          "default": [],
+                                          "maxItems": 64,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 256,
+                                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                          }
+                                        },
+                                        "replaySafePostPaths": {
+                                          "default": [],
+                                          "maxItems": 32,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 1024,
+                                            "pattern": "^\\/[^?#]*$"
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "tokenEndpoint",
+                                        "grantType",
+                                        "clientAuthentication",
+                                        "scopes",
+                                        "replaySafePostPaths"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "env",
+                                "secretId",
+                                "injection"
+                              ],
+                              "additionalProperties": false
+                            }
                           },
                           "providerStamps": {
                             "type": "array",
@@ -4162,6 +4384,32 @@
                           ],
                           "additionalProperties": false
                         },
+                        "secretBindings": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "origin": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "effective": {
+                                "type": "boolean"
+                              },
+                              "serviceAccount": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "origin",
+                              "name",
+                              "effective"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
                         "providerBindings": {
                           "type": "array",
                           "items": {
@@ -4229,6 +4477,176 @@
                                 "type": "boolean"
                               }
                             ]
+                          },
+                          "secretStamps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "env": {
+                                  "type": "string",
+                                  "enum": [
+                                    "prod",
+                                    "dev"
+                                  ]
+                                },
+                                "secretId": {
+                                  "type": "string",
+                                  "format": "uuid",
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                },
+                                "injection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header-bearer"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header"
+                                        },
+                                        "name": {},
+                                        "template": {
+                                          "default": "{}",
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "name",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "query"
+                                        },
+                                        "param": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "param"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "hmac-timestamp"
+                                        },
+                                        "timestampHeader": {},
+                                        "authHeader": {
+                                          "default": "authorization"
+                                        },
+                                        "template": {
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "timestampHeader",
+                                        "authHeader",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "oauth-service-account"
+                                        },
+                                        "tokenEndpoint": {
+                                          "type": "string",
+                                          "maxLength": 2048,
+                                          "format": "uri"
+                                        },
+                                        "grantType": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_credentials",
+                                            "password"
+                                          ]
+                                        },
+                                        "clientAuthentication": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_secret_basic",
+                                            "client_secret_post",
+                                            "none"
+                                          ]
+                                        },
+                                        "scopes": {
+                                          "default": [],
+                                          "maxItems": 64,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 256,
+                                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                          }
+                                        },
+                                        "replaySafePostPaths": {
+                                          "default": [],
+                                          "maxItems": 32,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 1024,
+                                            "pattern": "^\\/[^?#]*$"
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "tokenEndpoint",
+                                        "grantType",
+                                        "clientAuthentication",
+                                        "scopes",
+                                        "replaySafePostPaths"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "env",
+                                "secretId",
+                                "injection"
+                              ],
+                              "additionalProperties": false
+                            }
                           },
                           "providerStamps": {
                             "type": "array",
@@ -4686,6 +5104,176 @@
                                 "type": "boolean"
                               }
                             ]
+                          },
+                          "secretStamps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "env": {
+                                  "type": "string",
+                                  "enum": [
+                                    "prod",
+                                    "dev"
+                                  ]
+                                },
+                                "secretId": {
+                                  "type": "string",
+                                  "format": "uuid",
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                },
+                                "injection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header-bearer"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header"
+                                        },
+                                        "name": {},
+                                        "template": {
+                                          "default": "{}",
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "name",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "query"
+                                        },
+                                        "param": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "param"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "hmac-timestamp"
+                                        },
+                                        "timestampHeader": {},
+                                        "authHeader": {
+                                          "default": "authorization"
+                                        },
+                                        "template": {
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "timestampHeader",
+                                        "authHeader",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "oauth-service-account"
+                                        },
+                                        "tokenEndpoint": {
+                                          "type": "string",
+                                          "maxLength": 2048,
+                                          "format": "uri"
+                                        },
+                                        "grantType": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_credentials",
+                                            "password"
+                                          ]
+                                        },
+                                        "clientAuthentication": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_secret_basic",
+                                            "client_secret_post",
+                                            "none"
+                                          ]
+                                        },
+                                        "scopes": {
+                                          "default": [],
+                                          "maxItems": 64,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 256,
+                                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                          }
+                                        },
+                                        "replaySafePostPaths": {
+                                          "default": [],
+                                          "maxItems": 32,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 1024,
+                                            "pattern": "^\\/[^?#]*$"
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "tokenEndpoint",
+                                        "grantType",
+                                        "clientAuthentication",
+                                        "scopes",
+                                        "replaySafePostPaths"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "env",
+                                "secretId",
+                                "injection"
+                              ],
+                              "additionalProperties": false
+                            }
                           },
                           "providerStamps": {
                             "type": "array",
@@ -5509,6 +6097,176 @@
                                 }
                               ]
                             },
+                            "secretStamps": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string"
+                                  },
+                                  "env": {
+                                    "type": "string",
+                                    "enum": [
+                                      "prod",
+                                      "dev"
+                                    ]
+                                  },
+                                  "secretId": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  "injection": {
+                                    "oneOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "header-bearer"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "header"
+                                          },
+                                          "name": {},
+                                          "template": {
+                                            "default": "{}",
+                                            "type": "string",
+                                            "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "name",
+                                          "template"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "query"
+                                          },
+                                          "param": {
+                                            "type": "string",
+                                            "minLength": 1
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "param"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "hmac-timestamp"
+                                          },
+                                          "timestampHeader": {},
+                                          "authHeader": {
+                                            "default": "authorization"
+                                          },
+                                          "template": {
+                                            "type": "string",
+                                            "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "timestampHeader",
+                                          "authHeader",
+                                          "template"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "kind": {
+                                            "type": "string",
+                                            "const": "oauth-service-account"
+                                          },
+                                          "tokenEndpoint": {
+                                            "type": "string",
+                                            "maxLength": 2048,
+                                            "format": "uri"
+                                          },
+                                          "grantType": {
+                                            "type": "string",
+                                            "enum": [
+                                              "client_credentials",
+                                              "password"
+                                            ]
+                                          },
+                                          "clientAuthentication": {
+                                            "type": "string",
+                                            "enum": [
+                                              "client_secret_basic",
+                                              "client_secret_post",
+                                              "none"
+                                            ]
+                                          },
+                                          "scopes": {
+                                            "default": [],
+                                            "maxItems": 64,
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 256,
+                                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                            }
+                                          },
+                                          "replaySafePostPaths": {
+                                            "default": [],
+                                            "maxItems": 32,
+                                            "type": "array",
+                                            "items": {
+                                              "type": "string",
+                                              "maxLength": 1024,
+                                              "pattern": "^\\/[^?#]*$"
+                                            }
+                                          }
+                                        },
+                                        "required": [
+                                          "kind",
+                                          "tokenEndpoint",
+                                          "grantType",
+                                          "clientAuthentication",
+                                          "scopes",
+                                          "replaySafePostPaths"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    ],
+                                    "type": "object"
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "env",
+                                  "secretId",
+                                  "injection"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
                             "providerStamps": {
                               "type": "array",
                               "items": {
@@ -5850,6 +6608,176 @@
                                 "type": "boolean"
                               }
                             ]
+                          },
+                          "secretStamps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "env": {
+                                  "type": "string",
+                                  "enum": [
+                                    "prod",
+                                    "dev"
+                                  ]
+                                },
+                                "secretId": {
+                                  "type": "string",
+                                  "format": "uuid",
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                },
+                                "injection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header-bearer"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header"
+                                        },
+                                        "name": {},
+                                        "template": {
+                                          "default": "{}",
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "name",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "query"
+                                        },
+                                        "param": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "param"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "hmac-timestamp"
+                                        },
+                                        "timestampHeader": {},
+                                        "authHeader": {
+                                          "default": "authorization"
+                                        },
+                                        "template": {
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "timestampHeader",
+                                        "authHeader",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "oauth-service-account"
+                                        },
+                                        "tokenEndpoint": {
+                                          "type": "string",
+                                          "maxLength": 2048,
+                                          "format": "uri"
+                                        },
+                                        "grantType": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_credentials",
+                                            "password"
+                                          ]
+                                        },
+                                        "clientAuthentication": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_secret_basic",
+                                            "client_secret_post",
+                                            "none"
+                                          ]
+                                        },
+                                        "scopes": {
+                                          "default": [],
+                                          "maxItems": 64,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 256,
+                                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                          }
+                                        },
+                                        "replaySafePostPaths": {
+                                          "default": [],
+                                          "maxItems": 32,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 1024,
+                                            "pattern": "^\\/[^?#]*$"
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "tokenEndpoint",
+                                        "grantType",
+                                        "clientAuthentication",
+                                        "scopes",
+                                        "replaySafePostPaths"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "env",
+                                "secretId",
+                                "injection"
+                              ],
+                              "additionalProperties": false
+                            }
                           },
                           "providerStamps": {
                             "type": "array",
@@ -6245,6 +7173,176 @@
                               }
                             ]
                           },
+                          "secretStamps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "env": {
+                                  "type": "string",
+                                  "enum": [
+                                    "prod",
+                                    "dev"
+                                  ]
+                                },
+                                "secretId": {
+                                  "type": "string",
+                                  "format": "uuid",
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                },
+                                "injection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header-bearer"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header"
+                                        },
+                                        "name": {},
+                                        "template": {
+                                          "default": "{}",
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "name",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "query"
+                                        },
+                                        "param": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "param"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "hmac-timestamp"
+                                        },
+                                        "timestampHeader": {},
+                                        "authHeader": {
+                                          "default": "authorization"
+                                        },
+                                        "template": {
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "timestampHeader",
+                                        "authHeader",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "oauth-service-account"
+                                        },
+                                        "tokenEndpoint": {
+                                          "type": "string",
+                                          "maxLength": 2048,
+                                          "format": "uri"
+                                        },
+                                        "grantType": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_credentials",
+                                            "password"
+                                          ]
+                                        },
+                                        "clientAuthentication": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_secret_basic",
+                                            "client_secret_post",
+                                            "none"
+                                          ]
+                                        },
+                                        "scopes": {
+                                          "default": [],
+                                          "maxItems": 64,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 256,
+                                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                          }
+                                        },
+                                        "replaySafePostPaths": {
+                                          "default": [],
+                                          "maxItems": 32,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 1024,
+                                            "pattern": "^\\/[^?#]*$"
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "tokenEndpoint",
+                                        "grantType",
+                                        "clientAuthentication",
+                                        "scopes",
+                                        "replaySafePostPaths"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "env",
+                                "secretId",
+                                "injection"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
                           "providerStamps": {
                             "type": "array",
                             "items": {
@@ -6639,6 +7737,176 @@
                               }
                             ]
                           },
+                          "secretStamps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "env": {
+                                  "type": "string",
+                                  "enum": [
+                                    "prod",
+                                    "dev"
+                                  ]
+                                },
+                                "secretId": {
+                                  "type": "string",
+                                  "format": "uuid",
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                },
+                                "injection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header-bearer"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header"
+                                        },
+                                        "name": {},
+                                        "template": {
+                                          "default": "{}",
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "name",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "query"
+                                        },
+                                        "param": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "param"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "hmac-timestamp"
+                                        },
+                                        "timestampHeader": {},
+                                        "authHeader": {
+                                          "default": "authorization"
+                                        },
+                                        "template": {
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "timestampHeader",
+                                        "authHeader",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "oauth-service-account"
+                                        },
+                                        "tokenEndpoint": {
+                                          "type": "string",
+                                          "maxLength": 2048,
+                                          "format": "uri"
+                                        },
+                                        "grantType": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_credentials",
+                                            "password"
+                                          ]
+                                        },
+                                        "clientAuthentication": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_secret_basic",
+                                            "client_secret_post",
+                                            "none"
+                                          ]
+                                        },
+                                        "scopes": {
+                                          "default": [],
+                                          "maxItems": 64,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 256,
+                                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                          }
+                                        },
+                                        "replaySafePostPaths": {
+                                          "default": [],
+                                          "maxItems": 32,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 1024,
+                                            "pattern": "^\\/[^?#]*$"
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "tokenEndpoint",
+                                        "grantType",
+                                        "clientAuthentication",
+                                        "scopes",
+                                        "replaySafePostPaths"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "env",
+                                "secretId",
+                                "injection"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
                           "providerStamps": {
                             "type": "array",
                             "items": {
@@ -7008,6 +8276,176 @@
                                 "type": "boolean"
                               }
                             ]
+                          },
+                          "secretStamps": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "env": {
+                                  "type": "string",
+                                  "enum": [
+                                    "prod",
+                                    "dev"
+                                  ]
+                                },
+                                "secretId": {
+                                  "type": "string",
+                                  "format": "uuid",
+                                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                },
+                                "injection": {
+                                  "oneOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header-bearer"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "header"
+                                        },
+                                        "name": {},
+                                        "template": {
+                                          "default": "{}",
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "name",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "query"
+                                        },
+                                        "param": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "param"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "hmac-timestamp"
+                                        },
+                                        "timestampHeader": {},
+                                        "authHeader": {
+                                          "default": "authorization"
+                                        },
+                                        "template": {
+                                          "type": "string",
+                                          "pattern": "^[\\t\\x20-\\x7e\\x80-\\xff]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "timestampHeader",
+                                        "authHeader",
+                                        "template"
+                                      ],
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "oauth-service-account"
+                                        },
+                                        "tokenEndpoint": {
+                                          "type": "string",
+                                          "maxLength": 2048,
+                                          "format": "uri"
+                                        },
+                                        "grantType": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_credentials",
+                                            "password"
+                                          ]
+                                        },
+                                        "clientAuthentication": {
+                                          "type": "string",
+                                          "enum": [
+                                            "client_secret_basic",
+                                            "client_secret_post",
+                                            "none"
+                                          ]
+                                        },
+                                        "scopes": {
+                                          "default": [],
+                                          "maxItems": 64,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 256,
+                                            "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                          }
+                                        },
+                                        "replaySafePostPaths": {
+                                          "default": [],
+                                          "maxItems": 32,
+                                          "type": "array",
+                                          "items": {
+                                            "type": "string",
+                                            "maxLength": 1024,
+                                            "pattern": "^\\/[^?#]*$"
+                                          }
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "tokenEndpoint",
+                                        "grantType",
+                                        "clientAuthentication",
+                                        "scopes",
+                                        "replaySafePostPaths"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  ],
+                                  "type": "object"
+                                }
+                              },
+                              "required": [
+                                "name",
+                                "env",
+                                "secretId",
+                                "injection"
+                              ],
+                              "additionalProperties": false
+                            }
                           },
                           "providerStamps": {
                             "type": "array",
@@ -7418,6 +8856,65 @@
                                   "template"
                                 ],
                                 "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "oauth-service-account"
+                                  },
+                                  "tokenEndpoint": {
+                                    "type": "string",
+                                    "maxLength": 2048,
+                                    "format": "uri"
+                                  },
+                                  "grantType": {
+                                    "type": "string",
+                                    "enum": [
+                                      "client_credentials",
+                                      "password"
+                                    ]
+                                  },
+                                  "clientAuthentication": {
+                                    "type": "string",
+                                    "enum": [
+                                      "client_secret_basic",
+                                      "client_secret_post",
+                                      "none"
+                                    ]
+                                  },
+                                  "scopes": {
+                                    "default": [],
+                                    "maxItems": 64,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 256,
+                                      "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                    }
+                                  },
+                                  "replaySafePostPaths": {
+                                    "default": [],
+                                    "maxItems": 32,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "maxLength": 1024,
+                                      "pattern": "^\\/[^?#]*$"
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "tokenEndpoint",
+                                  "grantType",
+                                  "clientAuthentication",
+                                  "scopes",
+                                  "replaySafePostPaths"
+                                ],
+                                "additionalProperties": false
                               }
                             ],
                             "type": "object"
@@ -7452,6 +8949,47 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "oauthStatus": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "ready",
+                              "unconfigured",
+                              "recovering",
+                              "temporary_failure",
+                              "needs_attention"
+                            ]
+                          },
+                          "expiresAt": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "retryAfter": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "expiresAt",
+                          "retryAfter"
+                        ],
+                        "additionalProperties": false
                       },
                       "boundApps": {
                         "default": [],
@@ -7664,6 +9202,63 @@
                           "timestampHeader",
                           "template"
                         ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "oauth-service-account"
+                          },
+                          "tokenEndpoint": {
+                            "type": "string",
+                            "maxLength": 2048,
+                            "format": "uri"
+                          },
+                          "grantType": {
+                            "type": "string",
+                            "enum": [
+                              "client_credentials",
+                              "password"
+                            ]
+                          },
+                          "clientAuthentication": {
+                            "type": "string",
+                            "enum": [
+                              "client_secret_basic",
+                              "client_secret_post",
+                              "none"
+                            ]
+                          },
+                          "scopes": {
+                            "default": [],
+                            "maxItems": 64,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256,
+                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                            }
+                          },
+                          "replaySafePostPaths": {
+                            "default": [],
+                            "maxItems": 32,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 1024,
+                              "pattern": "^\\/[^?#]*$"
+                            }
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "tokenEndpoint",
+                          "grantType",
+                          "clientAuthentication"
+                        ],
+                        "additionalProperties": false
                       }
                     ],
                     "type": "object"
@@ -7786,6 +9381,65 @@
                                 "template"
                               ],
                               "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "oauth-service-account"
+                                },
+                                "tokenEndpoint": {
+                                  "type": "string",
+                                  "maxLength": 2048,
+                                  "format": "uri"
+                                },
+                                "grantType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "client_credentials",
+                                    "password"
+                                  ]
+                                },
+                                "clientAuthentication": {
+                                  "type": "string",
+                                  "enum": [
+                                    "client_secret_basic",
+                                    "client_secret_post",
+                                    "none"
+                                  ]
+                                },
+                                "scopes": {
+                                  "default": [],
+                                  "maxItems": 64,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256,
+                                    "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                  }
+                                },
+                                "replaySafePostPaths": {
+                                  "default": [],
+                                  "maxItems": 32,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 1024,
+                                    "pattern": "^\\/[^?#]*$"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tokenEndpoint",
+                                "grantType",
+                                "clientAuthentication",
+                                "scopes",
+                                "replaySafePostPaths"
+                              ],
+                              "additionalProperties": false
                             }
                           ],
                           "type": "object"
@@ -7820,6 +9474,47 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "oauthStatus": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "unconfigured",
+                            "recovering",
+                            "temporary_failure",
+                            "needs_attention"
+                          ]
+                        },
+                        "expiresAt": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retryAfter": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "expiresAt",
+                        "retryAfter"
+                      ],
+                      "additionalProperties": false
                     },
                     "boundApps": {
                       "default": [],
@@ -8114,6 +9809,65 @@
                                 "template"
                               ],
                               "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "oauth-service-account"
+                                },
+                                "tokenEndpoint": {
+                                  "type": "string",
+                                  "maxLength": 2048,
+                                  "format": "uri"
+                                },
+                                "grantType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "client_credentials",
+                                    "password"
+                                  ]
+                                },
+                                "clientAuthentication": {
+                                  "type": "string",
+                                  "enum": [
+                                    "client_secret_basic",
+                                    "client_secret_post",
+                                    "none"
+                                  ]
+                                },
+                                "scopes": {
+                                  "default": [],
+                                  "maxItems": 64,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256,
+                                    "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                  }
+                                },
+                                "replaySafePostPaths": {
+                                  "default": [],
+                                  "maxItems": 32,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 1024,
+                                    "pattern": "^\\/[^?#]*$"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tokenEndpoint",
+                                "grantType",
+                                "clientAuthentication",
+                                "scopes",
+                                "replaySafePostPaths"
+                              ],
+                              "additionalProperties": false
                             }
                           ],
                           "type": "object"
@@ -8148,6 +9902,47 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "oauthStatus": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "unconfigured",
+                            "recovering",
+                            "temporary_failure",
+                            "needs_attention"
+                          ]
+                        },
+                        "expiresAt": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retryAfter": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "expiresAt",
+                        "retryAfter"
+                      ],
+                      "additionalProperties": false
                     },
                     "boundApps": {
                       "default": [],
@@ -8398,7 +10193,7 @@
           "Secrets"
         ],
         "summary": "List global and platform secrets",
-        "description": "Metadata only, for the `prod` tier. `boundApps` lists the apps each global secret is granted to.\n\nRequires the platform-admin role.",
+        "description": "Metadata only, for both environment tiers. `boundApps` lists the apps each global secret is granted to.\n\nRequires the platform-admin role.",
         "security": [
           {
             "bearer": []
@@ -8516,6 +10311,65 @@
                                   "template"
                                 ],
                                 "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "oauth-service-account"
+                                  },
+                                  "tokenEndpoint": {
+                                    "type": "string",
+                                    "maxLength": 2048,
+                                    "format": "uri"
+                                  },
+                                  "grantType": {
+                                    "type": "string",
+                                    "enum": [
+                                      "client_credentials",
+                                      "password"
+                                    ]
+                                  },
+                                  "clientAuthentication": {
+                                    "type": "string",
+                                    "enum": [
+                                      "client_secret_basic",
+                                      "client_secret_post",
+                                      "none"
+                                    ]
+                                  },
+                                  "scopes": {
+                                    "default": [],
+                                    "maxItems": 64,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 256,
+                                      "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                    }
+                                  },
+                                  "replaySafePostPaths": {
+                                    "default": [],
+                                    "maxItems": 32,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "string",
+                                      "maxLength": 1024,
+                                      "pattern": "^\\/[^?#]*$"
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "tokenEndpoint",
+                                  "grantType",
+                                  "clientAuthentication",
+                                  "scopes",
+                                  "replaySafePostPaths"
+                                ],
+                                "additionalProperties": false
                               }
                             ],
                             "type": "object"
@@ -8550,6 +10404,47 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "oauthStatus": {
+                        "type": "object",
+                        "properties": {
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "ready",
+                              "unconfigured",
+                              "recovering",
+                              "temporary_failure",
+                              "needs_attention"
+                            ]
+                          },
+                          "expiresAt": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "retryAfter": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "status",
+                          "expiresAt",
+                          "retryAfter"
+                        ],
+                        "additionalProperties": false
                       },
                       "boundApps": {
                         "default": [],
@@ -8613,7 +10508,7 @@
           "Secrets"
         ],
         "summary": "Create a global or platform secret",
-        "description": "Always in the `prod` tier. The value is sealed by the secret store and never returned. It must fit the injection recipe.\n\nRequires the platform-admin role.",
+        "description": "Global secrets use the selected environment tier; platform secrets use `prod`. The value is sealed by the secret store and never returned. It must fit the injection recipe.\n\nRequires the platform-admin role.",
         "security": [
           {
             "bearer": []
@@ -8731,6 +10626,63 @@
                           "timestampHeader",
                           "template"
                         ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "const": "oauth-service-account"
+                          },
+                          "tokenEndpoint": {
+                            "type": "string",
+                            "maxLength": 2048,
+                            "format": "uri"
+                          },
+                          "grantType": {
+                            "type": "string",
+                            "enum": [
+                              "client_credentials",
+                              "password"
+                            ]
+                          },
+                          "clientAuthentication": {
+                            "type": "string",
+                            "enum": [
+                              "client_secret_basic",
+                              "client_secret_post",
+                              "none"
+                            ]
+                          },
+                          "scopes": {
+                            "default": [],
+                            "maxItems": 64,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256,
+                              "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                            }
+                          },
+                          "replaySafePostPaths": {
+                            "default": [],
+                            "maxItems": 32,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "maxLength": 1024,
+                              "pattern": "^\\/[^?#]*$"
+                            }
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "tokenEndpoint",
+                          "grantType",
+                          "clientAuthentication"
+                        ],
+                        "additionalProperties": false
                       }
                     ],
                     "type": "object"
@@ -8861,6 +10813,65 @@
                                 "template"
                               ],
                               "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "oauth-service-account"
+                                },
+                                "tokenEndpoint": {
+                                  "type": "string",
+                                  "maxLength": 2048,
+                                  "format": "uri"
+                                },
+                                "grantType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "client_credentials",
+                                    "password"
+                                  ]
+                                },
+                                "clientAuthentication": {
+                                  "type": "string",
+                                  "enum": [
+                                    "client_secret_basic",
+                                    "client_secret_post",
+                                    "none"
+                                  ]
+                                },
+                                "scopes": {
+                                  "default": [],
+                                  "maxItems": 64,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256,
+                                    "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                  }
+                                },
+                                "replaySafePostPaths": {
+                                  "default": [],
+                                  "maxItems": 32,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 1024,
+                                    "pattern": "^\\/[^?#]*$"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tokenEndpoint",
+                                "grantType",
+                                "clientAuthentication",
+                                "scopes",
+                                "replaySafePostPaths"
+                              ],
+                              "additionalProperties": false
                             }
                           ],
                           "type": "object"
@@ -8895,6 +10906,47 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "oauthStatus": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "unconfigured",
+                            "recovering",
+                            "temporary_failure",
+                            "needs_attention"
+                          ]
+                        },
+                        "expiresAt": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retryAfter": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "expiresAt",
+                        "retryAfter"
+                      ],
+                      "additionalProperties": false
                     },
                     "boundApps": {
                       "default": [],
@@ -9156,6 +11208,65 @@
                                 "template"
                               ],
                               "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "oauth-service-account"
+                                },
+                                "tokenEndpoint": {
+                                  "type": "string",
+                                  "maxLength": 2048,
+                                  "format": "uri"
+                                },
+                                "grantType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "client_credentials",
+                                    "password"
+                                  ]
+                                },
+                                "clientAuthentication": {
+                                  "type": "string",
+                                  "enum": [
+                                    "client_secret_basic",
+                                    "client_secret_post",
+                                    "none"
+                                  ]
+                                },
+                                "scopes": {
+                                  "default": [],
+                                  "maxItems": 64,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 256,
+                                    "pattern": "^[\\x21\\x23-\\x5b\\x5d-\\x7e]+$"
+                                  }
+                                },
+                                "replaySafePostPaths": {
+                                  "default": [],
+                                  "maxItems": 32,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "maxLength": 1024,
+                                    "pattern": "^\\/[^?#]*$"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "tokenEndpoint",
+                                "grantType",
+                                "clientAuthentication",
+                                "scopes",
+                                "replaySafePostPaths"
+                              ],
+                              "additionalProperties": false
                             }
                           ],
                           "type": "object"
@@ -9190,6 +11301,47 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "oauthStatus": {
+                      "type": "object",
+                      "properties": {
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "unconfigured",
+                            "recovering",
+                            "temporary_failure",
+                            "needs_attention"
+                          ]
+                        },
+                        "expiresAt": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retryAfter": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "status",
+                        "expiresAt",
+                        "retryAfter"
+                      ],
+                      "additionalProperties": false
                     },
                     "boundApps": {
                       "default": [],
