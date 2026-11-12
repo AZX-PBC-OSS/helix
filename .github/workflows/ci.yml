@@ -298,6 +298,7 @@ jobs:
         # workers pushed timing-bound tests past their limits.
         env:
           HELIX_TEST_MAX_WORKERS: "4"
+          HELIX_REAL_STACK_SLOTS: "5"
         run: ./check-and-lint.sh test -- --shard=${{ matrix.shard }}
 
   browser-lane:

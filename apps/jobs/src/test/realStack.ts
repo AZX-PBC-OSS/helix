@@ -2128,13 +2128,12 @@ export async function assertStackHostnamesResolveToLoopback(baseDomain: string):
  * How many real stacks may run at once across every vitest worker. A stack
  * holds about 35 Postgres connections (18 of them the jobs service's pools),
  * and the dev and CI clusters allow 300, shared with every other integration
- * suite. With six stacks the full local run peaked at 282, too close to the
- * limit; five leave about 30 more connections of headroom and cost no wall
- * time, because the slowest stack suite alone takes as long as the rest
- * shared five ways. `HELIX_REAL_STACK_SLOTS` changes the cap for a cluster
- * with a different budget.
+ * suite. Six slots reduce time spent waiting for a stack on the dev host.
+ * CI pins five slots and limits Vitest to four workers per isolated shard.
+ * `HELIX_REAL_STACK_SLOTS` overrides the cap for a different connection budget;
+ * increasing Vitest workers alone does not increase this limit.
  */
-const DEFAULT_STACK_SLOTS = 5;
+const DEFAULT_STACK_SLOTS = 6;
 /** How long a suite waits for a slot before failing with the cause named. */
 const STACK_SLOT_WAIT_MS = 600_000;
 

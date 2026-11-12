@@ -188,6 +188,17 @@ opt-in (`EDGE_ALLOW_DEV_MODE`, on in the dev container) and runs as the least-pr
 | `pnpm --filter @azx-pbc/portal db:migrate` | Create/apply a Prisma migration (dev)                          |
 | `./check-and-lint.sh`                      | Full CI checks: typecheck + lint + format + docs build + tests |
 
+Lint and formatting reuse content-based caches under `node_modules/.cache/helix-checks/`.
+Changed files and configuration are checked again; a lockfile or Node version change
+selects a fresh cache so dependency upgrades cannot reuse old plugin results. The fix
+commands use the same caches. Delete that directory to force a complete recheck.
+
+Tests use ten Vitest workers and at most six real service stacks locally. Set
+`HELIX_TEST_MAX_WORKERS` and `HELIX_REAL_STACK_SLOTS` to lower those limits on a smaller
+host or a database with less connection headroom. CI uses three isolated shards with
+four workers and a five-stack cap each. Do not run local shards concurrently against
+the same test database: each invocation's setup truncates its tables.
+
 `./check-and-lint.sh` (add `--fix` to auto-fix first) is the same gate CI runs, and a change
 isn't finished until it passes clean. CI invokes this same script, splitting it across two
 jobs by naming steps (`./check-and-lint.sh typecheck lint format docs` and `… test`) —
