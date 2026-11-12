@@ -103,6 +103,12 @@ deployment's addresses, and where to look up everything else.
 - **Show errors as they are.** Show `403` and `429` from the gateway to the user.
   For a `403 connection_required`, offer a visible Connect button; nothing retries
   automatically.
+- **No client names in the app's name or address.** Keep client and customer
+  names out of the slug, the display name, the description, and the page
+  `<title>`. Name the app for what it does, such as `spend-tracker`. The slug
+  becomes a public hostname, and the title shows in browser tabs, history and
+  link previews. The portal also refuses slugs containing terms an operator has
+  blocked.
 
 ## Build and deploy
 

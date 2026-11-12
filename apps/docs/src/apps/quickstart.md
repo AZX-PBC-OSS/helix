@@ -84,6 +84,12 @@ The portal's **How to develop** panel prints this file with your deployment's
 URL. Write the description yourself: one plain sentence saying what the app
 does and who it is for.
 
+Keep client and customer names out of the slug, the display name, the
+description, and the page `<title>`. Name the app for what it does, such as
+`spend-tracker`. The slug becomes a public hostname, and the title shows in
+browser tabs, history and link previews. The portal refuses a slug that
+contains a term your operator has blocked.
+
 ```bash
 helix create --display-name "My App" --description "Tracks Q3 cloud spend by team."
 ```
