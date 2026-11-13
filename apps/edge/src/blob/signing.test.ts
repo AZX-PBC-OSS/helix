@@ -44,6 +44,20 @@ describe("buildStringToSign", () => {
     expect(lines[9]).toBe('"0x1234"'); // 10th line: If-None-Match
   });
 
+  it("carries Range in its dedicated slot, and leaves it empty without one", () => {
+    const make = (range?: string) =>
+      buildStringToSign({
+        method: "GET",
+        url: new URL("http://azurite:10000/devstoreaccount1/c/k"),
+        accountName: "devstoreaccount1",
+        accountKey: KEY,
+        date: DATE,
+        headers: { range },
+      }).split("\n");
+    expect(make("bytes=0-1")[11]).toBe("bytes=0-1"); // 12th line: Range
+    expect(make()[11]).toBe("");
+  });
+
   it("signs HEAD like GET apart from the verb", () => {
     const make = (method: "GET" | "HEAD") =>
       buildStringToSign({
@@ -81,6 +95,18 @@ describe("buildStringToSign", () => {
 });
 
 describe("signRequest", () => {
+  it("puts a signed range on the wire", () => {
+    const headers = signRequest({
+      method: "GET",
+      url: new URL("http://azurite:10000/devstoreaccount1/c/k"),
+      accountName: "devstoreaccount1",
+      accountKey: KEY,
+      date: DATE,
+      headers: { range: "bytes=5-" },
+    });
+    expect(headers.range).toBe("bytes=5-");
+  });
+
   it("returns the authorization header plus every signed header", () => {
     const headers = signRequest({
       method: "GET",

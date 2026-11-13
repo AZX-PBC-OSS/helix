@@ -218,6 +218,13 @@ describe("what never counts", () => {
     expect(edge.visits.rows).toHaveLength(0);
   });
 
+  it("does not record a ranged request for a document", async () => {
+    const edge = buildEdge("public");
+    const res = await load(edge.app, edge.host, { headers: { ...DOCUMENT, range: "bytes=0-3" } });
+    expect(res.statusCode).toBe(206);
+    expect(edge.visits.rows).toHaveLength(0);
+  });
+
   it("does not record a revalidated non-HTML file opened directly", async () => {
     const edge = buildEdge("public");
     const res = await load(edge.app, edge.host, {

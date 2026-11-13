@@ -50,6 +50,8 @@ origins this policy will block, so read those warnings before you promote.
   gets `index.html`.
 - **Caching:** HTML is served `no-cache`. Other assets get a short private cache
   with ETags.
+- **Video and audio play in every browser.** Files support single byte-range
+  requests, which Safari needs for `<video>` and `<audio>`.
 - **Reserved paths:** the platform owns `/_api/*`, `/_auth/*`, and `/_helix/*`.
   Don't route on them.
 

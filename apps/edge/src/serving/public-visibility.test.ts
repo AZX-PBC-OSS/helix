@@ -46,6 +46,7 @@ function buildEdge(opts: {
     contentType: "text/html; charset=utf-8",
     etag: '"html-1"',
   });
+  blob.set(`${PREFIX}clip.mp4`, { body: "0123456789", contentType: "video/mp4" });
   const usage = new FakeUsageStore();
   const app = buildApp({
     config: testEdgeConfig({
@@ -289,5 +290,53 @@ describe("public-app anonymous-tier per-IP rate limit (app-data design §7)", ()
   it("leaves the limiter off by default (no anonRateLimit override → unlimited)", async () => {
     const { app } = buildEdge({ visibilityMode: "public", withLlm: true });
     for (let i = 0; i < 5; i++) expect((await chat(app)).statusCode).toBe(200);
+  });
+});
+
+// A byte range changes only how much of an allowed file is sent. It must never
+// change whether the file is sent.
+describe("byte ranges never widen access", () => {
+  const ranged = (host: string) => ({ host, range: "bytes=0-3", accept: "*/*" });
+
+  for (const visibilityMode of ["internal", "group", "password"] as const) {
+    it(`answers a no-session range request on a ${visibilityMode} app as it would without the range`, async () => {
+      const { app } = buildEdge({ visibilityMode, slug: "priv" });
+      const host = "priv.local.helix.azxlabs.io";
+      const plain = await app.inject({ url: "/clip.mp4", headers: { host, accept: "*/*" } });
+      expect(plain.statusCode).not.toBe(200); // the gate holds without a range
+      const res = await app.inject({ url: "/clip.mp4", headers: ranged(host) });
+      expect(res.statusCode).not.toBe(206);
+      expect(res.statusCode).toBe(plain.statusCode);
+      expect(res.body).not.toContain("0123");
+      expect(res.headers["content-range"]).toBeUndefined();
+    });
+  }
+
+  it("refuses a range on a public app when public is disallowed", async () => {
+    const { app } = buildEdge({ visibilityMode: "public", allowPublicApps: false });
+    const res = await app.inject({
+      url: "/clip.mp4",
+      headers: ranged("pub.local.helix.azxlabs.io"),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("refuses a range on a password app when password is disallowed", async () => {
+    const { app } = buildEdge({ visibilityMode: "password", slug: "pw", allowPasswordApps: false });
+    const res = await app.inject({
+      url: "/clip.mp4",
+      headers: ranged("pw.local.helix.azxlabs.io"),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("serves a range of a public app to an anonymous caller", async () => {
+    const { app } = buildEdge({ visibilityMode: "public" });
+    const res = await app.inject({
+      url: "/clip.mp4",
+      headers: ranged("pub.local.helix.azxlabs.io"),
+    });
+    expect(res.statusCode).toBe(206);
+    expect(res.body).toBe("0123");
   });
 });

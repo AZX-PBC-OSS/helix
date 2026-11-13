@@ -2,12 +2,13 @@ import { extname } from "node:path";
 import type { Readable } from "node:stream";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { publicOrigin, type EdgeConfig } from "../config.js";
-import type { BlobReader, BlobGetResult } from "../blob/client.js";
+import type { BlobGetOptions, BlobReader, BlobGetResult } from "../blob/client.js";
 import type { RegistryEntry, RegistryReader } from "../registry/projection.js";
 import type { SessionGate } from "../auth/gate.js";
 import { visibilityModeAllowed } from "../auth/validate.js";
 import { sendForbidden, sendGone, sendNotFound, sendUnavailable } from "../errors.js";
 import { normalizeRequestPath } from "./paths.js";
+import { parseSingleByteRange } from "./range.js";
 import { buildAppCsp } from "./csp.js";
 import { buildShimScript, injectHeadScripts } from "./shim.js";
 import { buildConnectScript } from "./connectHelper.js";
@@ -128,13 +129,38 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     const likelyHtml = relPath === "index.html" || (req.headers.accept ?? "").includes("text/html");
     const effectiveInm = wantsInjection && likelyHtml ? undefined : ifNoneMatch;
 
+    // Byte ranges (Safari needs them to play media). Only a GET carries one, and
+    // `If-Range` turns it off: serving the whole file is always a correct answer
+    // to it, and Blob storage has no `If-Range` of its own. A document we inject
+    // into is never served in parts, because the injected bytes do not line up
+    // with the stored file's offsets.
+    const range =
+      method === "GET" && req.headers["if-range"] === undefined && !(wantsInjection && likelyHtml)
+        ? parseSingleByteRange(firstHeader(req.headers.range))
+        : undefined;
+
     let result = await getUnderPrefix(blob, entry.blobPrefix, relPath, {
       method,
       ifNoneMatch: effectiveInm,
+      range,
     });
 
+    // The content type is only known after the fetch, so a ranged request for an
+    // HTML file the request did not look like (an extensionless path fetched
+    // without `Accept: text/html`) can still come back partial. Fetch the whole
+    // document so it can be injected.
+    if (
+      wantsInjection &&
+      result.kind === "partial" &&
+      (result.contentType ?? "").startsWith("text/html")
+    ) {
+      result.body.destroy();
+      result = await getUnderPrefix(blob, entry.blobPrefix, relPath, { method });
+    }
+
     // SPA fallback: an HTML-navigation miss serves the app shell so deep
-    // links into client-side routes work. Asset misses stay hard 404s.
+    // links into client-side routes work. Asset misses stay hard 404s. The
+    // client's range was for the missing file, so the shell is fetched whole.
     //
     // Scope-aware for an offline app (ADR-0035 §10): such an app is served from
     // a prefix and its bundle has no *root* `index.html`, so falling back to the
@@ -157,22 +183,34 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
       return;
     }
 
-    const isHtml = (result.kind === "found" ? (result.contentType ?? "") : "").startsWith(
-      "text/html",
-    );
+    if (result.kind === "range-not-satisfiable") {
+      reply
+        .status(416)
+        .header("cache-control", "no-cache")
+        .header("x-content-type-options", "nosniff")
+        .header("content-security-policy", csp);
+      if (result.contentRange) reply.header("content-range", result.contentRange);
+      reply.send();
+      return;
+    }
+
+    const hasBody = result.kind === "found" || result.kind === "partial";
+    const contentType = result.kind === "not-modified" ? undefined : result.contentType;
+    const isHtml = (contentType ?? "").startsWith("text/html");
     // HTML revalidates every time so pointer flips are immediately visible;
     // other assets may be 5 minutes stale (`private`: app content becomes
     // authenticated in M3 and must never land in shared caches).
-    const cacheControl = result.kind === "found" && !isHtml ? "private, max-age=300" : "no-cache";
+    const cacheControl = hasBody && !isHtml ? "private, max-age=300" : "no-cache";
 
     // A visit is a top-level document load that passed the gate, including a
     // revalidated one (304), since that is still the app opening. A 304 has no
     // content type, so judge it by the path: an HTML file, or an extensionless
-    // client route that the SPA fallback answers with the shell.
+    // client route that the SPA fallback answers with the shell. A partial
+    // response is never a document load.
     const documentServed =
       result.kind === "not-modified"
         ? relPath.endsWith(".html") || extname(relPath) === ""
-        : isHtml;
+        : result.kind === "found" && isHtml;
     if (recordVisit && documentServed && isDocumentLoad(req)) recordVisit(req, entry.appId);
 
     if (result.kind === "not-modified") {
@@ -194,7 +232,7 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     // must patch `fetch` before anything else on the page runs. The connect
     // helper's receiver-verification origins are the app's own host (start-route
     // pages) plus the auth host (completion pages).
-    if (wantsInjection && isHtml) {
+    if (wantsInjection && isHtml && result.kind === "found") {
       const scripts: string[] = [];
       if (wantsShim) scripts.push(buildShimScript([...entry.fetch.connections.keys()]));
       if (wantsConnect) {
@@ -218,7 +256,7 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     }
 
     reply
-      .status(200)
+      .status(result.kind === "partial" ? 206 : 200)
       .header("content-type", result.contentType ?? "application/octet-stream")
       .header("cache-control", cacheControl)
       .header("x-content-type-options", "nosniff")
@@ -228,6 +266,11 @@ export function makeAssetHandler(deps: AssetHandlerDeps) {
     if (result.contentLength) reply.header("content-length", result.contentLength);
     if (result.etag) reply.header("etag", result.etag);
     if (result.lastModified) reply.header("last-modified", result.lastModified);
+    if (result.kind === "partial") {
+      if (result.contentRange) reply.header("content-range", result.contentRange);
+    } else {
+      reply.header("accept-ranges", "bytes");
+    }
 
     // No hand-rolled teardown here: Fastify's `sendStream` wires `eos(res)` and
     // destroys the payload itself if the client goes away mid-stream, so pulling
@@ -263,7 +306,7 @@ async function getUnderPrefix(
   blob: BlobReader,
   blobPrefix: string,
   relPath: string,
-  opts: { method: "GET" | "HEAD"; ifNoneMatch?: string },
+  opts: BlobGetOptions,
 ): Promise<BlobGetResult> {
   const key = `${blobPrefix}${relPath}`;
   // Bug trap, not input validation — normalizeRequestPath already rejected

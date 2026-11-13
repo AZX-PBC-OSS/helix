@@ -81,6 +81,47 @@ describe("UndiciBlobReader — managed-identity bearer path", () => {
     expect(received[0]!.headers["if-none-match"]).toBe('"etag-1"');
   });
 
+  it("forwards range on the bearer path", async () => {
+    await reader.get("apps/a/1/clip.mp4", { method: "GET", range: "bytes=0-1" });
+    expect(received[0]!.headers.range).toBe("bytes=0-1");
+  });
+
+  it("maps 206 to partial with the range headers", async () => {
+    respond = () => ({
+      status: 206,
+      headers: {
+        "content-type": "video/mp4",
+        "content-range": "bytes 0-1/10",
+        "content-length": "2",
+        etag: '"e"',
+      },
+      body: "01",
+    });
+    const result = await reader.get("k", { method: "GET", range: "bytes=0-1" });
+    expect(result).toMatchObject({
+      kind: "partial",
+      contentType: "video/mp4",
+      contentLength: "2",
+      contentRange: "bytes 0-1/10",
+      etag: '"e"',
+    });
+    if (result.kind === "partial") result.body.resume();
+  });
+
+  it("maps 416 to range-not-satisfiable and drains the body", async () => {
+    respond = () => ({
+      status: 416,
+      headers: { "content-range": "bytes */10" },
+      body: "<Error><Code>InvalidRange</Code></Error>",
+    });
+    const result = await reader.get("k", { method: "GET", range: "bytes=50-" });
+    expect(result).toEqual({ kind: "range-not-satisfiable", contentRange: "bytes */10" });
+
+    // The pooled connection was released: the next request still completes.
+    respond = () => ({ status: 404 });
+    expect((await reader.get("k", { method: "GET" })).kind).toBe("not-found");
+  });
+
   it("maps 200/304/404 like the SharedKey path", async () => {
     respond = () => ({
       status: 200,

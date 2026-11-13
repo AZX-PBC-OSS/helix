@@ -83,6 +83,13 @@ Behaviors to know:
   miss stays a hard 404.
 - **Cache headers** — HTML is `Cache-Control: no-cache` (pointer flips are visible immediately);
   other assets get `private, max-age=300` with ETag/304.
+- **Byte ranges** — Safari needs them to play `<video>` and `<audio>`. A GET with one range
+  (`bytes=a-b` or `bytes=a-`) is checked by `serving/range.ts`, rebuilt from the parsed numbers,
+  and forwarded to Blob storage, which returns the `206` or `416` that the edge passes back with
+  the same CSP, `nosniff` and cache headers as a full response. Full responses send
+  `Accept-Ranges: bytes`. The edge serves the whole file instead for a suffix range, several
+  ranges, any request carrying `If-Range` (Blob storage has no equivalent), a HEAD, and any
+  document it injects scripts into. A ranged response is never counted as a visit.
 - **App-supplied service workers are refused** — a request with `Service-Worker: script` gets a
   `403`, so an app can't register a SW that observes the handoff token on `/_auth/complete`.
   Plain web workers are allowed (`worker-src 'self' blob:`), and a `blob:` URL can never register
@@ -173,6 +180,9 @@ same-origin `/_api/fetch/…` path. No app code changes.
   suppresses the `If-None-Match` (a `304` would skip injection), buffers the one HTML doc, inlines
   the scripts, and sends it with no `etag`/`last-modified` — the injected bytes differ from Blob's,
   so a conditional `304` must never short-circuit injection. Every other asset keeps streaming.
+  The same applies to `Range`: it is not forwarded for a request that looks like HTML, and if a
+  ranged request comes back as `text/html` anyway, the edge fetches the whole document and
+  injects it.
 
 It is **ergonomics, not a boundary**: delete or bypass it and you gain nothing — a direct call
 to a non-granted origin still dies on `connect-src 'self'`. It fails safe. Out of scope (it is an

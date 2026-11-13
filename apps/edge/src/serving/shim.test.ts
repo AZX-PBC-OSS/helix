@@ -111,6 +111,13 @@ beforeAll(async () => {
     contentType: "text/html; charset=utf-8",
     etag: '"h1"',
   });
+  // An extensionless HTML file: the request alone does not look like HTML, so
+  // only the fetched content type reveals it.
+  blob.set(`${SHIMMED}about`, {
+    body: HTML,
+    contentType: "text/html; charset=utf-8",
+    etag: '"h3"',
+  });
   blob.set(`${PLAIN}index.html`, {
     body: HTML,
     contentType: "text/html; charset=utf-8",
@@ -169,6 +176,31 @@ describe("HTML injection", () => {
     expect(res.body).not.toContain("/_helix/");
     expect(res.headers.etag).toBeUndefined(); // injected bytes ≠ blob etag
     expect(res.headers["content-type"]).toContain("text/html");
+  });
+
+  // The injected bytes don't line up with the stored file's offsets, so a
+  // document that gets injected is never served in parts.
+  it("serves an opted-in app's HTML whole and injected despite a range", async () => {
+    const res = await app.inject({
+      url: "/",
+      headers: { host: "shimmed.local.helix.azxlabs.io", range: "bytes=0-10" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("XMLHttpRequest.prototype.open");
+    expect(res.headers["content-range"]).toBeUndefined();
+    expect(res.headers["accept-ranges"]).toBeUndefined();
+    expect(res.headers.etag).toBeUndefined();
+  });
+
+  it("refetches whole an HTML file that a ranged request didn't look like", async () => {
+    const res = await app.inject({
+      url: "/about",
+      headers: { host: "shimmed.local.helix.azxlabs.io", accept: "*/*", range: "bytes=0-10" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("XMLHttpRequest.prototype.open");
+    expect(res.body).toContain("<body>hi</body>");
+    expect(res.headers["content-range"]).toBeUndefined();
   });
 
   it("does not inject for an app that did not opt in (and keeps its etag)", async () => {

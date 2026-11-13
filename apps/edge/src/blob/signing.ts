@@ -5,8 +5,9 @@ import { createHmac } from "node:crypto";
  *
  * Deliberate: the edge is dependency-minimal (project plan §1, §6), so it does
  * not take the Azure SDK into the trusted path for what amounts to one HMAC
- * over a documented canonical string. Scope is read-path GET/HEAD plus the PUT
- * the integration-test seeder needs — nothing else.
+ * over a documented canonical string. Scope is read-path GET/HEAD (with an
+ * optional byte range) plus the PUT the integration-test seeder needs —
+ * nothing else.
  *
  * Spec: "Authorize with Shared Key" (Blob service, version 2015-02-21+ format).
  * Works identically against Azurite and real Azure.
@@ -26,6 +27,8 @@ export interface SignRequestInput {
   headers?: {
     /** Forwarded client validator for conditional GETs. */
     ifNoneMatch?: string;
+    /** A validated single byte range (`bytes=a-b` / `bytes=a-`) to read. */
+    range?: string;
     /** Required (as a string) for PUT bodies. */
     contentLength?: string;
     contentType?: string;
@@ -77,7 +80,7 @@ export function buildStringToSign(input: SignRequestInput): string {
     "", // If-Match
     headers.ifNoneMatch ?? "", // If-None-Match
     "", // If-Unmodified-Since
-    "", // Range
+    headers.range ?? "", // Range
     canonicalizedHeaders + canonicalizedResource,
   ].join("\n");
 }
@@ -103,6 +106,7 @@ export function signRequest(input: SignRequestInput): Record<string, string> {
   };
   const h = input.headers ?? {};
   if (h.ifNoneMatch) headers["if-none-match"] = h.ifNoneMatch;
+  if (h.range) headers.range = h.range;
   if (h.contentLength) headers["content-length"] = h.contentLength;
   if (h.contentType) headers["content-type"] = h.contentType;
   for (const [name, value] of Object.entries(h.extraXms ?? {})) {

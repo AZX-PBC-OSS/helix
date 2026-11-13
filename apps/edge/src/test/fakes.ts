@@ -123,9 +123,11 @@ export interface FakeBlob {
 
 /** In-memory blob store mirroring UndiciBlobReader's result mapping. */
 export class FakeBlobReader implements BlobReader {
-  #blobs = new Map<string, Required<FakeBlob>>();
+  #blobs = new Map<string, Required<FakeBlob> & { body: Buffer }>();
   /** Every key requested, in order — lets tests assert fallback behavior. */
   readonly requests: string[] = [];
+  /** The options of every request, in the same order as `requests`. */
+  readonly requestOptions: BlobGetOptions[] = [];
 
   set(key: string, blob: FakeBlob): void {
     this.#blobs.set(key, {
@@ -137,10 +139,31 @@ export class FakeBlobReader implements BlobReader {
 
   async get(key: string, opts: BlobGetOptions): Promise<BlobGetResult> {
     this.requests.push(key);
+    this.requestOptions.push(opts);
     const blob = this.#blobs.get(key);
     if (!blob) return { kind: "not-found" };
     if (opts.ifNoneMatch && opts.ifNoneMatch === blob.etag) {
       return { kind: "not-modified", etag: blob.etag };
+    }
+    // Ranges the way Blob storage serves them: the conditional check first, a
+    // start past the end is a 416, and an end past the end is clamped.
+    const range = opts.range ? /^bytes=(\d+)-(\d*)$/.exec(opts.range) : null;
+    if (range && opts.method === "GET") {
+      const size = blob.body.length;
+      const start = Number(range[1]);
+      if (start >= size) {
+        return { kind: "range-not-satisfiable", contentRange: `bytes */${size}` };
+      }
+      const end = Math.min(range[2] ? Number(range[2]) : size - 1, size - 1);
+      const slice = blob.body.subarray(start, end + 1);
+      return {
+        kind: "partial",
+        contentType: blob.contentType,
+        contentLength: String(slice.length),
+        contentRange: `bytes ${start}-${end}/${size}`,
+        etag: blob.etag,
+        body: Readable.from([slice]),
+      };
     }
     return {
       kind: "found",

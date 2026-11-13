@@ -105,6 +105,11 @@ beforeAll(async () => {
     body: "//..",
     contentType: "text/javascript; charset=utf-8",
   });
+  edge.blob.set(`${PREFIX}media/clip.mp4`, {
+    body: "0123456789",
+    contentType: "video/mp4",
+    etag: '"mp4-1"',
+  });
   // Decoy assets inside the reserved namespaces — these must never serve.
   edge.blob.set(`${PREFIX}_api/me`, { body: "leaked", contentType: "text/plain" });
   edge.blob.set(`${PREFIX}_auth/complete`, { body: "leaked", contentType: "text/plain" });
@@ -409,6 +414,110 @@ describe("app hosts: asset serving", () => {
     const res = await edge.app.inject({ url: "/health", headers: { ...HOST, accept: "*/*" } });
     // No /health file in this bundle and a non-HTML accept → plain 404.
     expect(res.statusCode).toBe(404);
+  });
+});
+
+describe("app hosts: byte ranges", () => {
+  const CLIP = "/media/clip.mp4";
+
+  it("advertises range support on a full response", async () => {
+    const res = await edge.app.inject({ url: "/assets/app.js", headers: HOST });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["accept-ranges"]).toBe("bytes");
+  });
+
+  it("serves a closed range as 206 with the same security and cache headers", async () => {
+    const res = await edge.app.inject({ url: CLIP, headers: { ...HOST, range: "bytes=0-3" } });
+    expect(res.statusCode).toBe(206);
+    expect(res.body).toBe("0123");
+    expect(res.headers["content-range"]).toBe("bytes 0-3/10");
+    expect(res.headers["content-length"]).toBe("4");
+    expect(res.headers["content-type"]).toBe("video/mp4");
+    expect(res.headers.etag).toBe('"mp4-1"');
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-security-policy"]).toContain("connect-src 'self'");
+    expect(res.headers["cache-control"]).toBe("private, max-age=300");
+    expect(res.headers["accept-ranges"]).toBeUndefined();
+    expect(edge.blob.requestOptions.at(-1)?.range).toBe("bytes=0-3");
+  });
+
+  it("serves an open-ended range as the tail of the file", async () => {
+    const res = await edge.app.inject({ url: CLIP, headers: { ...HOST, range: "bytes=7-" } });
+    expect(res.statusCode).toBe(206);
+    expect(res.body).toBe("789");
+    expect(res.headers["content-range"]).toBe("bytes 7-9/10");
+  });
+
+  it("answers a range past the end with 416 and the app's security headers", async () => {
+    const res = await edge.app.inject({ url: CLIP, headers: { ...HOST, range: "bytes=50-" } });
+    expect(res.statusCode).toBe(416);
+    expect(res.headers["content-range"]).toBe("bytes */10");
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(res.headers["content-security-policy"]).toContain("connect-src 'self'");
+    expect(res.body).toBe("");
+  });
+
+  it.each(["bytes=-3", "bytes=0-1,4-5", "items=0-1", "bytes=5-2", "garbage"])(
+    "serves the whole file for an unsupported range %j",
+    async (range) => {
+      const res = await edge.app.inject({ url: CLIP, headers: { ...HOST, range } });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBe("0123456789");
+      expect(edge.blob.requestOptions.at(-1)?.range).toBeUndefined();
+    },
+  );
+
+  it("serves the whole file when If-Range is present", async () => {
+    const res = await edge.app.inject({
+      url: CLIP,
+      headers: { ...HOST, range: "bytes=0-3", "if-range": '"mp4-1"' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe("0123456789");
+  });
+
+  it("ignores a range on HEAD", async () => {
+    const res = await edge.app.inject({
+      method: "HEAD",
+      url: CLIP,
+      headers: { ...HOST, range: "bytes=0-3" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe("");
+    expect(edge.blob.requestOptions.at(-1)?.range).toBeUndefined();
+  });
+
+  it("answers 304 for a matching If-None-Match before applying a range", async () => {
+    const res = await edge.app.inject({
+      url: CLIP,
+      headers: { ...HOST, range: "bytes=0-3", "if-none-match": '"mp4-1"' },
+    });
+    expect(res.statusCode).toBe(304);
+  });
+
+  it("fetches the SPA shell whole when a ranged HTML request misses", async () => {
+    const res = await edge.app.inject({
+      url: "/some/client/route",
+      headers: { ...HOST, accept: "text/html", range: "bytes=0-3" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe("<!doctype html><body>demo</body>");
+    expect(edge.blob.requests.at(-1)).toBe(`${PREFIX}index.html`);
+    expect(edge.blob.requestOptions.at(-1)?.range).toBeUndefined();
+  });
+
+  it("still refuses service-worker registration fetches that carry a range", async () => {
+    const res = await edge.app.inject({
+      url: "/assets/app.js",
+      headers: { ...HOST, range: "bytes=0-3", "service-worker": "script" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("serves a range of HTML unchanged for an app with nothing to inject", async () => {
+    const res = await edge.app.inject({ url: "/", headers: { ...HOST, range: "bytes=0-8" } });
+    expect(res.statusCode).toBe(206);
+    expect(res.body).toBe("<!doctype");
   });
 });
 

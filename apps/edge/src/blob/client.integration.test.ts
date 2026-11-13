@@ -80,4 +80,41 @@ describe.skipIf(skipReason)("UndiciBlobReader against Azurite", () => {
     const res = await reader!.get(`apps/${randomUUID()}/1/missing.js`, { method: "GET" });
     expect(res.kind).toBe("not-found");
   });
+
+  // The SharedKey signature covers Range, so a slot mistake in the signer
+  // shows up here as a 403 rather than a quiet full-body response.
+  it("reads a signed closed range as partial", async () => {
+    const res = await reader!.get(KEY, { method: "GET", range: "bytes=0-1" });
+    expect(res.kind).toBe("partial");
+    if (res.kind !== "partial") return;
+    expect(res.contentLength).toBe("2");
+    expect(res.contentRange).toBe(`bytes 0-1/${Buffer.byteLength(BODY)}`);
+    expect(await readAll(res.body)).toBe(BODY.slice(0, 2));
+  });
+
+  it("reads an open-ended range as the tail", async () => {
+    const res = await reader!.get(KEY, { method: "GET", range: "bytes=5-" });
+    expect(res.kind).toBe("partial");
+    if (res.kind !== "partial") return;
+    expect(await readAll(res.body)).toBe(BODY.slice(5));
+  });
+
+  it("returns range-not-satisfiable for a start past the end", async () => {
+    const res = await reader!.get(KEY, { method: "GET", range: "bytes=100000-" });
+    expect(res).toEqual({
+      kind: "range-not-satisfiable",
+      contentRange: `bytes */${Buffer.byteLength(BODY)}`,
+    });
+  });
+
+  it("checks If-None-Match before the range", async () => {
+    const first = await reader!.get(KEY, { method: "HEAD" });
+    if (first.kind !== "found") throw new Error("expected found");
+    const res = await reader!.get(KEY, {
+      method: "GET",
+      ifNoneMatch: first.etag,
+      range: "bytes=0-1",
+    });
+    expect(res.kind).toBe("not-modified");
+  });
 });

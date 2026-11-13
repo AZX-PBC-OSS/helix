@@ -19,6 +19,24 @@ export type BlobGetResult =
       /** The streaming body. Empty (but present) for HEAD. */
       body: Readable;
     }
+  | {
+      /** 206: the requested byte range of the blob. */
+      kind: "partial";
+      contentType?: string;
+      /** The length of this range, not of the whole blob. */
+      contentLength?: string;
+      /** `bytes a-b/size`, as Blob storage sent it. */
+      contentRange?: string;
+      etag?: string;
+      lastModified?: string;
+      body: Readable;
+    }
+  | {
+      /** 416: the range starts past the end of the blob. */
+      kind: "range-not-satisfiable";
+      // The `bytes */<size>` form, when Blob storage sent one.
+      contentRange?: string;
+    }
   | { kind: "not-modified"; etag?: string }
   | { kind: "not-found" };
 
@@ -26,6 +44,11 @@ export interface BlobGetOptions {
   method: "GET" | "HEAD";
   /** Client validator to forward — the only client header that goes upstream. */
   ifNoneMatch?: string;
+  /**
+   * A single byte range already validated by `parseSingleByteRange`. Never the
+   * raw client header.
+   */
+  range?: string;
 }
 
 export interface BlobReader {
@@ -90,7 +113,7 @@ export class UndiciBlobReader implements BlobReader {
         url,
         accountName: auth.accountName,
         accountKey: auth.accountKey,
-        headers: opts.ifNoneMatch ? { ifNoneMatch: opts.ifNoneMatch } : undefined,
+        headers: { ifNoneMatch: opts.ifNoneMatch, range: opts.range },
       });
     } else {
       // Managed-identity bearer. x-ms-date is deliberately omitted: it only
@@ -101,6 +124,7 @@ export class UndiciBlobReader implements BlobReader {
         authorization: `Bearer ${token}`,
         "x-ms-version": X_MS_VERSION,
         ...(opts.ifNoneMatch ? { "if-none-match": opts.ifNoneMatch } : {}),
+        ...(opts.range ? { range: opts.range } : {}),
       };
     }
 
@@ -118,13 +142,31 @@ export class UndiciBlobReader implements BlobReader {
       };
     }
 
-    // Non-200: always drain the body or the pooled connection leaks.
+    if (res.statusCode === 206) {
+      return {
+        kind: "partial",
+        contentType: headerValue(res.headers["content-type"]),
+        contentLength: headerValue(res.headers["content-length"]),
+        contentRange: headerValue(res.headers["content-range"]),
+        etag: headerValue(res.headers.etag),
+        lastModified: headerValue(res.headers["last-modified"]),
+        body: res.body,
+      };
+    }
+
+    // Anything else: always drain the body or the pooled connection leaks.
     await res.body.dump();
     if (res.statusCode === 304) {
       return { kind: "not-modified", etag: headerValue(res.headers.etag) };
     }
     if (res.statusCode === 404) {
       return { kind: "not-found" };
+    }
+    if (res.statusCode === 416) {
+      return {
+        kind: "range-not-satisfiable",
+        contentRange: headerValue(res.headers["content-range"]),
+      };
     }
     throw new Error(`blob request failed: ${opts.method} ${path} -> ${res.statusCode}`);
   }
