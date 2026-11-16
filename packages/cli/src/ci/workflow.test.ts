@@ -113,6 +113,7 @@ describe("renderStarterWorkflow", () => {
             - uses: actions/setup-node@v7
               with:
                 node-version: 24
+                package-manager-cache: false
                 cache: npm
                 cache-dependency-path: package-lock.json
             - run: npm ci
@@ -246,6 +247,12 @@ const NODE24_MAJOR: Record<string, number> = {
   "pnpm/action-setup": 5,
 };
 
+const readReusable = () =>
+  readFile(
+    new URL("../../../../integrations/helix-actions/.github/workflows/deploy.yml", import.meta.url),
+    "utf8",
+  );
+
 describe("action pins", () => {
   const pnpmPlan: BuildPlan = { ...npmPlan, packageManager: "pnpm", pnpmPackageJson: null };
   const starter = renderStarterWorkflow({
@@ -265,14 +272,25 @@ describe("action pins", () => {
     }
   });
 
+  it("turns off setup-node's automatic caching in every job", async () => {
+    // With it on, a repo whose package.json names npm but has no lockfile at
+    // the root fails the setup-node step.
+    const noLockfile = renderStarterWorkflow({
+      branch: "main",
+      workingDirectory: ".",
+      plan: { ...npmPlan, hasLockfile: false, lockfilePath: null },
+      cliVersion: "0.5.0",
+    });
+    const reusable = await readReusable();
+    for (const yml of [starter, noLockfile, reusable]) {
+      const steps = yml.split(/\n\s+- /).filter((s) => s.includes("setup-node@"));
+      expect(steps).toHaveLength(2);
+      for (const step of steps) expect(step).toMatch(/package-manager-cache: false/);
+    }
+  });
+
   it("matches the pins in the Helix reusable workflow", async () => {
-    const reusable = await readFile(
-      new URL(
-        "../../../../integrations/helix-actions/.github/workflows/deploy.yml",
-        import.meta.url,
-      ),
-      "utf8",
-    );
+    const reusable = await readReusable();
     expect(new Set(actionRefs(reusable))).toEqual(new Set(Object.values(ACTIONS)));
   });
 });

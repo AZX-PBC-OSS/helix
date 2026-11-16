@@ -204,6 +204,10 @@ export function renderStarterWorkflow(opts: WorkflowOptions): string {
     `      - uses: ${ACTIONS.setupNode}`,
     "        with:",
     "          node-version: 24",
+    // setup-node turns on npm caching by itself when package.json names npm,
+    // then fails the step if the repo root has no lockfile. The explicit
+    // `cache:` input below is the only caching.
+    "          package-manager-cache: false",
     ...cache,
     `      - run: ${install}`,
     ...(plan.buildScript ? [`      - run: ${plan.packageManager} run ${plan.buildScript}`] : []),
