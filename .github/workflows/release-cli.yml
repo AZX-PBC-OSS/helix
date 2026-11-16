@@ -39,13 +39,13 @@ jobs:
     # trusted-publisher config on npmjs.com or the OIDC claim won't match.
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.5.3
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -137,7 +137,7 @@ jobs:
         # exact tarball about to publish installs and runs on the oldest
         # runtime the manifest admits. setup-node prepends the 22 toolcache
         # to PATH, so every subsequent `node` is 22 until switched back.
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -158,7 +158,7 @@ jobs:
         # Not cosmetics: trusted publishing needs npm >= 11.5.1, and Node 22
         # bundles a 10.x. Publishing must run under the Node 24 toolcache
         # (whose npm this workflow already upgraded), hence the round trip.
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 24
 
@@ -185,7 +185,7 @@ jobs:
             echo "- \`npx -y @azx-pbc/helix-cli@$VERSION <command>\` (or \`@latest\`)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: helix-cli-tarball
           path: ${{ env.TARBALL }}

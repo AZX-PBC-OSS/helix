@@ -86,7 +86,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: npm ci && npm run build
       - run: npx --yes @azx-pbc/helix-cli deploy # slug and portalUrl from helix.json
 ```

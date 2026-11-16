@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  ACTIONS,
   detectBuildPlan,
   renderReusableWorkflow,
   renderStarterWorkflow,
@@ -108,8 +109,8 @@ describe("renderStarterWorkflow", () => {
           permissions:
             contents: read
           steps:
-            - uses: actions/checkout@v4
-            - uses: actions/setup-node@v4
+            - uses: actions/checkout@v7
+            - uses: actions/setup-node@v7
               with:
                 node-version: 24
                 cache: npm
@@ -121,7 +122,7 @@ describe("renderStarterWorkflow", () => {
                 if [ -f helix.json ]; then cfg=helix.json; elif [ -f azx.json ]; then cfg=azx.json; else echo "::error::no helix.json in this directory"; exit 1; fi
                 echo "config=$cfg" >> "$GITHUB_OUTPUT"
                 echo "dir=$(node -p "require('./' + process.argv[1]).dir || 'dist'" "$cfg")" >> "$GITHUB_OUTPUT"
-            - uses: actions/upload-artifact@v4
+            - uses: actions/upload-artifact@v7
               with:
                 name: helix-bundle
                 path: |
@@ -135,13 +136,14 @@ describe("renderStarterWorkflow", () => {
           permissions:
             id-token: write
           steps:
-            - uses: actions/download-artifact@v4
+            - uses: actions/download-artifact@v8
               with:
                 name: helix-bundle
                 path: "."
-            - uses: actions/setup-node@v4
+            - uses: actions/setup-node@v7
               with:
                 node-version: 24
+                package-manager-cache: false
             - run: npx --yes @azx-pbc/helix-cli@0.5.0 deploy
       "
     `);
@@ -150,6 +152,7 @@ describe("renderStarterWorkflow", () => {
     expect(job(yml, "build")).not.toContain("id-token");
     expect(job(yml, "deploy")).toContain("id-token: write");
     expect(job(yml, "deploy")).not.toContain("checkout");
+    expect(job(yml, "deploy")).toContain("package-manager-cache: false");
   });
 
   it("points caching at an app-local lockfile and scopes a monorepo app", () => {
@@ -188,7 +191,7 @@ describe("renderStarterWorkflow", () => {
       plan: pnpm,
       cliVersion: "0.5.0",
     });
-    expect(unpinned).toMatch(/pnpm\/action-setup@v4\n\s+with:\n\s+version: 10/);
+    expect(unpinned).toMatch(/pnpm\/action-setup@v6\n\s+with:\n\s+version: 10/);
   });
 
   it("installs without a lockfile and skips caching", () => {
@@ -199,7 +202,7 @@ describe("renderStarterWorkflow", () => {
       cliVersion: "0.5.0",
     });
     expect(yml).toContain("run: npm install");
-    expect(yml).not.toContain("cache:");
+    expect(yml).not.toMatch(/^\s+cache:/m);
   });
 });
 
@@ -224,5 +227,52 @@ describe("renderReusableWorkflow", () => {
     expect(
       renderReusableWorkflow({ ...opts, plan: { ...pnpm, pnpmPackageJson: "package.json" } }),
     ).not.toContain("pnpm-version");
+  });
+});
+
+/** Every `uses:` reference in a workflow, without the reusable-workflow call. */
+const actionRefs = (yml: string) =>
+  [...yml.matchAll(/uses:\s*([\w.-]+\/[\w.-]+)@(\S+)/g)].map((m) => `${m[1]}@${m[2]}`);
+
+/**
+ * The first major version of each action that runs on Node 24. Anything older
+ * makes GitHub print a Node 20 deprecation warning on every run.
+ */
+const NODE24_MAJOR: Record<string, number> = {
+  "actions/checkout": 5,
+  "actions/setup-node": 5,
+  "actions/upload-artifact": 6,
+  "actions/download-artifact": 7,
+  "pnpm/action-setup": 5,
+};
+
+describe("action pins", () => {
+  const pnpmPlan: BuildPlan = { ...npmPlan, packageManager: "pnpm", pnpmPackageJson: null };
+  const starter = renderStarterWorkflow({
+    branch: "main",
+    workingDirectory: ".",
+    plan: pnpmPlan,
+    cliVersion: "0.5.0",
+  });
+
+  it("uses only Node 24 versions of each action in the starter", () => {
+    const refs = actionRefs(starter);
+    expect(new Set(refs)).toEqual(new Set(Object.values(ACTIONS)));
+    for (const ref of refs) {
+      const [name, version] = ref.split("@") as [string, string];
+      expect(NODE24_MAJOR[name], ref).toBeDefined();
+      expect(Number(version.replace(/^v/, "")), ref).toBeGreaterThanOrEqual(NODE24_MAJOR[name]!);
+    }
+  });
+
+  it("matches the pins in the Helix reusable workflow", async () => {
+    const reusable = await readFile(
+      new URL(
+        "../../../../integrations/helix-actions/.github/workflows/deploy.yml",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(new Set(actionRefs(reusable))).toEqual(new Set(Object.values(ACTIONS)));
   });
 });

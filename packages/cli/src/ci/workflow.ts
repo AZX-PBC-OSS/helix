@@ -39,6 +39,21 @@ export interface BuildPlan {
   buildScript: string | null;
 }
 
+/**
+ * The actions the starter workflow uses, at major versions that run on Node 24.
+ * GitHub warns on every run of an action that targets a deprecated Node
+ * runtime, and `helix ci init` rewrites the file, so a stale pin here comes back
+ * in every app that reruns it. Keep these in step with
+ * `integrations/helix-actions/.github/workflows/deploy.yml`.
+ */
+export const ACTIONS = {
+  checkout: "actions/checkout@v7",
+  setupNode: "actions/setup-node@v7",
+  setupPnpm: "pnpm/action-setup@v6",
+  uploadArtifact: "actions/upload-artifact@v7",
+  downloadArtifact: "actions/download-artifact@v8",
+} as const;
+
 /** pnpm major version used when no `packageManager` field pins one. */
 export const DEFAULT_PNPM_VERSION = "10";
 
@@ -161,7 +176,7 @@ export function renderStarterWorkflow(opts: WorkflowOptions): string {
     plan.packageManager !== "pnpm"
       ? []
       : [
-          "      - uses: pnpm/action-setup@v4",
+          `      - uses: ${ACTIONS.setupPnpm}`,
           "        with:",
           plan.pnpmPackageJson
             ? `          package_json_file: ${plan.pnpmPackageJson}`
@@ -184,9 +199,9 @@ export function renderStarterWorkflow(opts: WorkflowOptions): string {
       ? ["    defaults:", "      run:", `        working-directory: ${JSON.stringify(wd)}`]
       : []),
     "    steps:",
-    "      - uses: actions/checkout@v4",
+    `      - uses: ${ACTIONS.checkout}`,
     ...pnpmSetup,
-    "      - uses: actions/setup-node@v4",
+    `      - uses: ${ACTIONS.setupNode}`,
     "        with:",
     "          node-version: 24",
     ...cache,
@@ -195,7 +210,7 @@ export function renderStarterWorkflow(opts: WorkflowOptions): string {
     "      - id: output",
     "        run: |",
     `          ${FIND_OUTPUT}`,
-    "      - uses: actions/upload-artifact@v4",
+    `      - uses: ${ACTIONS.uploadArtifact}`,
     "        with:",
     "          name: helix-bundle",
     "          path: |",
@@ -209,13 +224,16 @@ export function renderStarterWorkflow(opts: WorkflowOptions): string {
     "    permissions:",
     "      id-token: write",
     "    steps:",
-    "      - uses: actions/download-artifact@v4",
+    `      - uses: ${ACTIONS.downloadArtifact}`,
     "        with:",
     "          name: helix-bundle",
     `          path: ${JSON.stringify(wd)}`,
-    "      - uses: actions/setup-node@v4",
+    `      - uses: ${ACTIONS.setupNode}`,
     "        with:",
     "          node-version: 24",
+    // This job can mint a deploy token, so it never restores a dependency
+    // cache the build job could have written.
+    "          package-manager-cache: false",
     `      - run: npx --yes @azx-pbc/helix-cli@${opts.cliVersion} deploy`,
     ...(sub ? [`        working-directory: ${JSON.stringify(wd)}`] : []),
     "",

@@ -89,13 +89,13 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.5.3
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -202,7 +202,7 @@ jobs:
       DEV_SECRETS_KEK_FILE: ${{ github.workspace }}/.ci-secrets-kek.dev
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve db/azurite and the stack hostnames to localhost
         # The Postgres service and the Azurite container both publish to
@@ -254,11 +254,11 @@ jobs:
       - name: Generate dev secret-store KEK
         run: openssl rand -hex 32 > "$DEV_SECRETS_KEK_FILE" && chmod 600 "$DEV_SECRETS_KEK_FILE"
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.5.3
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -347,7 +347,7 @@ jobs:
       HELIX_EXCHANGE_SECRET: aGVsaXgtZGV2LWV4Y2hhbmdlLXNlY3JldC0zMmItbWluIQ==
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve db hostname to localhost
         run: echo "127.0.0.1 db" | sudo tee -a /etc/hosts
@@ -361,11 +361,11 @@ jobs:
             psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
           done
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.5.3
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -373,7 +373,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           # The lane pins @playwright/test exactly (catalog comment: the binary
           # cache is keyed to the version's chromium revision).
@@ -388,7 +388,7 @@ jobs:
 
       - name: Upload lane artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: connections-lane-artifacts
           path: apps/connections-lane/test-results/
@@ -404,7 +404,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Compile the templates
         # --stdout >/dev/null: compiling to a file would litter the tree with
@@ -430,13 +430,13 @@ jobs:
     # tsx-at-runtime regression ships silently. Build → pack → install → run.
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.5.3
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -499,7 +499,7 @@ jobs:
           helix --help | tee /tmp/help.txt
           grep -q 'helix deploy' /tmp/help.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: helix-cli-tarball
           path: ${{ env.TARBALL }}
@@ -523,15 +523,15 @@ jobs:
         app: [edge, portal, egress, certbot, jobs]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
         # Only needed when we actually push (skipped on PRs from forks, which
         # cannot receive a write token anyway).
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -539,7 +539,7 @@ jobs:
 
       - name: Image metadata (tags + labels)
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           # metadata-action lowercases the owner for us (GHCR requires lowercase).
           images: ghcr.io/${{ github.repository_owner }}/helix-${{ matrix.app }}
@@ -568,7 +568,7 @@ jobs:
       # layer cache, so the checked build is not paid twice.
       - name: Build the jobs image for checking
         if: matrix.app == 'jobs'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/jobs/Dockerfile
@@ -583,7 +583,7 @@ jobs:
         run: apps/jobs/scripts/image-smoke.sh helix-jobs:smoke
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: apps/${{ matrix.app }}/Dockerfile

@@ -322,7 +322,7 @@ describe("CI parity for the local entry point", () => {
     const build = steps.find((step) => step.includes("name: Build the jobs image for checking"));
     expect(build, "the images job never builds the jobs image for checking").toBeDefined();
     expect(build as string).toMatch(/if: matrix\.app == 'jobs'/);
-    expect(build as string).toMatch(/uses: docker\/build-push-action@v6/);
+    expect(build as string).toMatch(/uses: docker\/build-push-action@v\d+/);
     expect(build as string).toMatch(/file: apps\/jobs\/Dockerfile/);
     expect(build as string).toMatch(/load: true/);
     expect(build as string).toMatch(/push: false/);

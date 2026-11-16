@@ -52,16 +52,16 @@ jobs:
       run:
         working-directory: ${{ inputs.working-directory }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - if: inputs.package-manager == 'pnpm' && inputs.pnpm-version != ''
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: ${{ inputs.pnpm-version }}
       - if: inputs.package-manager == 'pnpm' && inputs.pnpm-version == ''
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           package_json_file: ${{ inputs.working-directory }}/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node-version }}
       - name: Install
@@ -86,7 +86,7 @@ jobs:
           if [ -f helix.json ]; then cfg=helix.json; elif [ -f azx.json ]; then cfg=azx.json; else echo "::error::no helix.json in this directory"; exit 1; fi
           echo "config=$cfg" >> "$GITHUB_OUTPUT"
           echo "dir=$(node -p "require('./' + process.argv[1]).dir || 'dist'" "$cfg")" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: helix-bundle
           path: |
@@ -101,13 +101,16 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: helix-bundle
           path: ${{ inputs.working-directory }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ inputs.node-version }}
+          # This job can mint a deploy token, so it never restores a
+          # dependency cache the build job could have written.
+          package-manager-cache: false
       - name: Deploy
         working-directory: ${{ inputs.working-directory }}
         env:
