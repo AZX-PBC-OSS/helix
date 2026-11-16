@@ -40,6 +40,24 @@ describe("validateBundle", () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it("accepts video, audio and WebVTT files and records their served type", async () => {
+    const zip = await buildZipFile([
+      { name: "index.html", content: "<!doctype html><video src=clip.mp4></video>" },
+      { name: "media/clip.mp4", content: randomBytes(64) },
+      { name: "media/clip.webm", content: randomBytes(64) },
+      { name: "media/song.mp3", content: randomBytes(64) },
+      { name: "media/captions.vtt", content: "WEBVTT\n\n00:00.000 --> 00:01.000\nHi\n" },
+    ]);
+    const result = await validateBundle(zip);
+    expect(Object.fromEntries(result.entries.map((e) => [e.path, e.contentType]))).toEqual({
+      "index.html": "text/html; charset=utf-8",
+      "media/clip.mp4": "video/mp4",
+      "media/clip.webm": "video/webm",
+      "media/song.mp3": "audio/mpeg",
+      "media/captions.vtt": "text/vtt; charset=utf-8",
+    });
+  });
+
   it("rejects a disallowed file type", async () => {
     const zip = await buildZipFile([{ name: "evil.sh", content: "#!/bin/sh\nrm -rf /" }]);
     await expect(validateBundle(zip)).rejects.toMatchObject({ code: "bundle_invalid" });

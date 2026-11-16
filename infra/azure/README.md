@@ -659,9 +659,9 @@ with:
   archive with `Buffer.concat`, so peak CLI memory is about 2× the zip. That, not
   the server, is what a very large bundle hits first.
 
-Raising the per-file cap does **not** widen what _types_ are accepted —
-`apps/portal/src/deploy/mime.ts` is a static-asset allowlist with no video or
-audio types, so a large `.mp4` is rejected on type regardless of size.
+Raising the per-file cap does **not** widen what _types_ are accepted. That is
+the allowlist in `packages/shared/src/mime.ts`. It includes common video and
+audio types, so the per-file cap is usually what limits large recordings.
 
 ## Fetch-proxy body cap
 

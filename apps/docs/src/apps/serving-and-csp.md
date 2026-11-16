@@ -41,6 +41,26 @@ options:
 Both grants need admin approval. Each upload runs a CSP lint that warns about
 origins this policy will block, so read those warnings before you promote.
 
+## Supported file types
+
+A bundle may contain only these file types. A deploy that includes any other
+type is rejected, and the portal drops it from a folder upload with a warning.
+Each file is served with the Content-Type shown by its group.
+
+- **Pages, scripts and data:** `.html`, `.htm`, `.css`, `.js`, `.mjs`, `.json`,
+  `.map`, `.txt`, `.xml`, `.webmanifest`, `.wasm`, `.pdf`
+- **Images:** `.svg`, `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.avif`, `.ico`
+- **Fonts:** `.woff`, `.woff2`, `.ttf`, `.otf`, `.eot`
+- **Video:** `.mp4`, `.m4v`, `.webm`, `.ogv`, `.mov`
+- **Audio:** `.mp3`, `.m4a`, `.aac`, `.wav`, `.flac`, `.ogg`, `.oga`, `.opus`,
+  `.weba`
+- **Captions:** `.vtt` (WebVTT, for `<track>`). Convert `.srt` subtitles to
+  WebVTT first.
+
+Media files follow the app's visibility like every other file, so a private
+app's videos need the viewer to be signed in. Not every browser plays every
+format: `.mp4` (H.264) plays everywhere, and `.mov` plays only in some browsers.
+
 ## Other serving rules
 
 - **No service worker of your own.** A request to register one is refused with

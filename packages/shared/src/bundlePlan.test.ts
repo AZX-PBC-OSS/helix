@@ -279,3 +279,23 @@ describe("planBundle — scale (ADR-0038 #1)", () => {
     expect(ms).toBeLessThan(1000); // was ~11s with the O(dirs×files) scan
   });
 });
+
+describe("planBundle — media types", () => {
+  it("keeps video, audio and captions and still drops unplayable containers", () => {
+    const plan = planBundle([
+      f("dist/index.html"),
+      f("dist/media/clip.mp4"),
+      f("dist/media/captions.vtt"),
+      f("dist/media/song.mp3"),
+      f("dist/media/raw.mkv"),
+    ]);
+    expect(plan.root).toBe("dist/");
+    expect(plan.files.map((p) => p.to).sort()).toEqual([
+      "index.html",
+      "media/captions.vtt",
+      "media/clip.mp4",
+      "media/song.mp3",
+    ]);
+    expect(plan.drops).toContainEqual({ path: "dist/media/raw.mkv", reason: "unsupported-type" });
+  });
+});

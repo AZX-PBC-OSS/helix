@@ -279,3 +279,22 @@ punishing users for a step we would rather delete.
   (ADR-0051, which superseded ADR-0030) become the normal path, the hand-assembled archive — and most of this ADR —
   becomes a legacy path for one-off uploads. Choosing the cheap, contained, deletable fix
   over a deeper one is the point, not an oversight.
+
+## Amendment (2026-11-16) — the allowlist grows to cover inert media
+
+Decision 7 left open whether the mime allowlist should cover inert media. A user
+report answered it: a training site could not host its own recordings and had to
+send viewers to a second host with its own sign-in. The allowlist now includes
+common video (`.mp4`, `.m4v`, `.webm`, `.ogv`, `.mov`), audio (`.mp3`, `.m4a`,
+`.aac`, `.wav`, `.flac`, `.ogg`, `.oga`, `.opus`, `.weba`) and WebVTT captions
+(`.vtt`). The edge already served byte ranges for these, and the CSP already
+allowed same-origin media.
+
+The allowlist moved to `@azx-pbc/shared/mime` (`packages/shared/src/mime.ts`), and
+the planner's `SERVEABLE_EXTENSIONS` is now derived from it rather than copied, so
+the SPA and the server can no longer disagree about what is serveable. The rest of
+decision 7 holds: the list is deny-by-default and the server enforces it in
+`validate.ts`. Still excluded: `.ts` (MPEG-TS), which the planner reads as
+TypeScript source; `.srt`, which `<track>` cannot read; containers browsers cannot
+play (`.mkv`, `.avi`, `.wmv`); and `.csv`, which is not media and is a separate
+decision.

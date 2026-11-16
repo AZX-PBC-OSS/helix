@@ -22,6 +22,8 @@
  * can't turn detection quadratic.
  */
 
+import { SERVEABLE_EXTENSIONS } from "./mime.js";
+
 /**
  * Planner revision, stamped into the deploy report (ADR-0038). Bump when the
  * scoring or outcomes change materially, so an old stored report stays readable.
@@ -167,42 +169,6 @@ function junkReason(path: string): DropReason | null {
 }
 
 /* -------------------------------------------------------------- allowlists */
-
-/**
- * Extensions the edge will serve. Mirrors the keys of the server's mime
- * allowlist (`apps/portal/src/deploy/mime.ts`) — the deny-by-default enforcement
- * list stays there; this copy only decides what the planner drops as
- * unserveable so the preview matches what the server would accept. If the two
- * drift, the SPA can promise a deploy the server rejects; folding mime.ts into
- * this package is the durable fix (ADR-0038 consequences) and is deferred.
- */
-const SERVEABLE_EXTENSIONS = new Set([
-  ".html",
-  ".htm",
-  ".css",
-  ".js",
-  ".mjs",
-  ".json",
-  ".map",
-  ".svg",
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".gif",
-  ".webp",
-  ".avif",
-  ".ico",
-  ".woff",
-  ".woff2",
-  ".ttf",
-  ".otf",
-  ".eot",
-  ".txt",
-  ".xml",
-  ".webmanifest",
-  ".wasm",
-  ".pdf",
-]);
 
 /** Directory names that conventionally hold a static build's output. */
 const BUILD_DIR_NAMES = new Set(["dist", "build", "out", "public", "_site", "www"]);

@@ -14,6 +14,7 @@
     "./jobsSigningVectors": "./src/jobsSigningVectors.ts",
     "./lifecycle": "./src/lifecycle.ts",
     "./logging": "./src/logging.ts",
+    "./mime": "./src/mime.ts",
     "./telemetry": "./src/telemetry.ts"
   },
   "scripts": {
