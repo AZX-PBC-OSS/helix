@@ -82,7 +82,8 @@ catches a wrongly-off flag before it does damage.
 | Parameter | Default | What it is |
 | --- | --- | --- |
 | `deployApps` | `false` | The two-phase switch: `false` deploys infrastructure only, `true` adds the container apps |
-| `deployFirewall` | `true` | The Azure Firewall that enforces the egress-only network zone. **Keep on for production** — it is the primary outbound control. `false` saves ~$920/month and is for dev/test installs only |
+| `deployFirewall` | `true` | The Azure Firewall that enforces the egress-only network zone. **Keep on for production** — it is the primary outbound control. `false` saves ~$920/month but removes network isolation; trusted single-tenant installs must accept that tradeoff. Mutually exclusive with NAT |
+| `deployNatGateway` | `false` | Standard NAT Gateway and one static outbound IPv4 for the egress subnet. Requires `deployFirewall=false`; see [Static outbound IP](#static-outbound-ip) |
 | `deployDevGateway` | `false` | The opt-in cross-origin dev surface (`dev-api.<appsDomain>`) for building apps locally against a deployed platform |
 | `deployJobs` | `false` | The background-jobs service (internal ingress in the apps environment) and its wiring into the edge, dev gateway and portal. Turning it on is an explicit rollout step, and the apply refuses to run without the jobs passwords and signing roots (see [Operating background jobs](/deploy/jobs#enable-jobs-on-an-existing-installation)). `false` removes the service and every jobs setting from the other apps; the jobs database and its records stay |
 | `jobsServerState` | `serving` | `retiring` withdraws the jobs types from new grants and closes intake: apps that already hold the grant can no longer submit new jobs. The service, its routing and its credentials stay, so existing jobs stay readable and cancellable and their retry keys still recover them. Disable jobs only after the jobs service's `jobs_intake` health check reports the server drained |
@@ -91,6 +92,29 @@ catches a wrongly-off flag before it does damage.
 | `allowPublicApps` | `false` | Permits `public` (anonymous) app visibility on this install |
 | `allowPasswordApps` | `false` | Permits `password` (shared-passphrase) app visibility |
 | `deployFoundry` | `false` | Deploys an Azure AI Foundry account with the `foundryModels` deployments and routes all LLM inference to it, keyless (managed identity — no vendor key). See [Azure AI Foundry](/deploy/foundry) |
+
+## Static outbound IP
+
+For public APIs with IP allowlists, set `deployNatGateway=true` and
+`deployFirewall=false` in both bootstrap and normal deployment parameter files.
+Enabling both is rejected, including infrastructure-only deployments. Existing
+installs retain their current behavior until NAT is enabled.
+
+Read the `egressNatPublicIp` deployment output and give that IPv4 (or its /32)
+to the API provider. All egress replicas share it. This is separate from the
+Container Apps ingress IP. NAT provides a fixed source address, not destination
+filtering; it does not restore the disabled firewall's network isolation.
+
+The existing Consumption workload profile supports this. The template uses
+Standard NAT, which is not zone-redundant; StandardV2 is currently unsupported
+by Container Apps. Stable resource names preserve the IP across re-applies,
+but deleting the public-IP resource can permanently lose the allowlisted address.
+
+A prior firewall route overrides NAT even after the firewall flag is disabled.
+Disabling NAT detaches it but may leave billable resources behind under
+incremental deployment. Follow the operational README's
+[enablement, migration and cleanup procedure](https://github.com/AZX-PBC-OSS/helix/blob/main/infra/azure/README.md#optional-static-outbound-ip-deploynatgateway)
+and coordinate source-IP changes with the API provider.
 
 ## Azure AI Foundry
 
@@ -147,8 +171,9 @@ first-party defaults, or pointed at an existing Foundry account per the
 | Parameter | Default | What it is |
 | --- | --- | --- |
 | `deployCostBudget` | `true` | A monthly budget that **notifies** — nothing enforces it |
-| `expectedMonthlyUsdExFirewall` | `125` | Expected monthly spend without the firewall. **Set this per install** — the Postgres SKU alone moves it by 2× |
+| `expectedMonthlyUsdExFirewall` | `125` | Expected monthly spend without the optional firewall or NAT Gateway. **Set this per install** — the Postgres SKU alone moves it by 2× |
 | `firewallMonthlyUsd` | `920` | What `deployFirewall` adds per month |
+| `natGatewayMonthlyUsd` | `40` | NAT monthly budgeting allowance, added only when enabled. Includes the public IP and processing; adjust for region and traffic. Not a price quote |
 | `budgetHeadroomPercent` | `160` | Budget = expected × this. Below ~125% the notifications become a monthly "all is well" reminder |
 | `monthlyCostBudgetUsd` | `0` | Override the derived budget entirely |
 | `llmMonthlyBudgetUsd` | `1000` | LLM-axis budget on the Foundry account's own group (`deployFoundry` only). A direct amount, not derived; `0` = no LLM budget. Notify-only — per-app daily budgets and the deployments' TPM capacity are the real limits |

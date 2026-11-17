@@ -395,16 +395,19 @@ jobs:
           if-no-files-found: ignore
 
   bicep:
-    name: bicep compiles
+    name: bicep compiles and networking evaluates
     runs-on: ubuntu-latest
     # Independent of the node stack: no `needs`, and nothing needs it. `az` and
     # the Bicep CLI ship on the ubuntu-latest image, so this job pays for a
-    # checkout and nothing else. It is a compile check, not a `what-if` — it
-    # catches a template that cannot build, not one that builds and misdeploys.
+    # checkout and a pinned Bicep CLI. Local snapshots test networking decisions;
+    # live routing and resource lifecycle still need an operator's Azure checks.
     timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Install Bicep for local evaluation
+        run: az bicep install --version v0.48.1
 
       - name: Compile the templates
         # --stdout >/dev/null: compiling to a file would litter the tree with
@@ -418,6 +421,9 @@ jobs:
           az bicep build-params --file infra/azure/main.bootstrap.bicepparam --stdout > /dev/null
           az bicep build --file infra/entra/main.bicep --stdout > /dev/null
           az bicep build-params --file infra/entra/main.bicepparam --stdout > /dev/null
+
+      - name: Evaluate outbound networking configurations
+        run: node scripts/check-azure-network.mjs
 
   package:
     name: pack helix CLI

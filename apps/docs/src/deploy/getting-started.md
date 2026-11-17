@@ -51,16 +51,22 @@ normal deploy builds nothing locally — you pick a published image tag.
 
 ## What it costs
 
-The default shape costs roughly **$125/month**. The one expensive optional is
+The baseline without optional outbound networking costs roughly **$125/month**. The largest optional cost is
 the Azure Firewall: about **$920/month**, flat whether busy or idle. It is the
 primary egress control — it is what stops a compromised app (or the edge
 itself) from reaching the internet directly — so it is on by default.
 
 - Production, or anything hosting apps from multiple authors: keep it.
-- A dev or test install: `deployFirewall=false` saves the money. Data services
-  stay private either way.
+- A dev, test or trusted single-tenant install can accept the firewall-disabled
+  tradeoff with `deployFirewall=false`. Data services stay private either way.
 
-A monthly budget alert is deployed alongside, sized from these two numbers, so
+If an API needs a fixed source IP, enable the optional NAT Gateway with
+`deployNatGateway=true` and `deployFirewall=false` in both bootstrap and normal
+parameters. It gives the egress subnet one static IPv4; it provides no destination
+filtering. The budget adds a configurable $40/month allowance, not a price quote.
+See [Static outbound IP](/deploy/configuration#static-outbound-ip) before cutover.
+
+A monthly budget alert is deployed alongside, sized from the enabled features, so
 tune `expectedMonthlyUsdExFirewall` if your Postgres SKU differs much from the
 default. See the [configuration reference](/deploy/configuration#cost).
 

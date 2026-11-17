@@ -576,9 +576,25 @@ process:
 | Module | Reads | Covers |
 | --- | --- | --- |
 | `alerts-availability.bicep` | Application Insights **standard tests** against `auth.<appsDomain>/health` (+ the portal when external, + any `availabilityExtraTargets`) | Reachability, the health **body**, and TLS cert validity/expiry — from five Azure regions, i.e. from outside the platform |
-| `alerts-infra.bicep` | Azure platform metrics: `is_db_alive`, `storage_percent`, `RestartCount`, ingress `Requests` 5xx, Service Health | Postgres down or filling, container crash loops, edge server errors, Azure's own incidents |
+| `alerts-infra.bicep` | Azure platform metrics: `is_db_alive`, `storage_percent`, `RestartCount`, ingress `Requests` 5xx, NAT `DatapathAvailability` and `SNATConnectionCount`, Service Health | Postgres down or filling, container crash loops, edge server errors, NAT degradation/failed connections, Azure's own incidents |
 | `alerts-cost.bicep` | Billing | A monthly budget over the platform-infra resource groups (LLM spend is excluded by topology — the Foundry account has its own group). Notifies; never enforces |
 | `alerts-cost-foundry.bicep` | Billing | With `deployFoundry`: a monthly budget on the Foundry account's group — the LLM axis. Notifies; never enforces |
+
+With `deployNatGateway`, `deployApps` and `deployInfraAlerts` enabled,
+`alerts-infra.bicep` adds two severity-2 rules scoped to the gateway. Both
+evaluate every minute, auto-resolve, and use the shared action group:
+
+| Rule suffix | Azure metric and condition | Window |
+| --- | --- | --- |
+| `-alert-nat-unavailable` | `DatapathAvailability`, Average < 90 | 15 minutes |
+| `-alert-nat-failed-connections` | `SNATConnectionCount`, Total > 0, `ConnectionState=Failed` | 5 minutes |
+
+These signals work with `deployTelemetry=false`; no application spans or
+instruments are added. Failed SNAT connections indicate network failures,
+not upstream HTTP errors. Neither rule verifies API allowlists, and missing
+metrics are not a healthy measurement. See the
+[NAT operator procedure](../../infra/azure/README.md#optional-static-outbound-ip-deploynatgateway)
+for diagnosis, cutover checks and cleanup of retained alerts.
 
 The availability tests are the probe this page used to list under "not built":
 `/health` always answers 200, so grading it means reading the body, and a

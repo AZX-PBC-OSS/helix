@@ -86,4 +86,14 @@ Entra login host), live in the operator's private deployments repo. The
 "primary control" claim above therefore describes the reference posture, not
 the present live one.
 
+**Static outbound IP amendment (2026-11-17):** `deployNatGateway` defaults to
+false and is mutually exclusive with `deployFirewall`. It attaches a Standard
+NAT Gateway with one static public IPv4 to `snet-egress` for upstream API
+allowlists. It supplies no destination filtering and does not restore the
+firewall-disabled network boundary. The accepted-risk posture above still
+applies. Firewall remains enabled by default; operators enabling NAT explicitly
+disable it. Stable public-IP resource names preserve allowlists across re-applies;
+resource deletion and network-mode changes require coordinated migration. See
+[the operational procedure](../../infra/azure/README.md#optional-static-outbound-ip-deploynatgateway).
+
 **Perf note (Resolved):** egress originally built a **fresh undici `Agent` per request** because the dispatcher carried the per-request pinned IP + `servername` (SNI), which defeated cross-request connection pooling (a TCP+TLS handshake per outbound call) — an accepted simplicity-for-isolation trade. This is now **optimized**: `makeProxyHandler` holds **one long-lived shared `Agent`** (closed on app teardown via a Fastify `onClose` hook) whose connector — built with `buildConnector` — runs `resolveAndValidate` and **pins the socket to the validated IP on every new connection**, then hands off to the default connector with `servername` pinned to the real hostname. The request dials the **real origin** (undici pools by origin and derives Host/SNI from it), so keep-alive is recovered (a `proxy.test.ts` case asserts one TCP connection across six requests). The IP-pin is unweakened: validation runs per *new* socket, a pooled/keep-alive socket is already bonded to a validated IP (so reuse can't reach a rebound address and the next fresh socket re-validates), and a blocked/unresolvable host throws `SsrfBlockedError` from the connector, which undici propagates verbatim to the `request()` rejection where the handler maps it to `403 blocked` — preserving the old upfront-check semantics.

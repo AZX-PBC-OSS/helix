@@ -352,7 +352,7 @@ them:
 Anything the template owns and no scoped command can reach:
 
 - Adding or removing a resource — a feature gate like `deployFoundry`,
-  `deployAlerts`, `deployDevGateway`, `deployFirewall`.
+  `deployAlerts`, `deployDevGateway`, `deployFirewall`, `deployNatGateway`.
 - Changing a role assignment, an identity, or the network shape.
 - Changing a secret that other resources derive from.
 - Adding a hostname that needs a TLS binding. **The declared set is an
@@ -397,6 +397,12 @@ The blindness itself has not gone away, though: the apps' secrets array is a
 secure parameter and still renders as `[unknown()]` in a what-if, so the
 preview cannot show what any reference resolves *to* — only that the wiring is
 intact.
+
+For NAT changes, keep `deployNatGateway` consistent in bootstrap and normal
+parameters. Coordinate the source-IP change with API allowlists. Incremental
+applies can retain old firewall routes or detached NAT resources; follow
+[Static outbound IP](/deploy/configuration#static-outbound-ip) for migration,
+verification and explicit cleanup.
 
 ### Read the what-if, knowing what it cannot tell you
 

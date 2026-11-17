@@ -55,6 +55,12 @@ param deployJobs = false
 // installs — see README "Optional: the egress firewall".
 param deployFirewall = true
 
+// Fixed outbound IPv4 for API allowlists. Set deployFirewall=false to enable.
+// Keep this flag identical in bootstrap and normal deployment parameters.
+// See README "Optional: static outbound IP" for migration and cleanup.
+param deployNatGateway = false
+// param natGatewayMonthlyUsd = 40 // Budget allowance; adjust for region and traffic.
+
 // Wildcard TLS automation (apps/certbot, ADR-0029). true = deploy the certbot
 // scheduled job that issues/renews *.appsDomain via ACME DNS-01 and binds the
 // edge wildcard custom domain. Needs acmeEmail (skipped when empty). acmeServer

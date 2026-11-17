@@ -14,7 +14,7 @@ Container Apps. This is the `infra/` referenced in the project plan (§2) and th
 
 | Layer    | Resources                                                                                                                                                                                                |
 | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Network  | VNet, 5 subnets, Azure Firewall + policy, 2 route tables (forced tunnel), private DNS zones                                                                                                              |
+| Network  | VNet, 5 subnets, optional Azure Firewall + policy or NAT Gateway + static IPv4, 2 route tables, private DNS zones                                                                                        |
 | Data     | Postgres Flexible Server (private): the platform `helix` database + the jobs plane's private `helix_jobs` database; Storage (blob, private)                                                              |
 | Secrets  | `kv-platform` (infra config) + `kv-connections` (app connection secrets) + `kv-delegated` (user-delegated token material, egress-only) — all private                                                     |
 | Identity | 4 user-assigned managed identities + the least-privilege RBAC matrix (the 4th, dev-gateway, is idle unless `deployDevGateway`); the two migrate jobs get one deploy-scoped identity each                 |
@@ -100,6 +100,129 @@ posture because the platform image pulls (GHCR/MCR) require **FQDN** rules NSGs
 can't express, which is why a firewall was chosen in the first place. For a
 temporary install, `az network firewall deallocate` also stops the hourly charge
 between test sessions without losing config.
+
+## Optional: static outbound IP (`deployNatGateway`)
+
+Enable a Standard NAT Gateway when an API provider needs to allowlist one public
+IPv4 for Helix's outbound calls. Set these values in **both** the bootstrap and
+normal parameter files, and retain them on every full apply:
+
+```bicep
+param deployFirewall = false
+param deployNatGateway = true
+```
+
+`deployNatGateway` defaults to `false`; the firewall default stays `true`.
+Enabling both fails template evaluation, including infrastructure-only applies.
+The supported combinations are:
+
+| Firewall | NAT | Outbound behavior                                     |
+| -------- | --- | ----------------------------------------------------- |
+| Off      | Off | Default internet egress; no fixed source-IP guarantee |
+| On       | Off | Existing firewall routing and filtering               |
+| Off      | On  | Egress uses one static public IPv4                    |
+| On       | On  | Rejected; choose one                                  |
+
+The gateway attaches only to `snet-egress`. All egress replicas share its IP;
+the apps subnet keeps its existing outbound behavior. NAT does not provide
+destination filtering or restore the firewall's network isolation. The
+firewall-disabled security posture above still applies. Private endpoints and
+internal ingress stay private.
+
+This uses the existing Consumption workload profile; dedicated compute is not
+required. The NAT SKU is Standard: Container Apps currently does not support
+StandardV2 integration. Standard NAT is not zone-redundant. See
+[Azure's Container Apps networking requirements](https://learn.microsoft.com/en-us/azure/container-apps/custom-virtual-networks#azure-nat-gateway-integration).
+
+### Enable and verify
+
+1. Check the egress subnet's effective outbound routing. A default route to a
+   firewall or another virtual appliance takes precedence over NAT. A previously
+   enabled firewall needs the migration below; changing flags alone is insufficient.
+2. Review a full-deployment what-if with the updated parameters. Expect a NAT
+   gateway, a public IP, the egress subnet association, budget changes, and NAT
+   alerts when enabled. The Container Apps environments should not be replaced.
+3. Apply the template. The gateway and IP are infrastructure resources, so they
+   are created even with `deployApps=false`.
+4. Read the address from the deployment output:
+
+   ```bash
+   az deployment group show -g <rg> -n <deployment> \
+     --query properties.outputs.egressNatPublicIp.value -o tsv
+   ```
+
+   The output is empty when NAT is disabled. Give the enabled address to the API
+   provider as one IPv4 address (or `/32`, if its allowlist uses CIDR). The
+   environment's `appsEnvStaticIp` output is an ingress address and is unrelated.
+
+5. Make a fresh request through a hosted app's Helix fetch proxy to a controlled
+   endpoint that reports the observed source IP, then test the allowlisted API.
+   Repeat after an egress revision change and scale-out. Check private-service
+   connectivity and the NAT metrics in Azure Monitor. Old pooled connections may
+   retain the previous outbound path until re-established.
+
+Coordinate cutover with the API provider: new connections use the NAT address as
+soon as association takes effect. If the IP must be allowlisted before cutover,
+pre-create the static public-IP resource using the module's exact name, SKU and
+region (`<namePrefix>-egress-pip`, Standard IPv4), obtain the address, then apply
+the template to manage that same resource and attach NAT. Do not replace the IP.
+
+### Cost and monitoring
+
+NAT bills hourly even when idle, plus processing for requests **and responses**.
+Public-IP and applicable outbound bandwidth charges also apply. The template
+adds `natGatewayMonthlyUsd` (default `40`) to the budget's baseline while NAT is
+enabled. This is a configurable allowance, not a price quote: adjust for region
+and traffic using [Azure pricing](https://azure.microsoft.com/en-us/pricing/details/azure-nat-gateway/).
+Keep NAT costs out of `expectedMonthlyUsdExFirewall` to avoid double-counting.
+
+With `deployApps=true` and `deployInfraAlerts=true`, two severity-2 alerts use
+Azure platform metrics, independently of `deployTelemetry`:
+
+- `<namePrefix>-alert-nat-unavailable`: average `DatapathAvailability` below 90
+  over 15 minutes. Check Resource Health and the subnet/public-IP associations.
+- `<namePrefix>-alert-nat-failed-connections`: total `SNATConnectionCount` above
+  zero over five minutes, filtered to `ConnectionState=Failed`. Check SNAT port
+  exhaustion, connection volume and idle connections; upstream HTTP errors are
+  not counted here.
+
+Both evaluate every minute, auto-resolve, and use the shared action group.
+Without `alertEmails`, they evaluate without sending notifications. They cannot
+detect an incorrect API allowlist, and missing metrics do not prove health.
+
+### Migration, rollback and cleanup
+
+When migrating from a firewall deployment, inspect both route tables and remove
+the old `default-to-firewall` routes as a coordinated network change. Incremental
+ARM deployments do not delete those child resources merely because the firewall
+module is disabled. Leaving the egress route in place bypasses NAT; deleting the
+firewall first can leave both subnets without working internet access. Remove
+obsolete firewall resources separately after checking the resulting routing.
+See [NAT and firewall routing](https://learn.microsoft.com/en-us/azure/firewall/integrate-with-nat-gateway).
+
+Keep `namePrefix`, region and the public-IP resource stable across deployments.
+Normal app revisions and full template re-applies reuse the address. Deleting
+the public IP loses that guarantee. There is no automatic deletion lock;
+operators may add one if their teardown procedures account for it.
+
+To roll back to default outbound networking, set `deployNatGateway=false` in
+both parameter files and apply with `deployFirewall=false`. The template clears
+the subnet's NAT association and returns an empty output. Verify the association
+is gone and make a fresh outbound request before removing resources. The source
+address changes, so coordinate the API allowlist again.
+
+Incremental deployments can retain the NAT gateway, public IP and the two alert
+rules after disabling the feature. Remove the detached gateway and obsolete
+alerts explicitly to stop their charges. Retain the public IP if you need the
+same address when re-enabling NAT; the retained IP continues to incur charges.
+Delete it only when its allowlist entries are no longer needed. Retained
+resources are no longer included in the derived NAT budget allowance, so adjust
+the budget if retaining them for an extended period.
+
+**Deployment acceptance remains an operator check:** validate route cleanup,
+detach, retained-resource cleanup and re-enable behavior in a disposable Azure
+deployment before using this rollback procedure on a client install. Local
+Bicep compilation cannot verify Azure's live routing or resource lifecycle.
 
 ## Azure AI Foundry (`deployFoundry`, [ADR-0046](../../docs/adr/0046-azure-ai-foundry-keyless-llm-backend.md))
 
@@ -691,6 +814,7 @@ modules/
   network.bicep       VNet + subnets + delegations
   routing.bicep       2 empty route tables (routes added by firewall.bicep)
   firewall.bicep      Azure Firewall + policy + default routes
+  nat-gateway.bicep   optional Standard NAT Gateway + static outbound IPv4
   privatedns.bicep    private DNS zones + VNet links
   private-endpoint.bicep  reusable PE + DNS zone group
   storage.bicep       storage account + app-bundles container + PE
@@ -767,10 +891,23 @@ az deployment group what-if \
   -g <rg> -f main.bicep -p main.bicepparam        # preview
 ```
 
-The compile check also runs in CI on every PR — the `bicep` job in
-`.github/workflows/ci.yml` builds `main.bicep`, `main.bicepparam` and
-`infra/entra/main.bicep`. It shares nothing with the node jobs and gates
-nothing. `what-if` stays a manual step: it needs a live subscription.
+The `bicep` CI job compiles the Azure and Entra templates and parameter files,
+then evaluates the outbound-networking configurations using Bicep 0.48.1. Run
+the same credential-free checks from the repository root:
+
+```bash
+az bicep install --version v0.48.1
+node scripts/check-azure-network.mjs
+```
+
+The script uses the CLI installed under `AZURE_CONFIG_DIR` (default
+`~/.azure`); set `BICEP_BINARY` to use another binary. It evaluates both
+bootstrap and app deployments with synthetic inputs, checking option conflicts,
+subnet association, unchanged ACA environments, budgets, output references and
+NAT alerts with application telemetry disabled. Runtime properties such as the
+allocated IP remain unresolved. Snapshots do not validate live routing, resource
+lifecycle, permissions or quotas; `what-if` and the NAT acceptance procedure
+still need a live subscription.
 
 **Check your environment for a stale `HELIX_EDGE_TRUST_PROXY`.** It used to hold
 the ACA ingress **hop count** (`1`); fastify 5.12.1 deleted that form
@@ -1371,16 +1508,20 @@ it.** Azure Firewall Standard bills $1.25 per hour of _deployment time_ — flat
 so an idle firewall costs what a busy one does — plus its static public IP,
 before $0.016/GB of data processing (rounding error at this platform's volumes):
 
-| `deployFirewall` | Baseline | Firewall | Expected  | Budget at 160% | 80% notification |
-| ---------------- | -------- | -------- | --------- | -------------- | ---------------- |
-| `false`          | ~$125    | —        | ~$125/mo  | $200           | $160             |
-| `true`           | ~$125    | ~$920    | ~$1045/mo | $1672          | $1337            |
+| Outbound option | Baseline | Optional allowance | Expected  | Budget at 160% | 80% notification |
+| --------------- | -------- | ------------------ | --------- | -------------- | ---------------- |
+| Neither         | ~$125    | —                  | ~$125/mo  | $200           | $160             |
+| Firewall        | ~$125    | ~$920              | ~$1045/mo | $1672          | $1337            |
+| NAT             | ~$125    | $40                | ~$165/mo  | $264           | $211             |
 
 That is an 8× swing, so no single hardcoded amount is right for both shapes:
 sized for the small install it fires on day three of every firewall month, and
 sized for the firewall it never fires on the small one.
-`expectedMonthlyUsdExFirewall` (125) and `firewallMonthlyUsd` (920) are the two
-inputs; `monthlyCostBudgetUsd` overrides the whole derivation.
+`expectedMonthlyUsdExFirewall` (125) is the baseline excluding both optional
+outbound features; its name is retained for compatibility. Add
+`firewallMonthlyUsd` (920) or `natGatewayMonthlyUsd` (40) when enabled. The NAT
+number is a budgeting allowance, not a quote; tune it for regional pricing and
+traffic. `monthlyCostBudgetUsd` overrides the whole derivation.
 
 **Why the budget is not the expected bill.** An `Actual` notification compares
 _month-to-date_ spend against the amount, and month-to-date spend on a healthy
@@ -1407,7 +1548,7 @@ display-only LLM spend watch line the portal renders on the Activity page — a
 different number measuring a different thing, and reading it here produced a
 budget that sat _below_ expected spend whenever the firewall was on. The deploy
 echoes both `costBudgetUsd` and `expectedMonthlyUsd` so the pair can be checked
-after any deploy that flips the firewall.
+after any deploy that changes firewall or NAT settings.
 
 ### Verifying it, which you must do explicitly
 

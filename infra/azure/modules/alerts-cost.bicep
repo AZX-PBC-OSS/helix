@@ -74,7 +74,7 @@ param resourceGroupNames array
 @description('Monthly budget in USD (whole dollars). This is expected spend PLUS HEADROOM, not expected spend — see the header for why that distinction is the difference between an alert and a monthly calendar reminder. The caller derives it.')
 param monthlyBudgetUsd int
 
-@description('Expected monthly spend in USD the amount was derived from. Not used by the budget resource — it is here so the deployment can echo the pair, because a budget amount alone does not say whether it was sized for the firewall being on or off.')
+@description('Expected monthly spend in USD the amount was derived from. Not used by the budget resource — it is here so the deployment can echo the pair, because a budget amount alone does not say whether it was sized for the enabled firewall or NAT Gateway.')
 param expectedMonthlyUsd int
 
 @description('Addresses the budget notifications go to. At least one is required — the caller skips this module entirely when the list is empty.')

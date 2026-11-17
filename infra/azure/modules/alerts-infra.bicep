@@ -28,6 +28,9 @@ param containerAppIds array = []
 @description('The edge\'s container app resource id, for the 5xx rule. Empty skips it. Scoped to the edge alone: it is the only plane that terminates untrusted traffic, and the other two would need very different thresholds.')
 param edgeAppId string = ''
 
+@description('NAT Gateway resource id. Empty skips its availability and failed-connection rules.')
+param natGatewayId string = ''
+
 @description('Storage used (percent) that fires the database-storage rule. 85 leaves room to act — a full Postgres stops accepting writes, and growing the disk is an operation with a maintenance window, not a click.')
 param postgresStoragePercentThreshold int = 85
 
@@ -45,6 +48,73 @@ param actionGroupId string = ''
 
 var actionGroupIds = empty(actionGroupId) ? [] : [actionGroupId]
 var metricActions = [for id in actionGroupIds: { actionGroupId: id }]
+
+// Azure emits these independently of the application telemetry pipeline.
+// https://learn.microsoft.com/azure/nat-gateway/nat-metrics
+resource natAvailabilityRule 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(natGatewayId)) {
+  name: '${namePrefix}-alert-nat-unavailable'
+  location: 'global'
+  properties: {
+    description: 'NAT Gateway datapath availability is below 90% over 15 minutes. Outbound API calls from egress may fail. Check NAT Resource Health and subnet/public-IP associations. This rule cannot detect missing metrics or an incorrect API allowlist.'
+    severity: 2
+    enabled: true
+    scopes: [natGatewayId]
+    evaluationFrequency: 'PT1M'
+    windowSize: 'PT15M'
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.MultipleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'NatDatapathAvailability'
+          criterionType: 'StaticThresholdCriterion'
+          metricNamespace: 'Microsoft.Network/natGateways'
+          metricName: 'DatapathAvailability'
+          timeAggregation: 'Average'
+          operator: 'LessThan'
+          threshold: 90
+        }
+      ]
+    }
+    autoMitigate: true
+    actions: metricActions
+  }
+}
+
+resource natFailedConnectionsRule 'Microsoft.Insights/metricAlerts@2018-03-01' = if (!empty(natGatewayId)) {
+  name: '${namePrefix}-alert-nat-failed-connections'
+  location: 'global'
+  properties: {
+    description: 'NAT Gateway reports failed SNAT connections. Check connection volume, port exhaustion and idle connections. These are network failures, not HTTP errors returned by the upstream API.'
+    severity: 2
+    enabled: true
+    scopes: [natGatewayId]
+    evaluationFrequency: 'PT1M'
+    windowSize: 'PT5M'
+    criteria: {
+      'odata.type': 'Microsoft.Azure.Monitor.MultipleResourceMultipleMetricCriteria'
+      allOf: [
+        {
+          name: 'NatFailedConnections'
+          criterionType: 'StaticThresholdCriterion'
+          metricNamespace: 'Microsoft.Network/natGateways'
+          metricName: 'SNATConnectionCount'
+          timeAggregation: 'Total'
+          operator: 'GreaterThan'
+          threshold: 0
+          dimensions: [
+            {
+              name: 'ConnectionState'
+              operator: 'Include'
+              values: ['Failed']
+            }
+          ]
+        }
+      ]
+    }
+    autoMitigate: true
+    actions: metricActions
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Postgres — is the server answering, and is it about to run out of disk

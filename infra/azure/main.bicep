@@ -1,7 +1,7 @@
 // main.bicep — Helix on Azure (M5). Resource-group-scoped orchestrator.
 //
 // Stands up the three-plane platform (architecture §3) on Azure Container Apps:
-//   - networking with the egress-zone isolation enforced by firewall + UDRs
+//   - networking with optional firewall + UDR isolation, or a static NAT egress IP
 //   - private Postgres / Blob / Key Vault (×3), all behind private endpoints
 //     (app images are pulled from public GHCR, so there is no private registry)
 //   - four user-assigned identities with a least-privilege RBAC matrix (the
@@ -364,7 +364,7 @@ param availabilityTlsCheck bool = !contains(toLower(acmeServer), 'staging')
 @description('Fail the availability test this many days before the TLS certificate expires. This is the monitor on ADR-0029\'s certbot job — and deliberately on its OUTCOME (a cert with days left) rather than its mechanism (a scheduled job that ran), because a job that succeeds while renewing the wrong thing is the failure that gets missed. 14 days leaves two more renewal attempts inside Let\'s Encrypt\'s 30-day window.')
 param availabilityTlsExpiryWarningDays int = 14
 
-@description('Deploy the INFRASTRUCTURE alert rules (modules/alerts-infra.bicep): Postgres availability + storage, container-app replica restart storms, edge 5xx rate, and Azure Service Health. These read Azure platform metrics, so unlike the telemetry rules they need neither the collector nor App Insights and work on an install running with deployTelemetry=false.')
+@description('Deploy the INFRASTRUCTURE alert rules (modules/alerts-infra.bicep): Postgres availability + storage, container-app replica restart storms, edge 5xx rate, optional NAT health + failed connections, and Azure Service Health. These read Azure platform metrics, so unlike the telemetry rules they need neither the collector nor App Insights and work on an install running with deployTelemetry=false.')
 param deployInfraAlerts bool = true
 
 @description('Postgres storage percent that fires the storage rule. A full server stops accepting writes and growing the disk is a maintenance operation, so the default leaves room to act rather than warning at the cliff.')
@@ -376,17 +376,21 @@ param edgeServerErrorThreshold int = 100
 @description('Deploy the monthly cost budgets (modules/alerts-cost.bicep for the platform-infra axis, plus alerts-cost-foundry.bicep for the LLM axis when deployFoundry is on), notifying at 80% actual, 100% actual and 100% forecast of the amounts below. Skipped when alertEmails is empty. A budget NOTIFIES — nothing about it caps spend.')
 param deployCostBudget bool = true
 
-@description('Expected monthly spend in USD for this deployment EXCLUDING the egress firewall: the two Container Apps environments — INCLUDING their own infrastructure resource groups, which hold a load balancer each and are ~$39/mo together — plus Postgres, Blob, both Key Vaults, Log Analytics + App Insights ingestion, DNS, and the availability tests. **SET THIS PER INSTALL.** There is no useful default: the Postgres SKU alone moves it by more than 2x (a Burstable B1ms install measured ~125/mo on 2026-09-04, a GeneralPurpose D2ds_v5 one ~240/mo on the same date), so a shared number is guaranteed wrong for one of them and the failure is a budget that fires every month on a healthy install. Re-measure after ANY SKU change — every budget threshold derives from this, so a stale value moves all of them. LLM spend is never part of this axis: with vendor-direct keys it is not in Azure at all, and with deployFoundry it bills into the Foundry account\'s own resource group, watched by llmMonthlyBudgetUsd instead.')
+@description('Expected monthly spend in USD for this deployment EXCLUDING the optional egress firewall and NAT Gateway: the two Container Apps environments — INCLUDING their own infrastructure resource groups, which hold a load balancer each and are ~$39/mo together — plus Postgres, Blob, both Key Vaults, Log Analytics + App Insights ingestion, DNS, and the availability tests. **SET THIS PER INSTALL.** There is no useful default: the Postgres SKU alone moves it by more than 2x (a Burstable B1ms install measured ~125/mo on 2026-09-04, a GeneralPurpose D2ds_v5 one ~240/mo on the same date), so a shared number is guaranteed wrong for one of them and the failure is a budget that fires every month on a healthy install. Re-measure after ANY SKU change — every budget threshold derives from this, so a stale value moves all of them. LLM spend is never part of this axis: with vendor-direct keys it is not in Azure at all, and with deployFoundry it bills into the Foundry account\'s own resource group, watched by llmMonthlyBudgetUsd instead.')
 param expectedMonthlyUsdExFirewall int = 125
 
 @description('What `deployFirewall` adds per month, in USD. ~920: Azure Firewall STANDARD tier is $1.25/hr of DEPLOYMENT TIME (~912/mo, flat — an idle firewall costs the same as a busy one) plus its static public IP, before $0.016/GB of data processing, which is rounding error at this platform\'s volumes. This one parameter is 88% of the bill when it is on: the firewall turns a ~125/mo install into a ~1045/mo one, and the budget has to follow it rather than being a constant.')
 param firewallMonthlyUsd int = 920
 
+@description('Monthly NAT Gateway allowance in USD, including its static public IP and processing. 40 is a budgeting allowance, not a price quote; adjust for region and request/response traffic. Added to the baseline only when deployNatGateway is true.')
+@minValue(0)
+param natGatewayMonthlyUsd int = 40
+
 @description('Budget as a PERCENTAGE of expected spend. 160 means the budget is 1.6x what the deployment should cost, and this is not padding — it is what keeps the percentage thresholds from becoming a calendar. Azure compares month-to-date ACTUAL against the amount, so a budget set to expected spend crosses 80% about four fifths of the way into every month: the 24th, every month, forever, on a perfectly healthy install. At 160% the 80% notification means 128% of expected, which is a real overrun. Below ~125 the rule degenerates into that monthly reminder; see modules/alerts-cost.bicep.')
 @minValue(100)
 param budgetHeadroomPercent int = 160
 
-@description('Override the budget amount in USD, skipping the derivation entirely. 0 (the default) derives it as (expectedMonthlyUsdExFirewall + firewall, if deployed) x budgetHeadroomPercent, which is the only form that tracks `deployFirewall` on its own.')
+@description('Override the budget amount in USD, skipping the derivation entirely. 0 (the default) derives it as (baseline + firewall or NAT allowance, when deployed) x budgetHeadroomPercent.')
 param monthlyCostBudgetUsd int = 0
 
 @description('''
@@ -402,6 +406,9 @@ param budgetStartDate string = utcNow('yyyy-MM-01')
 
 @description('Deploy the Azure Firewall that enforces the egress-only network zone (ADR-0001) — the PRIMARY SSRF/egress control per ADR-0005. Default true (secure by default). Setting false SKIPS the firewall + its forced-tunnel routes to save ~$900/mo: the apps subnet then gets default internet egress, so a compromised edge can reach the internet and the only remaining outbound control is the egress app-level denylist (defense-in-depth). Data services stay private (private endpoints) either way. Only disable for dev / smoketest / trusted single-tenant installs — NOT production or untrusted-app hosting. See README "Optional: the egress firewall".')
 param deployFirewall bool = true
+
+@description('Give snet-egress one static outbound IPv4 through a Standard NAT Gateway. Requires deployFirewall=false. Provides a fixed source IP, not outbound filtering. Keep this setting consistent between bootstrap and normal deployments; see README for migration and cleanup.')
+param deployNatGateway bool = false
 
 @description('Log verbosity for all four services (pino levels: fatal|error|warn|info|debug|trace|silent). Sets LOG_LEVEL, which every service reads unless its own <PREFIX>_LOG_LEVEL overrides it — so this one line raises the whole platform, and a per-service override raises just the noisy one. Applied per revision: changing it rolls a new ACA revision rather than taking effect on the running one. NOTE debug/trace on the edge is a data-exposure decision as much as a volume one — this stdout is retained in Log Analytics for 30 days.')
 @allowed(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
@@ -446,6 +453,19 @@ var oidcIssuer = '${az.environment().authentication.loginEndpoint}${entraTenantI
 // Networking
 // ---------------------------------------------------------------------------
 
+// Evaluate during infrastructure deployment, including deployApps=false.
+var effectiveDeployNatGateway = deployNatGateway && deployFirewall
+  ? fail('deployNatGateway and deployFirewall cannot both be true. Set deployFirewall=false to use NAT Gateway, or deployNatGateway=false to keep the firewall.')
+  : deployNatGateway
+
+module natGateway 'modules/nat-gateway.bicep' = if (effectiveDeployNatGateway) {
+  name: 'egress-nat'
+  params: {
+    location: location
+    namePrefix: namePrefix
+  }
+}
+
 module routing 'modules/routing.bicep' = {
   name: 'routing'
   params: {
@@ -461,6 +481,7 @@ module network 'modules/network.bicep' = {
     namePrefix: namePrefix
     appsRouteTableId: routing.outputs.appsRouteTableId
     egressRouteTableId: routing.outputs.egressRouteTableId
+    egressNatGatewayId: effectiveDeployNatGateway ? natGateway!.outputs.natGatewayId : ''
   }
 }
 
@@ -1088,6 +1109,7 @@ module infraAlerts 'modules/alerts-infra.bicep' = if (deployInfraAlerts && deplo
     postgresServerId: postgres.outputs.serverId
     containerAppIds: watchedContainerAppIds
     edgeAppId: edgeApp!.outputs.appId
+    natGatewayId: effectiveDeployNatGateway ? natGateway!.outputs.natGatewayId : ''
     postgresStoragePercentThreshold: postgresStoragePercentThreshold
     edgeServerErrorThreshold: edgeServerErrorThreshold
     actionGroupId: actionGroupId
@@ -1100,11 +1122,9 @@ module infraAlerts 'modules/alerts-infra.bicep' = if (deployInfraAlerts && deplo
 // measuring a different thing, and coupling the two produced a budget that sat
 // BELOW expected spend whenever the firewall was on).
 //
-// `deployFirewall` moves the bill by ~8x on its own, so a single hardcoded
-// amount is wrong for one of the two shapes no matter which number you pick:
-// generous enough for the firewall install and it never fires on the small one;
-// sized for the small one and it fires on day three of every month on the other.
-var expectedMonthlyUsd = expectedMonthlyUsdExFirewall + (deployFirewall ? firewallMonthlyUsd : 0)
+// Optional outbound networking contributes its own allowance. Keep it outside
+// the baseline so enabling NAT or the firewall also adjusts alert thresholds.
+var expectedMonthlyUsd = expectedMonthlyUsdExFirewall + (deployFirewall ? firewallMonthlyUsd : 0) + (effectiveDeployNatGateway ? natGatewayMonthlyUsd : 0)
 // Integer division, deliberately — Azure wants whole dollars.
 var derivedBudgetUsd = (expectedMonthlyUsd * budgetHeadroomPercent) / 100
 var effectiveBudgetUsd = monthlyCostBudgetUsd > 0 ? monthlyCostBudgetUsd : derivedBudgetUsd
@@ -1914,6 +1934,9 @@ module jobsMigrateJob 'modules/jobs-migrate-job.bicep' = if (deployApps && deplo
 // Outputs
 // ---------------------------------------------------------------------------
 
+@description('Static outbound IPv4 for egress API allowlists when deployNatGateway is true; empty otherwise. This is separate from the environment ingress IP.')
+output egressNatPublicIp string = effectiveDeployNatGateway ? natGateway!.outputs.publicIpAddress : ''
+
 output appsEnvStaticIp string = appsEnv.outputs.staticIp
 output postgresServerFqdn string = postgres.outputs.serverFqdn
 output migrateJobName string = migrateJob.?outputs.jobName ?? ''
@@ -1939,7 +1962,7 @@ output availabilityProbedUrls array = availability.?outputs.probedUrls ?? []
 @description('Monthly USD budget Azure is watching for this resource group, or 0 when none deployed (alertEmails empty, or deployCostBudget false). Notification only — nothing caps spend.')
 output costBudgetUsd int = costBudget.?outputs.budgetUsd ?? 0
 
-@description('Expected monthly spend the budget was derived from, in USD — WITH the firewall counted when deployFirewall is set. Read this next to costBudgetUsd after a deploy that flips the firewall: the two move together or the thresholds are measuring the wrong month.')
+@description('Expected monthly spend the budget was derived from, in USD — including the firewall or NAT allowance when enabled. Read this next to costBudgetUsd after changing outbound networking: the two move together or the thresholds are measuring the wrong month.')
 output expectedMonthlyUsd int = expectedMonthlyUsd
 
 @description('Monthly USD the Foundry LLM budget is watching on the account\'s own resource group, or 0 when none deployed (deployFoundry false, llmMonthlyBudgetUsd 0, deployCostBudget false, or alertEmails empty). Notification only — per-app daily token budgets and the deployments\' TPM capacity are the real limits.')
