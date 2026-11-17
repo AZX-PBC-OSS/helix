@@ -110,7 +110,18 @@ export const JOBS_CALLBACK_MAX_BODY_BYTES = JOBS_MAX_INPUT_BYTES;
 export const JOBS_CALLBACK_RESPONSE_CAP_BYTES = JOBS_MAX_RESULT_BYTES + 1;
 
 /** Everything the receiver needs, composed once per process (see `app.ts`). */
+export interface SmokeRun {
+  appId: string;
+  env: "prod" | "dev";
+  ownerOid: string;
+  stopped: boolean;
+  deadlineMs: number;
+  approved: boolean;
+}
+
 export interface JobsCallbackRuntime {
+  /** Throwaway module-only receiver fixture, keyed by the edge-issued run id. */
+  smokeRuns?: ReadonlyMap<string, SmokeRun>;
   /** The environment tier this process serves — the burn store's own pin. */
   env: "prod" | "dev";
   registry: RegistryReader;
@@ -364,6 +375,23 @@ export function makeJobsFetchCallbackHandler(
       );
       sendCallbackError(reply, 503, jobRequestError("jobs_unavailable"));
       return;
+    }
+
+    if (rt.smokeRuns) {
+      const run = rt.smokeRuns.get(claims.jobId);
+      if (
+        !run ||
+        run.stopped ||
+        run.deadlineMs <= Date.now() ||
+        !run.approved ||
+        run.appId !== claims.appId ||
+        run.env !== claims.env ||
+        run.ownerOid !== claims.ownerOid
+      ) {
+        setOutcome("forbidden");
+        sendCallbackError(reply, 403, jobRequestError("outbound_forbidden"));
+        return;
+      }
     }
 
     // The CURRENT serving entry, resolved by the signed app id at call time —

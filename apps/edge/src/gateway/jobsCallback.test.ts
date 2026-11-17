@@ -34,6 +34,7 @@ import { deriveInstructionKey } from "./instruction.js";
  * fail-closed wiring on both receiver processes, and the abort path.
  */
 
+const OTHER_APP = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const SERVER_ID = "jobs";
 const APP_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const JOB_ID = "job-123";
@@ -78,6 +79,7 @@ interface CallbackHarness {
 
 function buildCallbackEdge(
   opts: {
+    smokeRuns?: ReadonlyMap<string, import("./jobsCallback.js").SmokeRun>;
     connections?: Map<string, ProxiedOriginCredential>;
     requestsPerDay?: number | null;
     jobsGeneration?: string;
@@ -129,7 +131,17 @@ function buildCallbackEdge(
         submissionLimits: JOBS_CAPACITY_DEFAULTS,
       },
     }),
+    smokeRuns: opts.smokeRuns,
     registry: new FakeRegistry([
+      registryEntry({
+        appId: OTHER_APP,
+        slug: "other",
+        fetch: {
+          connections: new Map([["https://api.github.com", { kind: "keyless" }]]),
+          requestsPerDay: null,
+          shim: false,
+        },
+      }),
       registryEntry({
         appId: APP_ID,
         slug: "demo",
@@ -159,6 +171,7 @@ function buildCallbackEdge(
 async function mintCallbackInstruction(
   opts: {
     /** The body the instruction binds — presented verbatim. */
+    appId?: string;
     body?: Buffer | unknown;
     env?: "prod" | "dev";
     server?: string;
@@ -179,7 +192,7 @@ async function mintCallbackInstruction(
       operation: "fetch",
       server: opts.server ?? SERVER_ID,
       identity: {
-        appId: APP_ID,
+        appId: opts.appId ?? APP_ID,
         env: opts.env ?? "prod",
         ownerKind: opts.ownerKind ?? "user",
         ownerOid: opts.ownerOid ?? OWNER_OID,
@@ -1028,5 +1041,74 @@ describe("the dev gateway's callback route", () => {
     expect(devSpan).toBeDefined();
     expect(devSpan?.attributes[ATTR_OUTCOME]).toBe("dispatched");
     await h.app.close();
+  });
+});
+
+describe("ADR-0053 authority smoke", () => {
+  const active = () => ({
+    appId: APP_ID,
+    env: "prod" as const,
+    ownerOid: OWNER_OID,
+    stopped: false,
+    deadlineMs: Date.now() + 60_000,
+    approved: true,
+  });
+  it.each([false, true])("two awaited effects with stop=%s", async (stop) => {
+    const run = active();
+    const h = buildCallbackEdge({ smokeRuns: new Map([[JOB_ID, run]]) });
+    const fetchEffect = async () => {
+      const response = await present(h.app, await mintCallbackInstruction());
+      if (response.status !== 200) throw new Error(JSON.stringify(response.json));
+    };
+    try {
+      const job = (async () => {
+        await fetchEffect();
+        expect(h.egress.calls).toHaveLength(1);
+        run.stopped = stop;
+        await fetchEffect();
+      })();
+      if (stop) await expect(job).rejects.toThrow("outbound_forbidden");
+      else await job;
+      expect(h.egress.calls).toHaveLength(stop ? 1 : 2);
+      expect(
+        h.usage.records
+          .filter((row) => row.outcome === "ok")
+          .map((row) => [row.appId, row.userOid]),
+      ).toEqual(Array.from({ length: stop ? 1 : 2 }, () => [APP_ID, OWNER_OID]));
+    } finally {
+      await h.app.close();
+    }
+  });
+
+  it("checks edge records for every signed request before egress", async () => {
+    const run = active();
+    const other = { ...active(), appId: OTHER_APP, ownerOid: "other-owner" };
+    const h = buildCallbackEdge({
+      smokeRuns: new Map([
+        [JOB_ID, run],
+        ["other-job", other],
+      ]),
+    });
+    const call = async (opts: Parameters<typeof mintCallbackInstruction>[0], expected: number) => {
+      const before = h.egress.calls.length;
+      expect((await present(h.app, await mintCallbackInstruction(opts))).status).toBe(expected);
+      expect(h.egress.calls.length - before).toBe(expected === 200 ? 1 : 0);
+    };
+    try {
+      await call({}, 200);
+      await call({ jobId: "other-job", appId: OTHER_APP, ownerOid: other.ownerOid }, 200);
+      await call({ jobId: "missing" }, 403);
+      await call({ appId: OTHER_APP }, 403);
+      await call({ ownerOid: other.ownerOid }, 403);
+      const devRecord = { ...run, env: "dev" as const };
+      Object.assign(run, devRecord);
+      await call({}, 403);
+      Object.assign(run, active(), { deadlineMs: Date.now() - 1 });
+      await call({}, 403);
+      Object.assign(run, active(), { approved: false });
+      await call({}, 403);
+    } finally {
+      await h.app.close();
+    }
   });
 });
