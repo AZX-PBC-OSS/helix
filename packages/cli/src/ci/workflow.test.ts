@@ -221,6 +221,14 @@ describe("renderReusableWorkflow", () => {
     expect(yml).not.toContain("pnpm-version");
   });
 
+  it("inherits the reusable workflow's latest CLI default", async () => {
+    const yml = renderReusableWorkflow({ branch: "main", workingDirectory: ".", plan: npmPlan });
+    expect(yml).not.toContain("cli-version:");
+    expect(yml).toMatch(/permissions: \{\}\s+jobs:/);
+    expect(yml).toContain("      contents: read\n      id-token: write");
+    expect(await readReusable()).toMatch(/cli-version:[\s\S]*?default: latest/);
+  });
+
   it("passes a pnpm version only when package.json doesn't pin one", () => {
     const pnpm: BuildPlan = { ...npmPlan, packageManager: "pnpm", lockfilePath: "pnpm-lock.yaml" };
     const opts = { branch: "main", workingDirectory: ".", cliVersion: "0.5.0" };

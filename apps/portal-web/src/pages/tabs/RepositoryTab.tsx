@@ -61,20 +61,17 @@ export function starterWorkflow(branch: string): string {
   push:
     branches: [${JSON.stringify(branch)}]
   workflow_dispatch:
-permissions:
-  contents: read
-  id-token: write # the job's own token authenticates the deploy
+permissions: {}
 jobs:
   deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: npm ci && npm run build
-      # \`helix ci init\` pins the exact CLI version instead, for reproducible deploys.
-      - run: npx --yes @azx-pbc/helix-cli@latest deploy
+    uses: AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@v1
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      package-manager: npm
+      working-directory: "."
+      build-script: "build"
 `;
 }
 
@@ -298,8 +295,9 @@ function RepositoryCard({ app, binding }: { app: App; binding: RepoBinding | nul
       <Eyebrow mb={4}>Workflow</Eyebrow>
       <Text size="xs" c="dark.2" mb={6} lh={1.5}>
         From the app&apos;s directory, <Code>npx -y @azx-pbc/helix-cli@latest ci init</Code>{" "}
-        connects the repo and writes a workflow tailored to its build, with the build kept apart
-        from the job that can request a token. For an npm app at the repository root with a{" "}
+        connects the repo and writes a caller of Helix&apos;s maintained workflow. It receives
+        workflow updates and uses the latest CLI automatically, with the build kept apart from the
+        job that can request a token. For an npm app at the repository root with a{" "}
         <Code>package-lock.json</Code>, the minimum is this as{" "}
         <Code>.github/workflows/helix-deploy.yml</Code>, plus a <Code>helix.json</Code> naming the
         app&apos;s slug and this portal. For anything else, run <Code>helix ci init</Code>.

@@ -10,7 +10,7 @@ import path from "node:path";
  *
  * Both split the work into two jobs. `build` runs the repo's own code (install
  * scripts, the build) with no `id-token` permission; `deploy` holds
- * `id-token: write` and runs only the pinned Helix CLI on the built output. So
+ * `id-token: write` and runs only the Helix CLI on the built output. So
  * code from the repo or its dependencies can never mint a deploy token, and a
  * workflow pin means what it says.
  */
@@ -136,7 +136,8 @@ export interface WorkflowOptions {
   /** The app directory relative to the repo root; "." for the root. */
   workingDirectory: string;
   plan: BuildPlan;
-  cliVersion: string;
+  /** Omit to use the latest published CLI. */
+  cliVersion?: string;
 }
 
 const HEADER = (
@@ -238,7 +239,7 @@ export function renderStarterWorkflow(opts: WorkflowOptions): string {
     // This job can mint a deploy token, so it never restores a dependency
     // cache the build job could have written.
     "          package-manager-cache: false",
-    `      - run: npx --yes @azx-pbc/helix-cli@${opts.cliVersion} deploy`,
+    `      - run: npx --yes @azx-pbc/helix-cli@${opts.cliVersion ?? "latest"} deploy`,
     ...(sub ? [`        working-directory: ${JSON.stringify(wd)}`] : []),
     "",
   ];
@@ -265,7 +266,7 @@ export function renderReusableWorkflow(opts: WorkflowOptions): string {
     ...(plan.packageManager === "pnpm" && !plan.pnpmPackageJson
       ? [`      pnpm-version: ${JSON.stringify(DEFAULT_PNPM_VERSION)}`]
       : []),
-    `      cli-version: ${JSON.stringify(opts.cliVersion)}`,
+    ...(opts.cliVersion ? [`      cli-version: ${JSON.stringify(opts.cliVersion)}`] : []),
     "",
   ];
   return lines.join("\n");

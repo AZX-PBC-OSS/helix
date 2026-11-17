@@ -42,7 +42,7 @@ await build({
   // node, with no tsx anywhere on PATH.
   banner: { js: "#!/usr/bin/env node" },
   external: ["archiver", "openid-client", "zod"],
-  // `helix ci init` pins the workflows it writes to the CLI that wrote them.
+  // Compatibility checks report the version of the published bundle.
   define: { __HELIX_CLI_VERSION__: JSON.stringify(version) },
   logLevel: "info",
 });

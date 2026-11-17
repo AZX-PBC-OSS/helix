@@ -105,12 +105,15 @@ at. Resolvers live in `apps/portal/src/deployment.ts` and are checked at boot.
 - **CLI** (`packages/cli`). In GitHub Actions, with no `HELIX_TOKEN` and with
   `ACTIONS_ID_TOKEN_REQUEST_URL`/`_TOKEN` set, `helix deploy` uses the CI route
   and refuses `--promote`. `helix ci init | show | remove` manage the binding;
-  `init` also writes `helix.json` and the workflow. See
+  `init` also writes `helix.json` and a reusable caller at `@v1`, with no CLI
+  version override or new workflow restriction. Existing binding limits are
+  preserved; conflicting workflow restrictions require an explicit portal edit.
+  `--standalone` writes a copy and `--reusable` is an alias for the default. See
   [cli.md](./cli.md).
 - **Generated and reusable workflows** are two jobs: `build` runs the repo's
   install and build with `contents: read` only and uploads `helix.json` plus
   the output; `deploy` has `id-token: write`, no checkout, and runs only the
-  pinned CLI. Repo and dependency code therefore can't mint a token, which is
+  CLI (latest by default, with an optional version override). Repo and dependency code therefore can't mint a token, which is
   what makes a `job_workflow_ref` pin meaningful. A hand-written single-job
   workflow doesn't get that property. The reusable workflow's source is
   `integrations/helix-actions/`, mirrored to `AZX-PBC-OSS/helix-actions`
@@ -133,4 +136,3 @@ span. See [observability.md](./observability.md).
 - One binding per app, GitHub only. Other CI issuers, GitHub Enterprise Server,
   several branches per app and PR preview environments are later work
   (ADR-0051 phasing).
-- The reusable workflow isn't published until the mirror exists.

@@ -15,6 +15,7 @@ const options = {
   repo: { type: "string" },
   branch: { type: "string" },
   reusable: { type: "boolean" },
+  standalone: { type: "boolean" },
   force: { type: "boolean" },
   json: { type: "boolean" },
   help: { type: "boolean" },

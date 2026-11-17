@@ -68,7 +68,7 @@ helix promote  <number>                                      # make a version li
 helix rollback [number]                                      # revert the live pointer
 helix capabilities [--json]                                  # what this deployment offers
 helix skill    [--path <file>]                               # write this deployment's agent skill to disk
-helix ci init  [--repo <owner/name>] [--branch <b>] [--reusable] [--force]   # deploy from GitHub Actions
+helix ci init  [--repo <owner/name>] [--branch <b>] [--standalone] [--force]   # deploy from GitHub Actions
 helix ci show | helix ci remove                              # the app's repo binding
 ```
 
@@ -118,11 +118,15 @@ It then writes `.github/workflows/helix-deploy.yml` and merges `slug`,
 `portalUrl` and `dir` into `helix.json`, or into a legacy `azx.json` if that's
 the file in use. Commit both. Each push to the branch then lands a preview
 (ADR-0051). Re-running it keeps any environment or workflow limit set on the
-Repository tab, and refuses to replace a workflow pin unless you pass `--force`.
+Repository tab. New connections have no workflow restriction. If an existing
+restriction conflicts with the generated reusable caller, update or remove
+**Only this workflow** in the portal before retrying. `--force` only permits
+replacing the local workflow file; it never changes those restrictions.
 
-The generated workflow has two jobs. `build` installs and builds with no
-`id-token` permission. `deploy` downloads the output and runs only the pinned
-CLI. Code from the repo or its dependencies never runs where it could mint a
+The generated caller uses `AZX-PBC-OSS/helix-actions` at `@v1`, receiving
+compatible workflow updates automatically. The reusable workflow has two jobs.
+`build` installs and builds with no `id-token` permission. `deploy` downloads
+the output and runs only the latest published CLI. Code from the repo or its dependencies never runs where it could mint a
 deploy token.
 
 The workflow needs no secret. Inside GitHub Actions, when `HELIX_TOKEN` is not
@@ -132,12 +136,22 @@ and uploads to `POST /api/v1/apps/:slug/ci/versions`. CI deploys always land as
 a preview, so `--promote` is refused there. It refuses to send the token to a
 plain-`http` portal other than one on `localhost`.
 
-`--reusable` writes a caller of the public reusable workflow
-(`AZX-PBC-OSS/helix-actions`, source in `integrations/helix-actions/`) instead
-of a self-contained one. It also pins the binding to that workflow, so no other
-workflow on the branch can deploy. `helix ci show` prints the binding,
-including the repo ids pinned by the first deploy. `helix ci remove` disconnects
-the app.
+`--reusable` is a compatibility alias for the default and no longer sets a
+workflow restriction. `--standalone` writes a self-contained copy whose steps
+you maintain; it also uses the latest CLI. The two flags cannot be combined.
+To pin the CLI, add `cli-version: "<version>"` under the reusable caller's
+`with:` inputs, or edit the standalone deploy command's `@latest` version.
+Pinning a workflow release and restricting its identity are separate choices.
+
+To migrate an existing workflow, check its binding limits, run `helix ci init
+--force`, review the diff, and commit the caller. For standalone workflows,
+ensure any retained restrictions match your custom workflow. See the
+[deployment guide](https://azx-pbc-oss.github.io/helix/apps/deploy-from-github)
+for workflow inputs and optional restrictions.
+
+The reusable source is `integrations/helix-actions/`. `helix ci show` prints the
+binding, including the repo ids pinned by the first deploy. `helix ci remove`
+disconnects the app.
 
 > **Breaking in 0.2.0:** the `private` visibility mode was renamed to `internal`.
 > It never checked _which_ user signed in, only that someone had. Passing the old

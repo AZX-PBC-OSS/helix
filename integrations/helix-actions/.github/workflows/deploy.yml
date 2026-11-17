@@ -2,7 +2,7 @@
 #
 # Builds the calling repo's app and uploads it to Helix as a preview, using a
 # GitHub OIDC token. The caller grants `contents: read` and `id-token: write`
-# and has an app connected to the repo (`helix ci init --reusable`).
+# and has an app connected to the repo (`helix ci init`).
 #
 # Two jobs, so a workflow pin means what it says. `build` runs the repo's own
 # code (install scripts, the build) without `id-token`, so nothing it runs can

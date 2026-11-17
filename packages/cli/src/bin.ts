@@ -38,8 +38,9 @@ Usage:
   helix rollback [number]
   helix capabilities [--json]     # what this deployment offers: models, baselines, connections…
   helix skill    [--path <file>]   # write this deployment's agent skill to disk
-  helix ci init  [--repo <owner/name>] [--branch <b>] [--reusable] [--force]
-                                   # connect the app to its GitHub repo and write the workflow
+  helix ci init  [--repo <owner/name>] [--branch <b>] [--standalone] [--force]
+                                   # connect the repo and call the maintained Helix workflow
+                                   # --standalone writes a copy; --reusable is an alias for the default
   helix ci show | helix ci remove
 
 Common flags: --slug <slug>  --portal-url <url>  --token <token>
@@ -108,6 +109,7 @@ async function main(): Promise<void> {
           repo: values.repo,
           branch: values.branch,
           reusable: values.reusable,
+          standalone: values.standalone,
           force: values.force,
         });
       } else if (sub === "show") {

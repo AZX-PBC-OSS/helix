@@ -36,23 +36,25 @@ default branch, or takes `--repo owner/name` and `--branch <name>`. Then it:
 3. writes `.github/workflows/helix-deploy.yml`, set up for your package manager
    and build script.
 
-The workflow has two jobs. `build` installs and builds your app without
+The reusable workflow has two jobs. `build` installs and builds your app without
 permission to request a token. `deploy` takes the build output and runs only
 the Helix CLI, which is the one step that requests a token. Your code and your
 dependencies' install scripts never run where they could mint one.
 
-Running `helix ci init` again keeps any limits you set on the Repository tab.
+Initialization leaves **Only this workflow** unset for new connections. Re-running
+it preserves any workflow or environment limits you set on the Repository tab.
 
 Commit both files and push. The workflow's next run deploys a preview.
 
 ### Use the public reusable workflow
 
-`helix ci init --reusable` writes a short workflow that calls Helix's public
+`helix ci init` writes a short workflow that calls Helix's public
 reusable workflow,
 [`AZX-PBC-OSS/helix-actions`](https://github.com/AZX-PBC-OSS/helix-actions),
-instead of a self-contained one. It runs the same two jobs. It also sets
-[**Only this workflow**](#optional-limits) to that workflow, so a different
-workflow on the branch can't deploy.
+at `@v1`. Compatible workflow updates reach your repository automatically, and
+the deploy job uses the latest published CLI. There is no CLI version to maintain
+unless you choose to pin one. `--reusable` remains an alias for this default; it
+no longer adds a workflow restriction.
 
 The workflow it writes, for an npm app at the repository root, looks like this:
 
@@ -73,7 +75,6 @@ jobs:
       package-manager: npm
       working-directory: "."
       build-script: "build"
-      cli-version: "latest"
 ```
 
 The inputs are `package-manager` (`npm`, `pnpm` or `yarn`),
@@ -82,6 +83,33 @@ The inputs are `package-manager` (`npm`, `pnpm` or `yarn`),
 `cli-version` (defaults to `latest`). The
 [repository](https://github.com/AZX-PBC-OSS/helix-actions) has the full
 definition.
+
+### Version pins and standalone workflows
+
+To use a specific CLI release, add `cli-version: "<version>"` under the caller's
+`with:` inputs. To select a specific workflow release, replace `@v1` with its
+release tag. These are independent: selecting a workflow release still uses the
+latest CLI unless you also set `cli-version`. **Only this workflow** is a
+separate identity restriction; it does not freeze the contents of a moving tag.
+
+`helix ci init --standalone` writes a self-contained two-job workflow. You then
+maintain its action versions and build/deploy steps yourself. Its deploy command
+uses `@latest`; replace that with an explicit CLI version if needed. Existing
+binding limits are preserved, so ensure your custom workflow satisfies them.
+`--standalone` and `--reusable` cannot be combined.
+
+### Migrate an existing workflow
+
+Existing workflow files do not change automatically. Check your connection on the
+Repository tab first. If **Only this workflow** names a different workflow, remove
+it or change it to the reusable workflow identity shown below before migrating.
+Then run `helix ci init --force`, review the generated diff, and commit the caller.
+This replaces the generated workflow file, including any local customizations.
+
+`--force` allows replacing the local file only. It never removes or replaces a
+binding restriction. Initialization refuses a reusable caller that conflicts with
+an existing workflow restriction, even with `--force`. Environment limits also
+remain in place; the deploy job must satisfy them.
 
 ### Write your own workflow
 
@@ -92,8 +120,8 @@ what `helix ci init` writes, and keep its shape: build in a job without
 and runs only the Helix CLI. A single job that builds and deploys gives your
 dependencies' install scripts a chance to request a deploy token.
 
-Pin the CLI version (`@azx-pbc/helix-cli@<version>`) for deploys you can
-reproduce. `@latest` runs the newest CLI on every build.
+The default `@latest` runs the newest CLI on every build. You can select a
+specific CLI with `@azx-pbc/helix-cli@<version>`.
 
 `helix deploy` notices it is running in GitHub Actions, asks GitHub for a token
 meant for your portal, and uploads with it. It reads the slug and portal URL
@@ -134,8 +162,15 @@ On the Repository tab, under **optional limits**:
   The environment's protection rules, such as required reviewers or a wait
   timer, then gate every deploy. Add `environment: <name>` to the job.
 
-[`helix ci init --reusable`](#use-the-public-reusable-workflow) sets the
-workflow limit for you.
+These limits are opt-in. To restrict deployment to the maintained workflow, set
+**Only this workflow** to:
+
+```text
+AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@refs/tags/v1
+```
+
+Updates within `v1` do not require changing that setting. Switching the caller to
+a different workflow path or release tag requires updating the restriction too.
 
 ## When a deploy is refused
 

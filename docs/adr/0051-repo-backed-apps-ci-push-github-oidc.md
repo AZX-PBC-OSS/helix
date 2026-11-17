@@ -120,6 +120,25 @@ These were open when the ADR was drafted and were settled at acceptance on 2026-
 7. **No manifest approval gate on this path.** Decision 8 and the design doc listed "the manifest approval gate" among the deploy-path checks. The deploy path has none: approvals run on the manifest, visibility and origin routes. A CI deploy goes through exactly the checks a signed-in upload does.
 8. **The reusable workflow** lives at `AZX-PBC-OSS/helix-actions`, a public repository, because a reusable workflow can only be called across organizations from a public one. Its source is `integrations/helix-actions/` in this repo.
 
+**2026-11-16, maintained workflows by default.** `helix ci init` now writes a
+caller of `AZX-PBC-OSS/helix-actions` at `@v1` and omits `cli-version`, using the
+reusable workflow's `latest` default. App authors receive compatible workflow
+fixes and CLI updates without maintaining copied steps or version pins.
+`--standalone` opts into a self-contained workflow, also using the latest CLI;
+`--reusable` remains an alias for the default. Owners can choose an explicit CLI
+version in the YAML and a specific workflow release independently.
+
+Using the reusable workflow does not set **Only this workflow**. New bindings
+retain the repository, branch and event checks without this additional limit.
+Existing workflow and environment restrictions are preserved. If a workflow
+restriction conflicts with the generated reusable caller, initialization refuses
+before writing; the owner must update the restriction explicitly in the portal.
+`--force` only permits overwriting the local workflow file. This separates
+workflow maintenance from the optional identity restriction and avoids requiring
+binding edits when an unrestricted caller changes workflow paths or major tags.
+Existing copied workflows require an explicit migration. Multi-app deployment
+support is separate work.
+
 ## Provenance
 
 Design conversation, 2026-10-19; accepted the same day. The pull model in ADR 0030 rested on the assumption that the portal may be unreachable from GitHub. In practice every deployment exposes the portal, because the platform is not usable otherwise. With that assumption gone, OIDC on push removes all of ADR 0030's machinery and its private-repo credential, and closes its main open question. The constraints that ADR 0030 got right carry over unchanged: no hosted build, the numeric repository ID as the identity, no ownership ceremony, and every deploy landing as a preview through the existing pipeline.

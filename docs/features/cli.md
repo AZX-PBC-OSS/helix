@@ -36,7 +36,7 @@ helix login | logout | whoami
 helix create   [--display-name <name>] [--description <text>] [--visibility <v>]   # v = internal | group:<id>[,<id>…] | password | public
 helix deploy   [--dir <dir>] [--bundle <zip>] [--promote]    # upload a preview; --promote flips it live
 helix versions | promote <number> | rollback [number]
-helix ci init [--repo <owner/name>] [--branch <b>] [--reusable] [--force] | ci show | ci remove
+helix ci init [--repo <owner/name>] [--branch <b>] [--standalone] [--force] | ci show | ci remove
 helix capabilities [--json]                                  # the deployment catalogue, formatted (packages/cli/src/capabilities.ts)
 helix skill    [--path <file>]                               # write this deployment's agent skill
 ```
@@ -54,12 +54,19 @@ In GitHub Actions, with no static token and with `ACTIONS_ID_TOKEN_REQUEST_URL`/
 uploads to the CI route instead (`auth/githubActions.ts`, ADR-0051). `--promote` is refused on that
 path, and so is a plain-`http` portal other than `localhost`. `ci init` (`ci/commands.ts`) defaults the
 branch to `origin/HEAD`, reads the existing binding so a re-run keeps its environment and workflow
-limits (replacing a workflow pin needs `--force`), and binds the app through
-`PUT /api/v1/apps/:slug/repo-binding` before writing anything, then writes `helix.json` and `.github/workflows/helix-deploy.yml` (a
-starter, or a caller of the reusable workflow in `integrations/helix-actions/` with `--reusable`,
-which also pins the binding to it). Starter workflows are two jobs: `build` without `id-token`,
-and `deploy`, which runs only the CLI on the uploaded artifact. Generated workflows pin `@azx-pbc/helix-cli` to the CLI version
-that wrote them; `scripts/build.mjs` stamps it in.
+limits, and binds the app through `PUT /api/v1/apps/:slug/repo-binding` before
+writing anything. It writes `helix.json` and a caller of the public reusable
+workflow at `@v1` in `.github/workflows/helix-deploy.yml`. The caller omits
+`cli-version`, so deployment uses the latest published CLI. New bindings have no
+workflow restriction. An incompatible existing workflow restriction must be
+changed explicitly in the portal; `--force` only overwrites the local file.
+
+`--standalone` writes a self-contained two-job workflow using the latest CLI.
+`--reusable` remains a compatibility alias for the default and no longer sets a
+binding restriction; the flags cannot be combined. Both workflow shapes separate
+`build` without `id-token` from `deploy`, which runs only the CLI on the uploaded
+artifact. Owners can pin the CLI through the reusable workflow's `cli-version`
+input or by editing the standalone command.
 
 ### Auth (M3 — `packages/cli/src/auth/`)
 

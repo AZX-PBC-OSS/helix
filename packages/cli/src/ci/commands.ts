@@ -5,7 +5,6 @@ import { promisify } from "node:util";
 import type { RepoBinding } from "@azx-pbc/shared";
 import { CliError, type PortalClient } from "../client.js";
 import { CONFIG_FILENAMES, type ResolvedConfig } from "../config.js";
-import { CLI_VERSION } from "../version.js";
 import { parseGithubRemote } from "./remote.js";
 import {
   detectBuildPlan,
@@ -37,6 +36,7 @@ export interface CiInitOptions {
   repo?: string;
   branch?: string;
   reusable?: boolean;
+  standalone?: boolean;
   force?: boolean;
 }
 
@@ -46,6 +46,9 @@ export async function ciInitCommand(
   opts: CiInitOptions,
   deps: { cwd?: string; git?: GitRunner; log?: (line: string) => void } = {},
 ): Promise<void> {
+  if (opts.reusable && opts.standalone) {
+    throw new CliError("--reusable and --standalone cannot be used together");
+  }
   const cwd = deps.cwd ?? process.cwd();
   const git = deps.git ?? defaultGit;
   const log = deps.log ?? console.log;
@@ -81,19 +84,20 @@ export async function ciInitCommand(
 
   const workingDirectory = path.relative(repoRoot, cwd).split(path.sep).join("/") || ".";
   const plan = await detectBuildPlan(cwd, repoRoot);
-  const render = opts.reusable ? renderReusableWorkflow : renderStarterWorkflow;
-  const workflow = render({ branch, workingDirectory, plan, cliVersion: CLI_VERSION });
+  const render = opts.standalone ? renderStarterWorkflow : renderReusableWorkflow;
+  const workflow = render({ branch, workingDirectory, plan });
 
   // `PUT` replaces the whole binding, so limits the owner set elsewhere (the
-  // Repository tab) would silently disappear. Keep them, and refuse to drop one
-  // without --force.
+  // Repository tab) would silently disappear. Workflow generation never changes
+  // these limits, even when --force allows replacing the local file.
   const existing = await client.getRepoBinding(slug);
-  const workflowRef = opts.reusable ? REUSABLE_WORKFLOW_REF : existing?.workflowRef;
+  const workflowRef = existing?.workflowRef;
   const environment = existing?.environment;
-  if (existing?.workflowRef && workflowRef !== existing.workflowRef && !opts.force) {
+  if (!opts.standalone && workflowRef && workflowRef !== REUSABLE_WORKFLOW_REF) {
     throw new CliError(
-      `the binding pins deploys to workflow ${existing.workflowRef}; --reusable would replace ` +
-        "that pin. Pass --force to replace it.",
+      `the binding restricts deploys to workflow ${workflowRef}, which does not match ` +
+        `the generated caller (${REUSABLE_WORKFLOW_REF}). Remove or update "Only this workflow" ` +
+        "on the portal's Repository tab, then retry. --force only replaces the local workflow file.",
     );
   }
 

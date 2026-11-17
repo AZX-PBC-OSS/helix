@@ -101,7 +101,8 @@ describe("helix ci init", () => {
 
     const workflow = await readFile(path.join(root, ".github/workflows/helix-deploy.yml"), "utf8");
     expect(workflow).toContain('working-directory: "apps/site"');
-    expect(workflow).toContain("npm run build");
+    expect(workflow).toContain("uses: AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@v1");
+    expect(workflow).not.toContain("cli-version:");
     expect(JSON.parse(await readFile(path.join(cwd, "helix.json"), "utf8"))).toEqual({
       description: "kept",
       slug: "demo",
@@ -110,7 +111,7 @@ describe("helix ci init", () => {
     });
   });
 
-  it("pins the reusable workflow on the binding with --reusable", async () => {
+  it("accepts --reusable without adding a workflow restriction", async () => {
     const calls = stubPortal();
     const { cwd, git } = await checkout();
     await ciInitCommand(
@@ -123,8 +124,36 @@ describe("helix ci init", () => {
     expect(body).toEqual({
       repoFullName: "octo-org/octo-app",
       branch: "prod",
-      workflowRef: "AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@refs/tags/v1",
     });
+  });
+
+  it("generates a standalone copy using the latest CLI on request", async () => {
+    const calls = stubPortal();
+    const { root, cwd, git } = await checkout();
+    await ciInitCommand(client(), config(), { standalone: true }, { cwd, git, log: quiet });
+    const workflow = await readFile(path.join(root, ".github/workflows/helix-deploy.yml"), "utf8");
+    expect(workflow).toContain("npm run build");
+    expect(workflow).toContain("@azx-pbc/helix-cli@latest deploy");
+    expect(workflow).not.toContain("helix-actions/");
+    expect(
+      JSON.parse(String(calls.find((c) => c.init.method === "PUT")!.init.body)),
+    ).not.toHaveProperty("workflowRef");
+  });
+
+  it("rejects conflicting workflow options before any writes or requests", async () => {
+    const calls = stubPortal();
+    const { root, cwd, git } = await checkout();
+    await expect(
+      ciInitCommand(
+        client(),
+        config(),
+        { standalone: true, reusable: true },
+        { cwd, git, log: quiet },
+      ),
+    ).rejects.toThrow(/cannot be used together/);
+    expect(calls).toEqual([]);
+    await expect(readFile(path.join(root, ".github/workflows/helix-deploy.yml"))).rejects.toThrow();
+    await expect(readFile(path.join(cwd, "helix.json"))).rejects.toThrow();
   });
 
   it("refuses to overwrite an existing workflow without --force", async () => {
@@ -193,7 +222,7 @@ describe("helix ci init — keeping what the owner set", () => {
     const existing = {
       ...BINDING,
       environment: "production",
-      workflowRef: "octo-org/octo-app/.github/workflows/helix-deploy.yml@refs/heads/main",
+      workflowRef: "AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@refs/tags/v1",
     };
     const calls = stubPortal({ existing });
     const { cwd, git } = await checkout();
@@ -204,28 +233,50 @@ describe("helix ci init — keeping what the owner set", () => {
     });
   });
 
-  it("refuses to replace a workflow pin with --reusable unless forced", async () => {
+  it.each([false, true])(
+    "refuses an incompatible workflow restriction (force=%s)",
+    async (force) => {
+      const existing = {
+        ...BINDING,
+        workflowRef: "octo-org/octo-app/.github/workflows/x.yml@refs/heads/main",
+      };
+      const calls = stubPortal({ existing });
+      const { root, cwd, git } = await checkout();
+      await writeFile(path.join(cwd, "helix.json"), '{"description":"kept"}');
+      if (force) {
+        await mkdir(path.join(root, ".github/workflows"), { recursive: true });
+        await writeFile(path.join(root, ".github/workflows/helix-deploy.yml"), "mine");
+      }
+      await expect(
+        ciInitCommand(client(), config(), { force }, { cwd, git, log: quiet }),
+      ).rejects.toThrow(/Only this workflow/);
+      expect(calls.some((c) => c.init.method === "PUT")).toBe(false);
+      expect(await readFile(path.join(cwd, "helix.json"), "utf8")).toBe('{"description":"kept"}');
+      if (force) {
+        expect(await readFile(path.join(root, ".github/workflows/helix-deploy.yml"), "utf8")).toBe(
+          "mine",
+        );
+      } else {
+        await expect(
+          readFile(path.join(root, ".github/workflows/helix-deploy.yml")),
+        ).rejects.toThrow();
+      }
+    },
+  );
+
+  it("keeps restrictions when generating a standalone workflow", async () => {
     const existing = {
       ...BINDING,
+      environment: "production",
       workflowRef: "octo-org/octo-app/.github/workflows/x.yml@refs/heads/main",
     };
-    stubPortal({ existing });
-    const { cwd, git } = await checkout();
-    await expect(
-      ciInitCommand(client(), config(), { reusable: true }, { cwd, git, log: quiet }),
-    ).rejects.toThrow(/--force/);
-
-    vi.restoreAllMocks();
     const calls = stubPortal({ existing });
-    await ciInitCommand(
-      client(),
-      config(),
-      { reusable: true, force: true },
-      { cwd, git, log: quiet },
-    );
-    expect(putBody(calls).workflowRef).toBe(
-      "AZX-PBC-OSS/helix-actions/.github/workflows/deploy.yml@refs/tags/v1",
-    );
+    const { cwd, git } = await checkout();
+    await ciInitCommand(client(), config(), { standalone: true }, { cwd, git, log: quiet });
+    expect(putBody(calls)).toMatchObject({
+      environment: existing.environment,
+      workflowRef: existing.workflowRef,
+    });
   });
 
   it("merges into an existing azx.json instead of hiding it behind a new helix.json", async () => {

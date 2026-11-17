@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { App, RepoBinding } from "@azx-pbc/shared";
 import { renderWithProviders } from "./render";
 import { AuthProvider } from "../auth/AuthProvider";
-import { RepositoryTab } from "../pages/tabs/RepositoryTab";
+import { RepositoryTab, starterWorkflow } from "../pages/tabs/RepositoryTab";
 import { setToken, clearToken } from "../auth/tokenStore";
 
 /**
@@ -96,6 +96,19 @@ const NO_BINDING: Reply = {
 };
 
 describe("RepositoryTab", () => {
+  it("shows the maintained workflow for the connected branch", async () => {
+    stubApi({ status: 200, body: { ...BINDING, branch: "release/app" } });
+    render();
+    const example = await screen.findByText(/uses: AZX-PBC-OSS\/helix-actions/);
+    expect(example.textContent).toBe(starterWorkflow("release/app"));
+    expect(example.textContent).toContain('branches: ["release/app"]');
+    expect(example.textContent).toContain("permissions: {}\njobs:");
+    expect(example.textContent).toContain("      contents: read\n      id-token: write");
+    expect(example.textContent).not.toMatch(
+      /cli-version|actions\/checkout|actions\/setup-node|runs-on:/,
+    );
+  });
+
   it("offers a connect form for an unbound app and sends the binding", async () => {
     const writes: unknown[] = [];
     stubApi(NO_BINDING, (method, body) => {

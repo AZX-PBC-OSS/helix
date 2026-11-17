@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { parseCliArgs } from "./args.js";
 
 describe("parseCliArgs", () => {
+  it.each(["standalone", "reusable"])("accepts the %s workflow option", (flag) => {
+    const { values, positionals } = parseCliArgs(["ci", "init", `--${flag}`]);
+    expect(positionals).toEqual(["ci", "init"]);
+    expect(values).toHaveProperty(flag, true);
+  });
+
   it("parses a command with its flags", () => {
     const { values, positionals } = parseCliArgs(["deploy", "--promote"]);
     expect(positionals[0]).toBe("deploy");
