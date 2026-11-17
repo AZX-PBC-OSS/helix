@@ -141,7 +141,7 @@ export interface EdgeDeps {
    * through it. null = the callback refuses fail-closed even with servers
    * configured.
    */
-  smokeRuns?: ReadonlyMap<string, import("./gateway/jobsCallback.js").SmokeRun>;
+  smokeRuns?: JobsCallbackRuntime["smokeRuns"];
   jobsCallbackBurns?: JobsCallbackBurnStore | null;
   /**
    * The submission throttle buckets over the SHARED counter store

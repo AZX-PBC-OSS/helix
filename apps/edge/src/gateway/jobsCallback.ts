@@ -121,7 +121,7 @@ export interface SmokeRun {
 
 export interface JobsCallbackRuntime {
   /** Throwaway module-only receiver fixture, keyed by the edge-issued run id. */
-  smokeRuns?: ReadonlyMap<string, SmokeRun>;
+  smokeRuns?: { get(id: string): SmokeRun | undefined | Promise<SmokeRun | undefined> };
   /** The environment tier this process serves — the burn store's own pin. */
   env: "prod" | "dev";
   registry: RegistryReader;
@@ -378,7 +378,7 @@ export function makeJobsFetchCallbackHandler(
     }
 
     if (rt.smokeRuns) {
-      const run = rt.smokeRuns.get(claims.jobId);
+      const run = await rt.smokeRuns.get(claims.jobId);
       if (
         !run ||
         run.stopped ||

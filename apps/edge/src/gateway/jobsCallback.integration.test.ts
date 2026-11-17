@@ -17,7 +17,8 @@ import {
   registryEntry,
 } from "../test/fakes.js";
 import { testAuthConfig, testEdgeConfig, testDevGatewayConfig } from "../test/config.js";
-import { buildApp } from "../app.js";
+import type { SmokeRun } from "./jobsCallback.js";
+import { buildApp, type EdgeDeps } from "../app.js";
 import { buildDevGateway } from "../devGateway/app.js";
 import { PgJobsCallbackBurnStore } from "../jobs/burns.js";
 import { FakeEgress } from "./jobsCallbackFixtures.js";
@@ -142,7 +143,11 @@ function receiverRegistry() {
   ]);
 }
 
-function buildProdReceiver(burns: PgJobsCallbackBurnStore): FastifyInstance {
+function buildProdReceiver(
+  burns: PgJobsCallbackBurnStore,
+  smokeRuns?: EdgeDeps["smokeRuns"],
+  egress = new FakeEgress(),
+): FastifyInstance {
   return buildApp({
     config: testEdgeConfig({
       auth: testAuthConfig(),
@@ -158,7 +163,8 @@ function buildProdReceiver(burns: PgJobsCallbackBurnStore): FastifyInstance {
     blob: new FakeBlobReader(),
     sessions: new FakeSessionStore(),
     oidc: new FakeOidcClient(),
-    egress: new FakeEgress(),
+    egress,
+    smokeRuns,
     usage: new FakeUsageStore(),
     instructionKey: deriveInstructionKey(randomBytes(32)),
     jobsCallbackBurns: burns,
@@ -358,4 +364,76 @@ describe("the callback receiver against the real burn store (real roles, real mi
       await devBurns.stop();
     }
   });
+});
+
+test("ADR-0053 committed stop is visible to a second edge receiver", async () => {
+  expect(ok, "scratch database and edge role are required").toBe(true);
+  const writer = new Pool({ connectionString: urlFor(JOIN_DB), max: 1 });
+  function receiver() {
+    const reader = new Pool({ connectionString: EDGE_DSN, max: 1 });
+    const burns = new PgJobsCallbackBurnStore({
+      databaseUrl: EDGE_DSN,
+      env: "prod",
+      statementTimeoutMs: 10_000,
+      log: { warn: () => {} },
+    });
+    burns.start();
+    const egress = new FakeEgress();
+    const app = buildProdReceiver(
+      burns,
+      {
+        async get(id) {
+          const result = await reader.query<SmokeRun>(
+            'SELECT app_id AS "appId", env, owner_oid AS "ownerOid", stopped, deadline_ms::float8 AS "deadlineMs", approved FROM smoke_module_runs WHERE id=$1',
+            [id],
+          );
+          return result.rows[0];
+        },
+      },
+      egress,
+    );
+    return {
+      app,
+      egress,
+      async close() {
+        await app.close();
+        await burns.stop();
+        await reader.end();
+      },
+    };
+  }
+  const a = receiver(),
+    b = receiver();
+  async function callback(app: FastifyInstance) {
+    const { token, body } = await mintToken("prod");
+    return present(app, token, body);
+  }
+  try {
+    await writer.query(
+      "CREATE TABLE smoke_module_runs (id text PRIMARY KEY, app_id uuid NOT NULL, env text NOT NULL, owner_oid text NOT NULL, stopped boolean NOT NULL, deadline_ms bigint NOT NULL, approved boolean NOT NULL)",
+    );
+    await writer.query("GRANT SELECT ON smoke_module_runs TO helix_edge");
+    await writer.query(
+      "INSERT INTO smoke_module_runs VALUES ($1,$2,'prod','oid-triggering-user',false,$3,true)",
+      ["job-123", APP_ID, Date.now() + 60_000],
+    );
+    expect((await callback(a.app)).status).toBe(200);
+    const tx = await writer.connect();
+    try {
+      await tx.query("BEGIN");
+      expect(
+        (await tx.query("UPDATE smoke_module_runs SET stopped=true WHERE id=$1", ["job-123"]))
+          .rowCount,
+      ).toBe(1);
+      expect((await callback(b.app)).status).toBe(200);
+      await tx.query("COMMIT");
+    } finally {
+      tx.release(true);
+    }
+    expect(await callback(b.app)).toEqual({ status: 403, code: "outbound_forbidden" });
+    expect(await callback(a.app)).toEqual({ status: 403, code: "outbound_forbidden" });
+    expect([a.egress.calls.length, b.egress.calls.length]).toEqual([1, 1]);
+  } finally {
+    await Promise.all([a.close(), b.close(), writer.end()]);
+  }
 });
