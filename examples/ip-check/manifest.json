@@ -1,0 +1,9 @@
+{
+  "capabilities": {
+    "externalOrigins": ["https://api.ipify.org"],
+    "fetch": {
+      "origins": [{ "origin": "https://api.ipify.org" }]
+    },
+    "shim": { "fetch": false }
+  }
+}

@@ -20,6 +20,7 @@ exercises background jobs (ADR-0045).
 | [`oversell`](./oversell)         | Compare-and-swap shared writes (ADR-0041) and prefix grants + the list verb (ADR-0042): ETags, mandatory preconditions, a runtime-growing waitlist, one-click 412/428/403 probes.  |
 | [`github-stars`](./github-stars) | Fetches a public API **directly** — CSP-blocked until an admin approves the origin (the approval loop). |
 | [`fetch-proxy`](./fetch-proxy)   | Reaches the GitHub API **through the fetch-proxy** — keyless, then secret-injected, then via the shim. |
+| [`ip-check`](./ip-check)         | Compares browser and fetch-proxy public IPv4 addresses to verify NAT egress. |
 | [`oauth-demo`](./oauth-demo)     | Exercises **delegated OAuth connections** against the fixture vendor — consent via `window.helix.connect`, then a provider-bound call with the token injected server-side. |
 | [`helix-help`](./helix-help)     | A docs-grounded chatbot: loads the public docs site at runtime through the fetch-proxy and answers over the OpenAI-compatible surface — no key, no RAG. |
 | [`offline`](./offline)           | Cold-boots with no network via the platform's scope-confined service worker, and shows what the app still owns. |

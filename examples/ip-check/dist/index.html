@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IP check · Helix</title>
+    <script type="module" crossorigin src="./assets/index-CY6hI0ht.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-DHJl7RC2.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">Helix · Network diagnostic</p>
+        <h1>Where does this request come from?</h1>
+        <p>Check the public IPv4 address seen by the same API over two different paths.</p>
+      </header>
+      <div class="cards">
+        <section aria-labelledby="browser-title">
+          <p class="eyebrow">Your network</p>
+          <h2 id="browser-title">Browser</h2>
+          <p>Your browser → ipify</p>
+          <p>Shows your internet connection’s public IP, including any VPN or corporate proxy.</p>
+          <button id="browser-button" type="button">Check browser IP</button>
+          <div role="status" aria-live="polite" aria-atomic="true">
+            <p class="ip" id="browser-ip">—</p>
+            <p class="status" id="browser-status">Ready to check.</p>
+          </div>
+        </section>
+        <section aria-labelledby="proxy-title">
+          <p class="eyebrow">Platform network</p>
+          <h2 id="proxy-title">Fetch proxy</h2>
+          <p>Your browser → Helix → egress → ipify</p>
+          <p>
+            Compare this result with the Azure deployment’s <code>egressNatPublicIp</code> output.
+          </p>
+          <button id="proxy-button" type="button">Check proxy IP</button>
+          <div role="status" aria-live="polite" aria-atomic="true">
+            <p class="ip" id="proxy-ip">—</p>
+            <p class="status" id="proxy-status">Ready to check.</p>
+          </div>
+        </section>
+      </div>
+      <footer>
+        <p>
+          Both buttons call <code>https://api.ipify.org?format=json</code>. Each click makes a fresh
+          request.
+        </p>
+        <p>
+          Allow <code>https://api.ipify.org</code> for direct browser access and the fetch proxy.
+          Keep the transparent fetch shim off.
+        </p>
+        <p>
+          Different addresses demonstrate different outbound paths; verify the proxy address against
+          the expected NAT IP. Local runs may share the same public IP.
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>

@@ -15,6 +15,7 @@ Dynamic requests use the `/_api/*` gateway. See the
 | `oversell` | The write-concurrency contract (ADR-0041) and the growing-shared-namespace pattern (ADR-0042): CAS on shared keys, prefix grants + the list verb, with one-click probes that force every failure. | `/_api/data/*` |
 | `github-stars` | Calls a public API **directly** — CSP-blocked until an admin grants the origin (approval loop). | — (CSP) |
 | `fetch-proxy` | Calls the GitHub API **through the proxy** — keyless, then secret-injected, then via the transparent shim. | `/_api/fetch/*` |
+| `ip-check` | Compares browser and fetch-proxy public IPv4 addresses against the expected NAT gateway IP. | `/_api/fetch/*` + direct CSP grant |
 | `helix-help` | A docs-grounded chatbot: fetches the public docs site's markdown pages at runtime through the proxy, embeds them in the system prompt, and answers over the OpenAI-compatible surface — no key, no RAG. | `/_api/fetch/*` + `/_api/openai/v1/*` |
 | `offline` | Cold-boots with no network on the platform's scope-confined service worker; six probes separate what the platform caches from what the app still owns. | — (`/_helix/sw.js`) |
 | `asana-report` | Reads a real Asana project's activity (stories per task, range-filtered) through a provider-bound connection and streams a `gpt-5-nano` report into shared storage; reports list/read without any connection. | `/_api/fetch/*` + `/_api/openai/v1/chat/completions` + `/_api/data/*` |

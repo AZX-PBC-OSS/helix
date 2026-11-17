@@ -1,0 +1,5 @@
+{
+  "slug": "ip-check",
+  "dir": "dist",
+  "description": "Compare browser and Helix egress public IPv4 addresses."
+}
