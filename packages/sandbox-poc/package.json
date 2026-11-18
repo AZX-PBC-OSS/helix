@@ -1,0 +1,14 @@
+{
+  "name": "@azx-pbc/sandbox-poc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "probe": "node src/probe.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "quickjs-emscripten": "catalog:",
+    "typescript": "catalog:",
+    "@types/node": "catalog:"
+  }
+}

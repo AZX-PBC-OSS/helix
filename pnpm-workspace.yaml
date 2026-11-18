@@ -96,6 +96,7 @@ overrides:
 # Packages reference these with "catalog:" instead of pinning their own range,
 # so a bump happens in exactly one place. https://pnpm.io/catalogs
 catalog:
+  quickjs-emscripten: 0.32.0
   # ── Runtime ──
   fastify: ^5.12.6
   zod: ^4.4.3
