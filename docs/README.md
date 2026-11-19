@@ -32,6 +32,10 @@ The ADR, feature, and review directories each have an index README.
 
 ## Adding a document
 
+Current proposals include [browser-bound login](design/browser-bound-login.md):
+POST-based OIDC and app completion with browser binding, retaining the existing
+offline worker restrictions.
+
 Choose the directory by the document's purpose. Keep only entry points and the
 main architecture and project-plan documents at this level. Link new documents
 from the relevant index.
