@@ -1,7 +1,9 @@
 # Browser-bound login without URL credentials
 
 Status: proposed, 2026-11-19. This document specifies intended behavior; it does
-not describe a shipped change or a security-reviewed protocol.
+not describe a shipped change. A [research-backed protocol review](../reviews/2026-11-19-browser-bound-login-protocol.md)
+found the approach consistent with established patterns, with corrections and
+browser/security acceptance work still required before implementation approval.
 
 Related: [authentication](../features/authentication.md),
 [ADR-0004](../adr/0004-auth-model.md),
@@ -107,7 +109,11 @@ victim authenticated it. Do not activate a pending session at the OIDC callback.
   resources, no framing, no base URL, nonce-authorized submission script, and
   form-action restricted to the computed app origin. Escape all HTML values.
   Never reuse the permissive app CSP or weaken app form-action.
-- Send Cache-Control: no-store and Referrer-Policy: no-referrer throughout login.
+- Send Cache-Control: no-store throughout login. Use Referrer-Policy: strict-origin
+  on the auth-origin HTML page that submits the completion form, so its POST
+  retains the auth Origin while Referer contains no path or query. Use no-referrer
+  on other login responses. Do not accept Origin: null as a compatibility fix:
+  no-referrer on the submitting page produces that value under the Fetch rules.
   No credential-bearing HTML or POST body may enter logs or error diagnostics.
   Redirects after POST use 303; never forward the POST body with 307/308.
 
@@ -116,8 +122,10 @@ iframe cookies. Browser verification must still establish cookie delivery under
 the supported browsers' privacy settings, using separate sites as well as today's
 same-site subdomains. Missing cookies fail closed; there is no URL fallback.
 
-Microsoft documents the form_post/SameSite requirement in its
-[SameSite guidance](https://learn.microsoft.com/en-us/entra/identity-platform/howto-handle-samesite-cookie-changes-chrome-browser).
+Microsoft documents None for OIDC nonce and remote-auth correlation cookies in its
+[current SameSite guidance](https://learn.microsoft.com/en-us/aspnet/core/security/samesite?view=aspnetcore-10.0).
+The earlier Entra migration article contains historical browser workarounds;
+do not copy its Chrome-only user-agent branching.
 
 ## Storage and interfaces
 
@@ -125,8 +133,19 @@ Add an edge-owned `login_transactions` table through a portal migration. Store
 the transaction ID, app ID, browser-secret hash, validated return path, silent
 flag, creation/expiry timestamps, state, authenticated identity, proof hash, and
 completion deadline. States are `created`, `exchanging`, and `ready`; successful
-completion deletes the row atomically with session insertion. Failures delete or
-expire the row. Every transition includes app, state, and expiry predicates.
+completion deletes the row atomically with session insertion. Only a validated,
+claimed OIDC attempt may invalidate its transaction on failure. A malformed or
+mismatched completion must not delete a transaction, clear unrelated login cookies,
+or consume its proof. Every transition includes app, state, and expiry predicates.
+
+Bind one OIDC attempt to each transaction at auth start using a stored state hash.
+Only that attempt may claim the callback. Repeated auth starts cannot replace its
+state, verifier, or eventual identity; restart creates a new app transaction.
+This prevents result replacement, but a leaked transaction ID can still be used
+to race initialization and deny that login. Treat it as non-secret for session
+theft analysis, not harmless for availability. Before implementation, specify
+shared-store initiation limits using the existing trusted-proxy IP handling and
+CounterStore; expiry alone does not bound unauthenticated transaction creation.
 
 Use ten-minute transaction expiry, with the shorter proof deadline at completion.
 Extend the existing session sweep lifecycle to remove expired transactions;
@@ -170,6 +189,7 @@ do not add inline SDK usage or new portal instruments.
 | Scenario | Required result |
 | --- | --- |
 | Attacker sends their auth-start transaction to a victim | Victim's completion fails the app-cookie binding; attacker cannot retrieve the proof or redeem by transaction ID alone. |
+| Attacker authenticates their identity against a victim's leaked transaction ID | Attacker lacks the victim's app cookie; victim cannot be logged into the attacker's account by a forged completion from another origin. |
 | Transaction ID leaks through history or access logs | It cannot expose identity, retrieve a proof, or mint a session. Test before and after authentication. |
 | Completion proof stolen without the app cookie | No session; no alternate GET or transaction-status route permits redemption. |
 | Cookie from another browser or another app | Completion fails even with a valid proof. |
@@ -177,6 +197,8 @@ do not add inline SDK usage or new portal instruments.
 | Callback replay, mismatched state, nonce, or PKCE | No ready transaction and no session. |
 | Expired transaction/proof; older login after cookie overwrite | Safe restart, without adopting the newer cookie or extending expiry. |
 | Origin missing, null, sibling app, or attacker site | App completion fails. Origin spoofing in a headless client still cannot replace either secret. |
+| Completion form uses strict-origin | Real browser POST carries the exact auth Origin; Referer has no path/query. A no-referrer negative control produces null and fails. |
+| Invalid completion or repeated auth start targets a live transaction | No result replacement, proof consumption, or unrelated cookie clearing; record bounded failure outcomes. |
 | App archived or access narrowed during login | Issuance denied; existing authorization checks remain effective. |
 | Database failure before/during issuance | No partial activation; transaction rollback prevents a consumed proof without its session row. Lost responses may require restart. |
 | Script disabled on the auth completion page | Manual Continue submits the same bound POST. |
