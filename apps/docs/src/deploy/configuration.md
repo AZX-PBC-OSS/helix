@@ -302,3 +302,27 @@ Deploy the database migration first, egress second, and portal/API/UI writers
 last. Keep the token retirement ledger and egress sweep during rollback. The
 [contributor feature reference](https://github.com/AZX-PBC-OSS/helix/blob/main/docs/features/secrets-and-connections.md#service-account-oauth)
 documents retry, custody, and rollout limits.
+
+## Internal transport
+
+Production internal service and telemetry URLs require HTTPS. Azure also enables
+peer encryption behind Container Apps ingress. Application listeners remain HTTP
+behind that managed boundary.
+
+A deployment with its own authenticated service mesh can set
+`HELIX_INTERNAL_TRANSPORT_MODE=mesh` and `HELIX_MESH_HTTP_ORIGINS` to a JSON array
+of exact HTTP origins, for example `["http://egress.internal:8081"]`. Only listed
+origins are exempt; wildcard hosts and path-based entries are refused. This is
+an operator assertion that the mesh encrypts and authenticates the connection.
+It does not configure a mesh or verify its protection. The default mode is
+`https`; Azure deployments use that default without exceptions.
+
+Mesh exceptions do not apply to databases, Blob, Key Vault, or identity providers.
+Node database URLs in production require `sslmode=verify-full`; native Prisma
+migration URLs use `sslmode=require&sslaccept=strict`. Update custom database
+URLs before rolling out strict transport validation. Local development continues
+to permit HTTP. Credential-free external API HTTP policy is unchanged.
+
+Invalid service transport prevents startup. Invalid telemetry transport disables
+export and logs a warning, while the service continues running. Managed identity
+endpoints and container health probes remain platform-managed exceptions.

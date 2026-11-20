@@ -1,3 +1,4 @@
+import { assertInternalTransport, assertPlatformTransport } from "@azx-pbc/shared/transport";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -67,6 +68,7 @@ async function readVaultSecret(
   getToken: () => Promise<string>,
   timeoutMs: number,
 ): Promise<string> {
+  assertInternalTransport(vaultUrl, "PLATFORM_VAULT_URL", { NODE_ENV: "production" });
   const token = await getToken();
 
   // `new URL` normalises whether or not the vault URL carries a trailing slash.
@@ -76,6 +78,7 @@ async function readVaultSecret(
   let response: Response;
   try {
     response = await fetch(url, {
+      redirect: "error",
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -132,9 +135,18 @@ export async function readMigrateDsn(
 }
 
 async function main(): Promise<void> {
+  assertPlatformTransport({
+    NODE_ENV: "production",
+    NODE_TLS_REJECT_UNAUTHORIZED: process.env.NODE_TLS_REJECT_UNAUTHORIZED,
+  });
   const vaultUrl = required("PLATFORM_VAULT_URL", process.env);
 
   const dsn = await readMigrateDsn(process.env);
+  assertPlatformTransport({
+    NODE_TLS_REJECT_UNAUTHORIZED: process.env.NODE_TLS_REJECT_UNAUTHORIZED,
+    NODE_ENV: "production",
+    JOBS_MIGRATE_DATABASE_URL: dsn,
+  });
   console.log(`read ${SECRET_NAME} from ${vaultUrl}`);
 
   // Run the package's own migration command so its structured

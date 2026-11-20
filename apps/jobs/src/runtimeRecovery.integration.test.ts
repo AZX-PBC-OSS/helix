@@ -1,3 +1,4 @@
+import { transportTls } from "./test/transportTls.js";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer as createNetServer, type AddressInfo } from "node:net";
@@ -1225,8 +1226,17 @@ describe("runtime recovery of the jobs plane, through the real stack", () => {
       // Production refuses the diagnostic type, so this leg runs the fetch
       // type — the one installed production type — against the harness's
       // controlled origin.
+      const tls = transportTls();
+      const env = stack.serviceEnvOf("jobs");
+      const secureDb = await tls.postgres(env.JOBS_DATABASE_URL!);
+      const prodCallback = env.JOBS_EDGE_PROD_URL!;
+      const devCallback = env.JOBS_EDGE_DEV_URL!;
       stack.setServiceEnv("jobs", {
         NODE_ENV: "production",
+        NODE_EXTRA_CA_CERTS: env.NODE_EXTRA_CA_CERTS!,
+        JOBS_DATABASE_URL: secureDb,
+        JOBS_EDGE_PROD_URL: prodCallback,
+        JOBS_EDGE_DEV_URL: devCallback,
         JOBS_DIAGNOSTICS: "false",
         NODE_OPTIONS: auditNodeOptions(),
       });
@@ -1313,6 +1323,7 @@ describe("runtime recovery of the jobs plane, through the real stack", () => {
         expect(final.error, "a lost fetch attempt carries its bounded error").not.toBeNull();
       }
 
+      await tls.close();
       // The restored stack is left healthy for whoever inspects it next.
       await waitFor(
         stack,

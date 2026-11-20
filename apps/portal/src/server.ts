@@ -1,3 +1,4 @@
+import { initializePlatformTransport } from "@azx-pbc/shared/transport";
 import { readFileSync } from "node:fs";
 import { resolveLoopIntervalMs } from "@azx-pbc/shared";
 import {
@@ -56,6 +57,7 @@ function loadDotEnvLocal(): void {
 }
 
 loadDotEnvLocal();
+initializePlatformTransport(process.env, "portal");
 
 // Inert unless an OTLP endpoint is configured (ADR-0037). Mirrors the edge:
 // after the dotenv load, before the app is built.

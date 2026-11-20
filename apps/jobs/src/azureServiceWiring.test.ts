@@ -553,6 +553,7 @@ describe("each container app receives only its custody", () => {
         "JOBS_SERVER_ID",
         "LOG_LEVEL",
         "NODE_ENV",
+        "HELIX_INTERNAL_TRANSPORT_MODE",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
       ].sort(),
     );
@@ -957,5 +958,22 @@ describe("the signing roots' provenance", () => {
     expect(STEADY_PARAMS).toMatch(
       /\/\/ param jobsPortalToJobsRoot = az\.getSecret\([^)]*'jobs-portal-to-jobs-root'\)/,
     );
+  });
+});
+
+describe("production transport infrastructure", () => {
+  it("enables peer encryption in the environment module shared by both planes", () => {
+    expect(read("infra/azure/modules/aca-environment.bicep")).toMatch(
+      /peerTrafficConfiguration:\s*{\s*encryption:\s*{\s*enabled: true/,
+    );
+    expect(MAIN.match(/'modules\/aca-environment.bicep'/g)).toHaveLength(2);
+  });
+  it("requires database TLS and explicit destination validation", () => {
+    const postgres = read("infra/azure/modules/postgres.bicep");
+    expect(postgres).toMatch(/name: 'require_secure_transport'[\s\S]*value: 'ON'/);
+    expect(postgres).toMatch(/name: 'ssl_min_protocol_version'[\s\S]*value: 'TLSv1.2'/);
+    expect(MAIN).not.toContain("sslmode=require");
+    expect(MAIN).toContain("sslmode=verify-full");
+    expect(read("infra/azure/modules/storage.bicep")).toContain("supportsHttpsTrafficOnly: true");
   });
 });

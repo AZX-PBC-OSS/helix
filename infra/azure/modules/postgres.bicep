@@ -105,3 +105,20 @@ output serverName string = server.name
 output serverFqdn string = server.properties.fullyQualifiedDomainName
 output databaseName string = databaseName
 output jobsDatabaseName string = jobsDatabaseName
+
+resource secureTransport 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2025-08-01' = {
+  parent: server
+  name: 'require_secure_transport'
+  properties: {
+    value: 'ON'
+    source: 'user-override'
+  }
+}
+resource minimumTls 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2025-08-01' = {
+  parent: server
+  name: 'ssl_min_protocol_version'
+  properties: {
+    value: 'TLSv1.2'
+    source: 'user-override'
+  }
+}

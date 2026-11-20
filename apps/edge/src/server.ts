@@ -1,3 +1,4 @@
+import { initializePlatformTransport } from "@azx-pbc/shared/transport";
 import { readFileSync } from "node:fs";
 import {
   developerLocalOverridesSkipped,
@@ -70,6 +71,7 @@ function loadDotEnvLocal(): void {
 }
 
 loadDotEnvLocal();
+initializePlatformTransport(process.env, "edge");
 
 // Telemetry first, after the dotenv load (so `.env.local` can point it at a
 // local collector) and before anything it might one day instrument. Inert

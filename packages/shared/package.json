@@ -15,7 +15,8 @@
     "./lifecycle": "./src/lifecycle.ts",
     "./logging": "./src/logging.ts",
     "./mime": "./src/mime.ts",
-    "./telemetry": "./src/telemetry.ts"
+    "./telemetry": "./src/telemetry.ts",
+    "./transport": "./src/transport.ts"
   },
   "scripts": {
     "typecheck": "tsc"

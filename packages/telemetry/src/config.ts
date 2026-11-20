@@ -1,3 +1,7 @@
+import {
+  assertInternalTransport,
+  EVENT_TRANSPORT_TELEMETRY_DISABLED,
+} from "@azx-pbc/shared/transport";
 /**
  * Resolve telemetry configuration without importing SDKs or creating providers,
  * exporters, or timers (ADR-0037 decision 5). Injecting env lets tests cover
@@ -81,5 +85,18 @@ export function resolveTelemetryConfig(
     return null;
   }
 
+  try {
+    assertInternalTransport(tracesUrl, "OTLP traces", env);
+    assertInternalTransport(metricsUrl, "OTLP metrics", env);
+  } catch {
+    process.stderr.write(
+      JSON.stringify({
+        level: "warn",
+        event: EVENT_TRANSPORT_TELEMETRY_DISABLED,
+        msg: "Telemetry disabled by transport policy",
+      }) + "\n",
+    );
+    return null;
+  }
   return { serviceName, tracesUrl, metricsUrl };
 }

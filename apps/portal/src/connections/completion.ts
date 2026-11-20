@@ -417,6 +417,7 @@ async function delegateExchange(
   try {
     const res = await fetch(new URL(ROUTE_EGRESS_EXCHANGE, base), {
       method: "POST",
+      redirect: "error",
       headers: {
         "content-type": "application/json",
         [EXCHANGE_AUTH_HEADER]: await mintExchangeToken(deriveExchangeKey(secret)),

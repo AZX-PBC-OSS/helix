@@ -813,6 +813,9 @@ importers:
 
   packages/telemetry:
     dependencies:
+      '@azx-pbc/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@opentelemetry/api':
         specifier: 'catalog:'
         version: 1.9.1

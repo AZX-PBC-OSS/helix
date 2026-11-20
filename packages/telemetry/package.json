@@ -19,7 +19,8 @@
     "@opentelemetry/resources": "catalog:",
     "@opentelemetry/sdk-metrics": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
-    "@opentelemetry/semantic-conventions": "catalog:"
+    "@opentelemetry/semantic-conventions": "catalog:",
+    "@azx-pbc/shared": "workspace:*"
   },
   "devDependencies": {
     "typescript": "catalog:"

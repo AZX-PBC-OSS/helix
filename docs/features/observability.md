@@ -639,3 +639,15 @@ error text. `needs_attention` indicates a configuration/credential intervention;
 `temporary_failure` indicates an outage/cooldown or cleanup failure. Status reads
 reflect use, not a separate polling probe. As with all platform instrumentation,
 the API facade remains inert without a provider or with telemetry disabled.
+
+### Transport configuration failures
+
+`transport.telemetry_disabled` is a warning emitted when an effective OTLP
+endpoint violates transport policy. No exporter is constructed for that
+configuration. The warning contains no endpoint or credentials. Services continue
+running; production internal service transport violations instead fail startup.
+
+`transport.policy` records production startup's transport mode and whether mesh
+exceptions were supplied. A refused configuration emits an error with the service
+name and `outcome=refused`; accepted configurations emit `outcome=accepted`.
+Neither event includes destinations, allowlist contents, or database credentials.

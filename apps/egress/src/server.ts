@@ -1,3 +1,4 @@
+import { initializePlatformTransport } from "@azx-pbc/shared/transport";
 import { readFileSync } from "node:fs";
 import { developerLocalOverridesSkipped, installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
 import {
@@ -62,6 +63,7 @@ function loadDotEnvLocal(): void {
 }
 
 loadDotEnvLocal();
+initializePlatformTransport(process.env, "egress");
 
 // Inert unless an OTLP endpoint is configured (ADR-0037). Mirrors the edge:
 // after the dotenv load, before anything else comes up.

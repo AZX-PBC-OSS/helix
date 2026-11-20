@@ -1,3 +1,4 @@
+import { initializePlatformTransport } from "@azx-pbc/shared/transport";
 import { readFileSync } from "node:fs";
 import {
   developerLocalOverridesSkipped,
@@ -63,6 +64,7 @@ function loadDotEnvLocal(): void {
 }
 
 loadDotEnvLocal();
+initializePlatformTransport(process.env, "jobs");
 
 // Inert unless an OTLP endpoint is configured (ADR-0037). Mirrors the siblings:
 // after the dotenv load, before anything it might instrument. Inject-only —

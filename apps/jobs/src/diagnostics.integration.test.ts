@@ -1,3 +1,4 @@
+import { transportTls } from "./test/transportTls.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -719,6 +720,8 @@ describe("diagnostic jobs through the running services (shared child, edge, sign
 describe("the production jobs process and the diagnostic type", () => {
   const slow = { timeout: 180_000 };
   const PROD_OWNER = "prod-refuser";
+  let tls: ReturnType<typeof transportTls>;
+  let secureDsn: string;
 
   let port: number;
   let child: ChildProcess;
@@ -729,7 +732,17 @@ describe("the production jobs process and the diagnostic type", () => {
 
   beforeAll(async () => {
     port = await reservePort();
-    child = await bootServer(port, childEnv(port, { NODE_ENV: "production" }));
+    tls = transportTls();
+    secureDsn = await tls.postgres(RUNTIME_DSN);
+    child = await bootServer(
+      port,
+      childEnv(port, {
+        NODE_ENV: "production",
+        JOBS_DATABASE_URL: secureDsn,
+        JOBS_EDGE_PROD_URL: "https://localhost:1",
+        JOBS_EDGE_DEV_URL: "https://localhost:1",
+      }),
+    );
     forwarder = edgeForwarder(port);
     const harness = buildJobsEdgeApp(forwarder, {
       // A NON-production edge build with every guessed diagnostic-ish type
@@ -750,6 +763,7 @@ describe("the production jobs process and the diagnostic type", () => {
     await edge?.close();
     await forwarder?.close();
     if (child) await stopServer(child);
+    await tls?.close();
   }, 60_000);
 
   async function submitRefused(options: {
@@ -792,7 +806,13 @@ describe("the production jobs process and the diagnostic type", () => {
       const bootChild = track(
         spawn("node", ["--import", "tsx", "src/server.ts"], {
           cwd: PACKAGE_DIR,
-          env: childEnv(bootPort, { NODE_ENV: "production", JOBS_DIAGNOSTICS: "true" }),
+          env: childEnv(bootPort, {
+            NODE_ENV: "production",
+            JOBS_DIAGNOSTICS: "true",
+            JOBS_DATABASE_URL: secureDsn,
+            JOBS_EDGE_PROD_URL: "https://localhost:1",
+            JOBS_EDGE_DEV_URL: "https://localhost:1",
+          }),
           stdio: ["ignore", "pipe", "pipe"],
         }),
       );

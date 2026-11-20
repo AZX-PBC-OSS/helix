@@ -732,23 +732,23 @@ var pgFqdn = postgres.outputs.serverFqdn
 // vault, not this template, is the source of truth.
 var edgeDbConn = !empty(edgeDatabaseUrl)
   ? edgeDatabaseUrl
-  : 'postgresql://helix_edge:${edgeDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
+  : 'postgresql://helix_edge:${edgeDbPassword}@${pgFqdn}:5432/helix?sslmode=verify-full'
 var egressDbConn = !empty(egressDatabaseUrl)
   ? egressDatabaseUrl
-  : 'postgresql://helix_egress:${egressDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
+  : 'postgresql://helix_egress:${egressDbPassword}@${pgFqdn}:5432/helix?sslmode=verify-full'
 // The portal runtime connects as the least-privilege helix_portal role, NOT the
 // schema owner (ADR-0002): full DML but no owner/superuser RLS bypass and no
 // DDL. Migrations run as the admin out-of-band (README step 4), so the admin DSN
 // never reaches a container or kv-platform.
 var portalDbConn = !empty(portalDatabaseUrl)
   ? portalDatabaseUrl
-  : 'postgresql://helix_portal:${portalDbPassword}@${pgFqdn}:5432/helix?sslmode=require'
+  : 'postgresql://helix_portal:${portalDbPassword}@${pgFqdn}:5432/helix?sslmode=verify-full'
 // helix_dev DSN — written to kv-platform only when the opt-in dev-gateway is
 // deployed (kv-secrets skips an empty value).
 var devDbConn = deployDevGateway
   ? (!empty(edgeDevDatabaseUrl)
       ? edgeDevDatabaseUrl
-      : 'postgresql://helix_dev:${devDbPassword}@${pgFqdn}:5432/helix?sslmode=require')
+      : 'postgresql://helix_dev:${devDbPassword}@${pgFqdn}:5432/helix?sslmode=verify-full')
   : ''
 // The jobs plane's two DSNs — the `helix_jobs` runtime role's and the
 // `helix_jobs_migrate` migration identity's, against the jobs database the
@@ -772,7 +772,7 @@ var jobsDbConn = deployJobs
           ? fail(
               'deployJobs=true needs the two jobs DSNs, and neither jobsDatabaseUrl nor jobsDbPassword is set — composing one with an empty password would write an unauthenticatable DSN into kv-platform. Bootstrap the secrets once with HELIX_JOBS_DB_PASSWORD / HELIX_JOBS_MIGRATE_DB_PASSWORD (main.bootstrap.bicepparam, or --parameters on this apply), then source them steady-state via az.getSecret() in main.bicepparam.'
             )
-          : 'postgresql://helix_jobs:${jobsDbPassword}@${pgFqdn}:5432/${postgres.outputs.jobsDatabaseName}?sslmode=require')
+          : 'postgresql://helix_jobs:${jobsDbPassword}@${pgFqdn}:5432/${postgres.outputs.jobsDatabaseName}?sslmode=verify-full')
   : ''
 var jobsMigrateDbConn = deployJobs
   ? (!empty(jobsMigrateDatabaseUrl)
@@ -781,7 +781,7 @@ var jobsMigrateDbConn = deployJobs
           ? fail(
               'deployJobs=true needs the two jobs DSNs, and neither jobsMigrateDatabaseUrl nor jobsMigrateDbPassword is set — composing one with an empty password would write an unauthenticatable DSN into kv-platform. Bootstrap the secrets once with HELIX_JOBS_DB_PASSWORD / HELIX_JOBS_MIGRATE_DB_PASSWORD (main.bootstrap.bicepparam, or --parameters on this apply), then source them steady-state via az.getSecret() in main.bicepparam.'
             )
-          : 'postgresql://helix_jobs_migrate:${jobsMigrateDbPassword}@${pgFqdn}:5432/${postgres.outputs.jobsDatabaseName}?sslmode=require')
+          : 'postgresql://helix_jobs_migrate:${jobsMigrateDbPassword}@${pgFqdn}:5432/${postgres.outputs.jobsDatabaseName}?sslmode=verify-full')
   : ''
 
 // The jobs server's three directional signing roots. With deployJobs on, all
@@ -1242,6 +1242,7 @@ module egressApp 'modules/containerapp.bicep' = if (deployApps) {
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
+      { name: 'HELIX_INTERNAL_TRANSPORT_MODE', value: 'https' }
       { name: 'LOG_LEVEL', value: logLevel }
       // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
       // leaves `startTelemetry` inert — the platform's documented default state,
@@ -1351,6 +1352,7 @@ module edgeApp 'modules/containerapp.bicep' = if (deployApps) {
     envVars: concat(
       [
         { name: 'NODE_ENV', value: 'production' }
+      { name: 'HELIX_INTERNAL_TRANSPORT_MODE', value: 'https' }
         { name: 'LOG_LEVEL', value: logLevel }
         // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
         // leaves `startTelemetry` inert — the platform's documented default state,
@@ -1482,6 +1484,7 @@ module portalApp 'modules/containerapp.bicep' = if (deployApps) {
     envVars: concat(
       [
         { name: 'NODE_ENV', value: 'production' }
+      { name: 'HELIX_INTERNAL_TRANSPORT_MODE', value: 'https' }
         { name: 'LOG_LEVEL', value: logLevel }
         // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
         // leaves `startTelemetry` inert — the platform's documented default state,
@@ -1622,6 +1625,7 @@ module devGatewayApp 'modules/containerapp.bicep' = if (deployApps && deployDevG
     envVars: concat(
       [
         { name: 'NODE_ENV', value: 'production' }
+      { name: 'HELIX_INTERNAL_TRANSPORT_MODE', value: 'https' }
         { name: 'LOG_LEVEL', value: logLevel }
         // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
         // leaves `startTelemetry` inert — the platform's documented default state,
@@ -1801,6 +1805,7 @@ module jobsApp 'modules/containerapp.bicep' = if (deployApps && deployJobs) {
     }
     envVars: [
       { name: 'NODE_ENV', value: 'production' }
+      { name: 'HELIX_INTERNAL_TRANSPORT_MODE', value: 'https' }
       { name: 'LOG_LEVEL', value: logLevel }
       // OTLP destination (ADR-0037). Empty when telemetry is not deployed, which
       // leaves `startTelemetry` inert — the platform's documented default state,

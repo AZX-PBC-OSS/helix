@@ -81,7 +81,7 @@ sub=$(az account show --query id -o tsv)
 log "server   ${pg} (${fqdn}), admin ${admin}"
 log "job      ${job} (deleted when this finishes)"
 
-admin_url="postgresql://${admin}:${HELIX_PG_ADMIN_PASSWORD}@${fqdn}:5432/helix?sslmode=require"
+admin_url="postgresql://${admin}:${HELIX_PG_ADMIN_PASSWORD}@${fqdn}:5432/helix?sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca-certificates.crt"
 # The whole sql/ directory travels (01 is the ACL authority, 02 the portal
 # bootstrap; a later file sorts after and runs after), extracted in the job.
 sql_dir="$(dirname "$sql_file")"

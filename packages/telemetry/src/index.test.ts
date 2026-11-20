@@ -22,7 +22,7 @@ import { shutdownTelemetry, startTelemetry } from "./index.js";
 /** An env that WOULD start telemetry, so each case below turns on one variable. */
 const LIVE = {
   NODE_ENV: "production",
-  OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector.invalid:4318",
+  OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.invalid:4318",
 } satisfies NodeJS.ProcessEnv;
 
 /**
@@ -120,7 +120,7 @@ describe("startTelemetry, misconfigured", () => {
     });
     expect(handle.enabled).toBe(false);
     expect(globalTracerIsUnregistered()).toBe(true);
-    expect(stderr.lines()).toContain("telemetry failed to start");
+    expect(stderr.lines()).toContain("Telemetry disabled by transport policy");
     expect(diagSinkIsUninstalled(stderr)).toBe(true);
   });
 
@@ -132,19 +132,19 @@ describe("startTelemetry, misconfigured", () => {
     const handle = startTelemetry("helix-egress", {
       env: {
         NODE_ENV: "production",
-        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector.invalid:4318/v1/traces",
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.invalid:4318/v1/traces",
         OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "//collector:4318",
       },
     });
     expect(handle.enabled).toBe(false);
     expect(globalTracerIsUnregistered()).toBe(true);
-    expect(stderr.lines()).toContain("telemetry failed to start");
+    expect(stderr.lines()).toContain("Telemetry disabled by transport policy");
     expect(diagSinkIsUninstalled(stderr)).toBe(true);
     // And nothing was memoized, so the next start is not short-circuited.
     await expect(shutdownTelemetry()).resolves.toBeUndefined();
   });
 
-  it("reports the underlying error, not an empty object", () => {
+  it("reports a sanitized policy rejection for invalid destinations", () => {
     // `JSON.stringify(new Error(...))` is `"{}"` — message, stack and cause are
     // all non-enumerable. OTel hands every export failure to `diag.error(msg,
     // error)`, so a sink that stringifies naively explains nothing, forever.
@@ -152,7 +152,7 @@ describe("startTelemetry, misconfigured", () => {
     startTelemetry("helix-portal", {
       env: { NODE_ENV: "production", OTEL_EXPORTER_OTLP_ENDPOINT: "//collector:4318" },
     });
-    expect(stderr.lines()).toContain("Could not parse user-provided export URL");
+    expect(stderr.lines()).toContain("Telemetry disabled by transport policy");
     expect(stderr.lines()).not.toContain("{}");
   });
 

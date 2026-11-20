@@ -1,3 +1,4 @@
+import { initializePlatformTransport } from "@azx-pbc/shared/transport";
 import { readFileSync } from "node:fs";
 import { developerLocalOverridesSkipped, installGracefulShutdown } from "@azx-pbc/shared/lifecycle";
 import { startTelemetry } from "@azx-pbc/telemetry";
@@ -59,6 +60,7 @@ function loadDotEnvLocal(): void {
 }
 
 loadDotEnvLocal();
+initializePlatformTransport(process.env, "edge");
 
 const host = process.env.HOST ?? "0.0.0.0";
 // loadDevGatewayConfig reads ONLY the dev-gateway's own env (no edge DSN, no

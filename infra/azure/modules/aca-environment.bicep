@@ -39,6 +39,11 @@ resource managedEnvironment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: name
   location: location
   properties: {
+    peerTrafficConfiguration: {
+      encryption: {
+        enabled: true
+      }
+    }
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {

@@ -9,7 +9,7 @@ import { resolveTelemetryConfig } from "./config.js";
  */
 const LIVE = {
   NODE_ENV: "production",
-  OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
+  OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector:4318",
 } satisfies NodeJS.ProcessEnv;
 
 describe("resolveTelemetryConfig", () => {
@@ -52,18 +52,18 @@ describe("resolveTelemetryConfig", () => {
   it("appends the signal path to a base endpoint", () => {
     expect(resolveTelemetryConfig("helix-edge", LIVE)).toEqual({
       serviceName: "helix-edge",
-      tracesUrl: "http://collector:4318/v1/traces",
-      metricsUrl: "http://collector:4318/v1/metrics",
+      tracesUrl: "https://collector:4318/v1/traces",
+      metricsUrl: "https://collector:4318/v1/metrics",
     });
   });
 
   it("does not double the slash on a base endpoint with a trailing one", () => {
     const config = resolveTelemetryConfig("helix-portal", {
       ...LIVE,
-      OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318//",
+      OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector:4318//",
     });
-    expect(config?.tracesUrl).toBe("http://collector:4318/v1/traces");
-    expect(config?.metricsUrl).toBe("http://collector:4318/v1/metrics");
+    expect(config?.tracesUrl).toBe("https://collector:4318/v1/traces");
+    expect(config?.metricsUrl).toBe("https://collector:4318/v1/metrics");
   });
 
   it("uses a signal-specific endpoint verbatim, per the OTLP spec", () => {
@@ -71,24 +71,24 @@ describe("resolveTelemetryConfig", () => {
     // suffixing it would POST traces somewhere that 404s in silence.
     const config = resolveTelemetryConfig("helix-egress", {
       ...LIVE,
-      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector:4318/custom/traces",
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector:4318/custom/traces",
     });
-    expect(config?.tracesUrl).toBe("http://collector:4318/custom/traces");
+    expect(config?.tracesUrl).toBe("https://collector:4318/custom/traces");
     // The base still covers the signal that has no override.
-    expect(config?.metricsUrl).toBe("http://collector:4318/v1/metrics");
+    expect(config?.metricsUrl).toBe("https://collector:4318/v1/metrics");
   });
 
   it("resolves from signal-specific endpoints alone, with no base", () => {
     expect(
       resolveTelemetryConfig("helix-egress", {
         NODE_ENV: "production",
-        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://a/v1/traces",
-        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "http://b/v1/metrics",
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://a/v1/traces",
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://b/v1/metrics",
       }),
     ).toEqual({
       serviceName: "helix-egress",
-      tracesUrl: "http://a/v1/traces",
-      metricsUrl: "http://b/v1/metrics",
+      tracesUrl: "https://a/v1/traces",
+      metricsUrl: "https://b/v1/metrics",
     });
   });
 
@@ -97,7 +97,7 @@ describe("resolveTelemetryConfig", () => {
     expect(
       resolveTelemetryConfig("helix-egress", {
         NODE_ENV: "production",
-        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://a/v1/traces",
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://a/v1/traces",
       }),
     ).toBeNull();
     // ...and it SAYS so. Returning null here happens before `startTelemetry`
@@ -113,7 +113,7 @@ describe("resolveTelemetryConfig", () => {
     expect(
       resolveTelemetryConfig("helix-edge", {
         NODE_ENV: "production",
-        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "http://b/v1/metrics",
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "https://b/v1/metrics",
       }),
     ).toBeNull();
     expect(stderr.lines()).toContain("only the metrics endpoint resolved");
@@ -134,4 +134,16 @@ describe("resolveTelemetryConfig", () => {
     // the `/health` `service` field.
     expect(resolveTelemetryConfig("helix-portal", LIVE)?.serviceName).toBe("helix-portal");
   });
+});
+
+it("disables an insecure production exporter without exposing its URL", () => {
+  const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+  expect(
+    resolveTelemetryConfig("helix-edge", {
+      NODE_ENV: "production",
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://private-collector",
+    }),
+  ).toBeNull();
+  expect(String(warn.mock.calls)).not.toContain("private-collector");
+  warn.mockRestore();
 });

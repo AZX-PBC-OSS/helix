@@ -1,3 +1,4 @@
+import { assertInternalTransport, assertPlatformTransport } from "@azx-pbc/shared/transport";
 import { spawn } from "node:child_process";
 import { DefaultAzureCredential } from "@azure/identity";
 
@@ -40,6 +41,7 @@ function required(name: string): string {
  */
 async function readVaultSecret(vaultUrl: string, name: string): Promise<string> {
   const credential = new DefaultAzureCredential();
+  assertInternalTransport(vaultUrl, "PLATFORM_VAULT_URL", { NODE_ENV: "production" });
   const token = await credential.getToken("https://vault.azure.net/.default");
   if (!token) {
     throw new Error(
@@ -52,6 +54,7 @@ async function readVaultSecret(vaultUrl: string, name: string): Promise<string> 
   url.searchParams.set("api-version", VAULT_API_VERSION);
 
   const response = await fetch(url, {
+    redirect: "error",
     headers: { authorization: `Bearer ${token.token}` },
   });
   if (!response.ok) {
@@ -70,6 +73,10 @@ async function readVaultSecret(vaultUrl: string, name: string): Promise<string> 
 }
 
 async function main(): Promise<void> {
+  assertPlatformTransport({
+    NODE_ENV: "production",
+    NODE_TLS_REJECT_UNAUTHORIZED: process.env.NODE_TLS_REJECT_UNAUTHORIZED,
+  });
   const vaultUrl = required("PLATFORM_VAULT_URL");
   const host = required("POSTGRES_HOST");
   const login = process.env.POSTGRES_ADMIN_LOGIN ?? "helixadmin";
@@ -83,7 +90,7 @@ async function main(): Promise<void> {
   // guaranteed to be, and a stray '@' or '/' would silently retarget the host.
   const dsn =
     `postgresql://${encodeURIComponent(login)}:${encodeURIComponent(password)}` +
-    `@${host}:5432/${database}?sslmode=require`;
+    `@${host}:5432/${database}?sslmode=require&sslaccept=strict`;
 
   console.log(`applying migrations to ${database} at ${host} as ${login}`);
 

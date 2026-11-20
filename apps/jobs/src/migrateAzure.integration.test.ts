@@ -1,3 +1,4 @@
+import { transportTls } from "./test/transportTls.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -42,7 +43,7 @@ function urlFor(database: string, role?: string): string {
   return url.toString();
 }
 
-const MIGRATE_DSN = urlFor(SCRATCH_DB, "helix_jobs_migrate");
+let MIGRATE_DSN = urlFor(SCRATCH_DB, "helix_jobs_migrate");
 
 interface StubVault {
   identityUrl: string;
@@ -134,10 +135,12 @@ function startStubVault(): Promise<StubVault> {
 }
 
 let stub: StubVault;
+let tls: ReturnType<typeof transportTls>;
 
 /** The job's environment, pointed at the stubs. */
 function jobEnv(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return {
+    NODE_EXTRA_CA_CERTS: tls.certPath,
     AZURE_CLIENT_ID: "the-jobs-migrate-identity-client-id",
     IDENTITY_ENDPOINT: stub.identityUrl,
     IDENTITY_HEADER: "the-aca-identity-header",
@@ -226,7 +229,10 @@ function eventNamed(output: string, name: string): Record<string, unknown> | und
 }
 
 beforeAll(async () => {
+  tls = transportTls();
+  MIGRATE_DSN = await tls.postgres(MIGRATE_DSN);
   stub = await startStubVault();
+  stub.vaultUrl = `${await tls.https(stub.vaultUrl)}/vault/`;
   // The scratch stores are created by the provisioning itself (the file's
   // create-if-missing), inside the serialized application.
   await applyRolesProvisioning(SCRATCH_DB);
@@ -234,6 +240,8 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
+  await tls.close();
+  stub.server.closeAllConnections();
   await new Promise<void>((resolve) => stub.server.close(() => resolve()));
   const pool = new Pool({ connectionString: urlFor("postgres"), max: 1 });
   await pool.query(`DROP DATABASE IF EXISTS "${SCRATCH_DB}" WITH (FORCE)`);
@@ -424,7 +432,9 @@ describe("the job's process entry", () => {
       expect(run.status, `${run.stderr}\n${run.stdout}`).toBe(0);
 
       const started = eventNamed(run.stdout, "jobs_storage_migration_started");
-      expect(started).toMatchObject({ store: `helix_jobs_migrate@db:5432/${SCRATCH_DB}` });
+      expect(started).toMatchObject({
+        store: `helix_jobs_migrate@${new URL(MIGRATE_DSN).host}/${SCRATCH_DB}`,
+      });
       const applied = eventNamed(run.stdout, "jobs_storage_migration_applied");
       expect(applied).toMatchObject({
         schemaVersionBefore: null,
@@ -453,7 +463,7 @@ describe("the job's process entry", () => {
     { timeout: 120_000 },
     async () => {
       const password = "leaked-pw-marker-9f2a7b";
-      const marked = new URL(urlFor(REFUSED_DB, "helix_jobs_migrate"));
+      const marked = new URL(await tls.postgres(urlFor(REFUSED_DB, "helix_jobs_migrate")));
       marked.password = password;
       stub.secretValue = marked.toString();
       stub.secretStatus = 403;
@@ -488,7 +498,9 @@ describe("the job's process entry", () => {
       // nothing — the failure is the migration child's, and the job log is
       // child + parent output verbatim.
       const password = "leaked-pw-marker-6c4d21";
-      const unauthenticatable = new URL(urlFor(REFUSED_DB, "helix_jobs_migrate"));
+      const unauthenticatable = new URL(
+        await tls.postgres(urlFor(REFUSED_DB, "helix_jobs_migrate")),
+      );
       unauthenticatable.password = password;
       stub.secretValue = unauthenticatable.toString();
       try {
@@ -551,7 +563,7 @@ describe("the job's process entry", () => {
       // parent must report the child's death BY SIGNAL — a signal is not a
       // numeric exit status — and exit non-zero itself.
       const password = "leaked-pw-marker-1d7e3f";
-      const blackhole = new URL(urlFor(REFUSED_DB, "helix_jobs_migrate"));
+      const blackhole = new URL(await tls.postgres(urlFor(REFUSED_DB, "helix_jobs_migrate")));
       blackhole.hostname = "10.255.255.1";
       blackhole.password = password;
       stub.secretValue = blackhole.toString();

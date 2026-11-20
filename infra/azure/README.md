@@ -1796,3 +1796,29 @@ script -q /dev/null az containerapp exec -g <rg> -n helix-prod-egress --command 
 az postgres flexible-server show -g <rg> -n helix-prod-pg --query network
 az keyvault show -n helix-prod-kvc --query properties.publicNetworkAccess
 ```
+
+### Production transport protection
+
+Both ACA environments enable peer traffic encryption. All service and collector
+URLs remain HTTPS, with HTTP application listeners behind managed ingress. See
+[ADR-0055](../../docs/adr/0055-production-transport.md) for the non-Azure mesh exception.
+
+Before deploying strict startup validation, update custom Node database URLs to
+`sslmode=verify-full`. Preserve trusted root configuration. Prisma native migration
+URLs use `sslmode=require&sslaccept=strict` instead. Provisioning psql uses the
+container's CA bundle. No database schema or signing-key changes are required.
+
+Apply infrastructure first, then configuration and application revisions. Verify
+both environments' `properties.peerTrafficConfiguration.encryption.enabled`, all
+service/collector HTTPS URLs, ingress `allowInsecure=false`, Blob HTTPS enforcement,
+and PostgreSQL secure transport and minimum TLS parameters. Do not dump secrets
+or complete database URLs into verification output. Exercise fetch/LLM streaming,
+OAuth exchange, jobs submit/callback/lifecycle, and telemetry delivery. Record live
+verification separately from source checks; do not close issue #5 without it.
+
+Run `bash infra/azure/scripts/verify-transport.sh RESOURCE_GROUP` with read access
+to the deployment. It fails on query errors, missing resources, insecure settings,
+or jobs endpoints hidden in secret references. Those references require a separate
+in-container check that prints only endpoint-validation results; the verifier
+never retrieves their values. A successful configuration check does not replace
+request-path smoke tests or certificate-rejection tests.
