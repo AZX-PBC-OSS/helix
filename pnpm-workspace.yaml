@@ -84,7 +84,12 @@ allowBuilds:
 #   resolve 10.x through archiver; its patterns come from the CLI itself,
 #   not from an attacker. Drop once readdir-glob and the eslint packages
 #   require ^11.0.1.
+#   effect — GHSA-7589-6fvf-x4pw: TemplateLiteral ReDoS, fixed in 3.22.1.
+#   Prisma's config loader uses no TemplateLiteral validators and reads operator
+#   config, but its exact-pinned Effect ships in the portal image with the CLI.
+#   Remove once @prisma/config requires a patched Effect version.
 overrides:
+  "@prisma/config>effect": 3.22.1
   brace-expansion: ^5.0.12
   deepmerge-ts: ^8.0.1
   mysql2: ^3.24.3
