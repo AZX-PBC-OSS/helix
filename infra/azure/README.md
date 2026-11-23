@@ -1799,6 +1799,10 @@ az keyvault show -n helix-prod-kvc --query properties.publicNetworkAccess
 
 ### Production transport protection
 
+Use the [two-part transport rollout runbook](../../docs/runbooks/production-transport-rollout.md)
+to collect installation-specific evidence before preparing the staged production
+commands. Part 1 is read-only; Part 2 requires its completed handoff.
+
 Both ACA environments enable peer traffic encryption. All service and collector
 URLs remain HTTPS, with HTTP application listeners behind managed ingress. See
 [ADR-0055](../../docs/adr/0055-production-transport.md) for the non-Azure mesh exception.

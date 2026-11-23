@@ -30,6 +30,10 @@ The ADR, feature, and review directories each have an index README.
 | [auth-review-guide.md](auth-review-guide.md) | Guide to reviewing authentication and authorization. |
 | [TODO.md](../TODO.md) | Open follow-up work and the conditions for starting it. |
 
+## Operational rollout guides
+
+- [Production transport rollout: discovery worksheet and staged execution](runbooks/production-transport-rollout.md)
+
 ## Adding a document
 
 Choose the directory by the document's purpose. Keep only entry points and the

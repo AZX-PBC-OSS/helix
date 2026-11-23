@@ -59,7 +59,9 @@ def verify(group):
     for name in databases:
         for key, expected in [('require_secure_transport', 'ON'), ('ssl_min_protocol_version', 'TLSv1.2')]:
             value = az('postgres', 'flexible-server', 'parameter', 'show', '-g', group, '--server-name', name, '-n', key, '--query', 'value')
-            check(f'{name}: {key}', value == expected)
+            # Azure reports require_secure_transport in lower case ('on') whatever
+            # case the template wrote, so compare case-insensitively.
+            check(f'{name}: {key}', str(value).lower() == expected.lower())
     stores = az('storage', 'account', 'list', '-g', group, '--query', '[].{name:name,https:enableHttpsTrafficOnly,tls:minimumTlsVersion}')
     check('Blob storage present', bool(stores))
     for store in stores:
