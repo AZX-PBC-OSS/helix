@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, connect, type Socket } from "node:net";
@@ -40,12 +40,25 @@ export function transportTls(options: { wrongHost?: boolean; expired?: boolean }
     ],
     { stdio: "ignore" },
   );
-  if (options.expired)
-    execFileSync(
-      "openssl",
-      ["x509", "-in", certPath, "-signkey", keyPath, "-days", "-1", "-out", certPath],
-      { stdio: "ignore" },
-    );
+  if (options.expired) {
+    // Re-sign with a validity window entirely in the past. OpenSSL 3.4+ has
+    // explicit -not_before/-not_after and rejects the old `-days -1` trick
+    // ("end date before start date"); 3.0 lacks the flags but accepts -days -1.
+    // CI's runner image ships the former, the dev container the latter.
+    const expiredPath = path.join(dir, "expired.pem");
+    const resign = (validity: string[]) =>
+      execFileSync(
+        "openssl",
+        ["x509", "-in", certPath, "-signkey", keyPath, ...validity, "-out", expiredPath],
+        { stdio: "ignore" },
+      );
+    try {
+      resign(["-not_before", "20000101000000Z", "-not_after", "20000102000000Z"]);
+    } catch {
+      resign(["-days", "-1"]);
+    }
+    renameSync(expiredPath, certPath);
+  }
   const cert = readFileSync(certPath);
   const key = readFileSync(keyPath);
   const previous = getCACertificates("default");
