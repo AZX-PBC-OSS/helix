@@ -56,19 +56,22 @@ trap cleanup EXIT
 # deliberately unroutable (nothing listens on port 1), so the detached boot
 # below exercises the health-first path. Fresh secrets per boot. NODE_ENV is
 # never passed: the image bakes it in, and the checks must see the image's
-# own value.
+# own value. The destinations satisfy the production transport policy
+# (ADR-0055: HTTPS callbacks, sslmode=verify-full), which the boot checks
+# before the config loader — anything weaker is refused first, and every
+# later check would then be testing that refusal instead of its own.
 ENV_ARGS=()
 fresh_env() {
   mapfile -t ENV_ARGS < <(
     printf '%s\n' \
       -e JOBS_SERVER_ID=jobs \
-      -e 'JOBS_DATABASE_URL=postgresql://helix_jobs:smoke@127.0.0.1:1/helix_jobs' \
+      -e 'JOBS_DATABASE_URL=postgresql://helix_jobs:smoke@127.0.0.1:1/helix_jobs?sslmode=verify-full' \
       -e JOBS_ACCEPTING=true \
       -e "JOBS_EDGE_TO_JOBS_SECRET=$(openssl rand -base64 32)" \
       -e "JOBS_PORTAL_TO_JOBS_SECRET=$(openssl rand -base64 32)" \
       -e "JOBS_JOBS_TO_EDGE_SECRET=$(openssl rand -base64 32)" \
-      -e JOBS_EDGE_PROD_URL=http://edge.invalid \
-      -e JOBS_EDGE_DEV_URL=http://dev-gateway.invalid \
+      -e JOBS_EDGE_PROD_URL=https://edge.invalid \
+      -e JOBS_EDGE_DEV_URL=https://dev-gateway.invalid \
       -e OTEL_SDK_DISABLED=1
   )
 }
@@ -125,6 +128,26 @@ grep -q 'JOBS_DIAGNOSTICS cannot be enabled in production' <<<"$diag_out" \
   || fail "the diagnostics boot exited $rc but never named the refusal (expected 'JOBS_DIAGNOSTICS cannot be enabled in production'); its output ended:
 $(tail -n 5 <<<"$diag_out")"
 ok "the diagnostic job type is refused in production"
+
+# 3b. Insecure transport refuses to boot: an otherwise valid production
+#     environment with a plain-HTTP callback destination is refused by the
+#     transport policy (ADR-0055) before anything listens.
+INSECURE_NAME="$NAME-insecure"
+STARTED+=("$INSECURE_NAME")
+fresh_env
+rc=0
+insecure_out="$(timeout 60 docker run --rm --name "$INSECURE_NAME" \
+  "${ENV_ARGS[@]}" -e JOBS_EDGE_PROD_URL=http://edge.invalid "$IMAGE" 2>&1)" || rc=$?
+if [ "$rc" -eq 124 ]; then
+  fail "the insecure-transport boot is still running after 60s (timed out) — production must refuse an HTTP destination"
+fi
+if [ "$rc" -eq 0 ]; then
+  fail "the image booted with an HTTP callback destination (exit 0) — production must refuse it"
+fi
+grep -q 'JOBS_EDGE_PROD_URL: HTTPS required' <<<"$insecure_out" \
+  || fail "the insecure-transport boot exited $rc but never named the refusal (expected 'JOBS_EDGE_PROD_URL: HTTPS required'); its output ended:
+$(tail -n 5 <<<"$insecure_out")"
+ok "insecure transport refuses to boot"
 
 # 4. Health-first boot with no reachable store: the listener comes up before
 #    the store is usable, /health answers 200, and the body reports the
