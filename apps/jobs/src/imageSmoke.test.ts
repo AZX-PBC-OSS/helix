@@ -42,6 +42,9 @@ interface Scenario {
   /** The attached boot with the smoke environment plus JOBS_DIAGNOSTICS=true. */
   diagnosticsCode: number;
   diagnosticsOutput: string;
+  /** The attached boot with the smoke environment but a plain-HTTP callback URL. */
+  insecureCode: number;
+  insecureOutput: string;
   /** What `docker run -d` prints (a container id) — unused by the script. */
   detachId: string;
   /** What `docker port <name> 3003/tcp` prints — first line only. */
@@ -83,6 +86,9 @@ function baseScenario(): Scenario {
     noenvOutput: "Error: JOBS_SERVER_ID is required — set it and restart",
     diagnosticsCode: 1,
     diagnosticsOutput: "Error: JOBS_DIAGNOSTICS cannot be enabled in production — remove the flag",
+    insecureCode: 1,
+    insecureOutput:
+      "Error: JOBS_EDGE_PROD_URL: HTTPS required unless explicitly covered by mesh policy",
     detachId: "0123456789abcdef",
     portLine: "127.0.0.1:49999",
     healthCode: 200,
@@ -152,6 +158,10 @@ if (argv[0] === "run") {
   if (argv.includes("-d")) {
     process.stdout.write(scenario.detachId + "\\n");
     process.exit(0);
+  }
+  if (argv.includes("JOBS_EDGE_PROD_URL=http://edge.invalid")) {
+    process.stdout.write(scenario.insecureOutput + "\\n");
+    process.exit(scenario.insecureCode);
   }
   if (argv.includes("JOBS_DIAGNOSTICS=true")) {
     process.stdout.write(scenario.diagnosticsOutput + "\\n");
@@ -250,6 +260,11 @@ describe("image-smoke.sh against a healthy-shaped image", () => {
       /JOBS_DATABASE_URL=postgresql:\/\/helix_jobs:smoke@127\.0\.0\.1:1\/helix_jobs/,
     );
     expect(detach as string).not.toMatch(/NODE_ENV/);
+    // ...and satisfies the production transport policy (ADR-0055), which the
+    // image checks before its config loader: anything weaker is refused first.
+    expect(detach as string).toMatch(/JOBS_DATABASE_URL=\S*\?sslmode=verify-full/);
+    expect(detach as string).toMatch(/JOBS_EDGE_PROD_URL=https:\/\//);
+    expect(detach as string).toMatch(/JOBS_EDGE_DEV_URL=https:\/\//);
   });
 });
 
@@ -281,6 +296,16 @@ describe("image-smoke.sh refuses an image that fails a check", () => {
   it("fails a diagnostics boot that is still running at the timeout", () => {
     const { run } = makeWorld({ diagnosticsCode: 124 });
     expectFail(run, /still running after 60s/);
+  });
+
+  it("fails an image that boots with a plain-HTTP callback destination", () => {
+    const { run } = makeWorld({ insecureCode: 0 });
+    expectFail(run, /booted with an HTTP callback destination/);
+  });
+
+  it("fails an insecure-transport boot that exits without naming the refusal", () => {
+    const { run } = makeWorld({ insecureOutput: "Error: something unrelated went wrong" });
+    expectFail(run, /insecure-transport boot exited 1 but never named the refusal/);
   });
 
   it("fails a /health body that reports ok while the store is unreachable", () => {
