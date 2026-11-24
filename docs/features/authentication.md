@@ -136,8 +136,9 @@ Tests: `apps/edge/src/auth/password-login.test.ts` + `loginThrottle.test.ts`,
 > makes the login throttle **reserve-first** (closing the check-then-increment TOCTOU), and one
 > interval sweep in `server.ts` GCs it (the old never-scheduled `sweep()` is gone). Scrypt cost is
 > at OWASP's `N=2^17` (ISSUE-08). `trustProxy` is a config knob (`EDGE_TRUST_PROXY`, default off in
-> code) naming the **address** of the trusted ingress, and the deployments set it to `100.64.0.0/10`,
-> so `req.ip` is the real client and the per-client limits are per-client (issue #13). That value is
+> code) naming the **address** of the trusted ingress, and the deployments set it to
+> `100.64.0.0/10,loopback` (loopback since peer encryption puts an in-pod proxy in front of the
+> app, ADR-0055), so `req.ip` is the real client and the per-client limits are per-client (issue #13). That value is
 > **confirmed against the live ingress** (2026-09-03), and confirming it is what found the bug: the
 > earlier default named the ACA *apps* subnet, which the ingress peer is not in, so the walk
 > truncated at the socket peer and every client bucketed per Envoy pod with `/health` green

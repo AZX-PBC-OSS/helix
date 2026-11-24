@@ -154,9 +154,10 @@ param deployFoundry = false
 
 // Fastify trustProxy for the edge — the ACA Envoy ingress ADDRESS, not a hop
 // count (fastify 5.12.1 removed the count form; GHSA-3m5p-2c4r-xxw2). 'auto'
-// resolves to 100.64.0.0/10 — the RFC 6598 space ACA draws its ingress pod
-// addresses from, which is the peer ingress connects from, and NOT the apps
-// subnet the edge itself runs in (issue #13); 'false' (or an explicitly-empty param)
+// resolves to '100.64.0.0/10,loopback' — the RFC 6598 space ACA draws its
+// ingress pod addresses from, plus loopback for the in-pod proxy that peer traffic
+// encryption puts in front of the app (ADR-0055), and NOT the apps subnet the
+// edge itself runs in (issue #13); 'false' (or an explicitly-empty param)
 // means trust nothing. Set this only if something else fronts the edge (CDN,
 // WAF), and verify req.ip against the live deployment when you do. A stale
 // HELIX_EDGE_TRUST_PROXY=1 left over from the hop-count era is REJECTED by

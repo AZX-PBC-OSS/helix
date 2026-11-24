@@ -154,7 +154,11 @@ export interface GatewayConfig {
    * ranges (`100.100.x.x`), *not* from the apps subnet the container itself runs
    * in — measured 2026-09-03, after the apps-subnet default silently trusted
    * nothing for a full milestone (ADR-0011's 2026-09 amendment, issue #13).
-   * `infra/azure` resolves that for the deployed platform; anything else in
+   * With peer traffic encryption on (ADR-0055) an in-pod proxy terminates the
+   * encrypted hop, so the socket peer is loopback and the ingress moves into
+   * X-Forwarded-For; `infra/azure`'s `auto` therefore trusts
+   * `100.64.0.0/10,loopback` (measured 2026-11-24). It resolves that for the
+   * deployed platform; anything else in
    * front of the edge (CDN, WAF, second proxy) has its own answer and needs
    * re-verifying, since too broad a value makes X-Forwarded-For spoofable. The
    * dev-gateway is handed the same value (dev-mode design §5.4).
@@ -863,7 +867,8 @@ function parseTrustProxy(raw: string | undefined): boolean | string {
     throw new Error(
       `EDGE_TRUST_PROXY no longer accepts a proxy hop count (got ${JSON.stringify(v)}). ` +
         `Name the trusted proxy's address instead: a CIDR/IP list such as the ACA ` +
-        `ingress ("100.64.0.0/10"), or a proxy-addr preset such as "uniquelocal". ` +
+        `ingress plus the peer-encryption proxy ("100.64.0.0/10,loopback"), or a ` +
+        `proxy-addr preset such as "uniquelocal". ` +
         `In infra/azure this is the edgeTrustProxy param (HELIX_EDGE_TRUST_PROXY), which ` +
         `rejects a hop count at deploy time — unset it to trust the ACA ingress.`,
     );

@@ -339,6 +339,32 @@ describe("loadConfig", () => {
       expect(await ipFrom("10.0.0.0/16", "203.0.113.7", "100.100.1.0")).toBe("100.100.1.0");
     });
 
+    // The second live defect (measured 2026-11-24; ADR-0055). With peer traffic
+    // encryption on, an in-pod proxy terminates the encrypted hop and forwards
+    // over loopback, so the socket peer is 127.0.0.1 and the ingress pod moves
+    // into X-Forwarded-For (or is absent, depending on how the hop writes the
+    // header). The RFC 6598 block alone then resolves nothing; `auto`'s
+    // "100.64.0.0/10,loopback" steps over both hops in either shape.
+    it("resolves the client behind the peer-encryption proxy on loopback", async () => {
+      const auto = "100.64.0.0/10,loopback";
+      // The ingress appended its own address before the in-pod hop.
+      expect(await ipFrom(auto, "203.0.113.7, 100.100.1.0", "127.0.0.1")).toBe("203.0.113.7");
+      // ...or did not.
+      expect(await ipFrom(auto, "203.0.113.7", "127.0.0.1")).toBe("203.0.113.7");
+      // The same peer as IPv4-mapped v6.
+      expect(await ipFrom(auto, "203.0.113.7", "::ffff:127.0.0.1")).toBe("203.0.113.7");
+      // With encryption off the ingress is still the peer, and still trusted.
+      expect(await ipFrom(auto, "203.0.113.7", "100.100.0.147")).toBe("203.0.113.7");
+      // What broke, reproduced: the RFC 6598 block alone against a loopback peer
+      // trusts nothing, and every client becomes 127.0.0.1 — one bucket.
+      expect(await ipFrom("100.64.0.0/10", "203.0.113.7, 100.100.1.0", "127.0.0.1")).toBe(
+        "127.0.0.1",
+      );
+      // Loopback does not make the header spoofable from outside: a public peer
+      // is still not trusted, whatever it claims.
+      expect(await ipFrom(auto, "198.51.100.9", "203.0.113.50")).toBe("203.0.113.50");
+    });
+
     // ...and the concrete failure the validator exists to prevent: were "10.0.2"
     // to reach Fastify it would compile without complaint and resolve req.ip to
     // the ingress, which is why loadConfig refuses it above rather than here.

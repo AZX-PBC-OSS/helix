@@ -929,9 +929,14 @@ spoofing the hop-count removal closed. Remove a stale export with the literal
 `unset HELIX_EDGE_TRUST_PROXY`, not a blank `HELIX_EDGE_TRUST_PROXY=` line in a
 sourced `.env` — a blank export resolves to `auto` too (the bicepparam
 normalizes it), so that spelling is harmless, but unset is the clean state — or
-set it to `auto`, which trusts the ACA ingress at `100.64.0.0/10` — the RFC 6598
+set it to `auto`, which trusts `100.64.0.0/10,loopback`: the ACA ingress's RFC 6598
 shared address space its pods are drawn from, **not** the apps subnet the edge
-runs in (measured 2026-09-03; ADR-0011's 2026-09 amendment). Set an address only
+runs in (measured 2026-09-03; ADR-0011's 2026-09 amendment), plus loopback. With
+peer traffic encryption on (ADR-0055, both environments), an in-pod proxy
+terminates the encrypted hop and the edge's socket peer becomes `127.0.0.1`
+(measured 2026-11-24). Without `loopback`, no forwarded request resolves and
+every client shares one rate-limit bucket. An explicit value must include
+`loopback` for the same reason. Set an address only
 when something else fronts the edge (CDN, WAF), and re-verify `req.ip` against
 the live deployment when you do — see
 [Verifying the trusted-proxy address](#verifying-the-trusted-proxy-address)
@@ -1171,8 +1176,9 @@ manual session to find. The `helix.edge.trust_proxy.unresolved` gauge and its al
 just rely on the alert: the availability probes keep the window full on their own.
 
 Do the manual recipe below only when a degraded report needs confirming, or when working without
-telemetry — and after any rollout that changes `edgeTrustProxy`, and after anything new is put in
-front of the edge. `req.ip` behind ACA's Envoy ingress is only the real client if
+telemetry — and after any rollout that changes `edgeTrustProxy`, after anything new is put in
+front of the edge, and after any environment-level ingress change such as toggling peer traffic
+encryption, which moves the socket peer to loopback (ADR-0055). `req.ip` behind ACA's Envoy ingress is only the real client if
 `EDGE_TRUST_PROXY` names the address the ingress presents — and when it doesn't, the trust walk
 truncates at the socket peer, the anon limiter / login throttle / audit hash collapse to one
 bucket per app, and (before the check existed) `/health` stayed green. That is how the wrong
@@ -1192,8 +1198,8 @@ ORDER BY "resetAt" DESC LIMIT 50;
 ```
 
 The key carries the client's address → correct. Anything else — an ACA ingress
-pod (`100.100.x.x`), an apps-subnet address (`10.0.2.x`) — → the walk is still
-truncating at the peer.
+pod (`100.100.x.x`), loopback (`127.0.0.1`, the peer-encryption proxy), an
+apps-subnet address (`10.0.2.x`) — → the walk is still truncating at the peer.
 
 Two traps. `(0 rows)` means no traffic inside the live window, not a failure: the
 rows expire. And a CSRF-refused POST returns 403 **before** the throttle reserve,

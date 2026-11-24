@@ -21,6 +21,14 @@ Managed identity endpoints and container probes are platform-managed exceptions.
 Peer encryption coverage of probes is not asserted. Signatures, replay protection,
 and authorization remain necessary independently of transport encryption.
 
+Peer encryption is not transparent to the edge's client-IP derivation. An in-pod
+proxy terminates the encrypted hop, so the application's socket peer becomes
+loopback rather than the ingress. The Azure `edgeTrustProxy` default (`auto`)
+therefore trusts `100.64.0.0/10,loopback` (ADR-0011). Loopback is reachable only
+from inside the pod and is inert when encryption is off. Measured on a live
+deployment: with the ingress range alone, no forwarded request resolved and the
+trust-proxy alert fired.
+
 Invalid service transport fails startup. Invalid telemetry destinations disable
 export with a sanitized warning, preserving telemetry's availability boundary.
 Live Azure verification remains required before issue #5 can be closed.

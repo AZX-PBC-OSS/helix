@@ -408,6 +408,23 @@ path in the smoke matrix. These are environment-wide changes, so no app canary
 isolates them. Recovery is the same command with `false`, which is independent of
 any revision rollback.
 
+**After C2, check the edge's client-IP resolution as well.** Peer encryption puts a
+proxy inside each pod, and the app's socket peer becomes `127.0.0.1` instead of the
+ACA ingress. If `EDGE_TRUST_PROXY` names only the ingress range (`100.64.0.0/10`),
+no forwarded request resolves: per-IP limits, the login throttle and the audit hash
+collapse into one bucket, while login and every other smoke probe still pass. The
+template's `auto` default trusts `100.64.0.0/10,loopback`. An installation that sets
+the value explicitly must add `loopback` **before** C2, and re-apply it in the
+steady-state parameters so that C3 does not revert it. Verify on the edge and the
+dev gateway:
+
+- the `/health` `trust-proxy` sub-check shows `forwardedResolved` equal to
+  `forwardedSeen`. Below 50 proxied requests it reads "not enough traffic" and
+  the alert gauge is silent by design, so generate traffic first;
+- a few failed password logins produce one `login:<client IP>` row in
+  `rate_counters`, not `login:127.0.0.1` or `login:100.100.x.x`
+  ([Verifying the trusted-proxy address](../../infra/azure/README.md#verifying-the-trusted-proxy-address)).
+
 **PostgreSQL enforcement.** The template sets `require_secure_transport` and
 `ssl_min_protocol_version` explicitly. On Azure Flexible Server both already default
 to `on` and `TLSv1.2` (source `system-default`), so the explicit setting changes the
@@ -483,6 +500,7 @@ each D step (limited to the rows the step touches).
 | Health | Body roll-up and checks inspected, not HTTP status alone |
 | Telemetry | Fresh spans/metrics from every changed service reach the backend |
 | Revision/configuration | Intended digest active; `transport.policy` accepted; probe shows `verify-full` |
+| Client IP (edge, dev gateway) | `trust-proxy` resolves every forwarded request; throttle key carries the real client IP |
 
 Helix `/health` returns 200 even when degraded, and telemetry can disable itself
 while requests keep working. Neither a 200 response nor a successful deployment
