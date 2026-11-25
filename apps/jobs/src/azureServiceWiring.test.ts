@@ -976,4 +976,28 @@ describe("production transport infrastructure", () => {
     expect(MAIN).toContain("sslmode=verify-full");
     expect(read("infra/azure/modules/storage.bicep")).toContain("supportsHttpsTrafficOnly: true");
   });
+  it("writes the Postgres server's children one at a time", () => {
+    // A Flexible Server takes one operation at a time; concurrent child PUTs
+    // fail the apply with ServerIsBusy. Every child after the first must
+    // depend on its predecessor, so the chain covers all of them.
+    const postgres = read("infra/azure/modules/postgres.bicep");
+    const children = [
+      ...postgres.matchAll(
+        /^resource (\w+) 'Microsoft\.DBforPostgreSQL\/flexibleServers\/\w+@[^']+' = \{([\s\S]*?)^\}/gm,
+      ),
+    ].map((m) => ({ name: m[1]!, body: m[2]! }));
+    expect(children.map((c) => c.name)).toEqual([
+      "database",
+      "jobsDatabase",
+      "secureTransport",
+      "minimumTls",
+    ]);
+    for (const child of children) expect(child.body).toContain("parent: server");
+    for (let i = 1; i < children.length; i++) {
+      expect(
+        children[i]!.body,
+        `${children[i]!.name} must wait for ${children[i - 1]!.name}`,
+      ).toMatch(new RegExp(`dependsOn: \\[${children[i - 1]!.name}\\]`));
+    }
+  });
 });

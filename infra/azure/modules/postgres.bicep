@@ -78,6 +78,13 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2025-08-01' = {
   }
 }
 
+// The server's children are written ONE AT A TIME: database → jobsDatabase →
+// secureTransport → minimumTls. `parent: server` alone lets ARM issue all four
+// PUTs at once, and a Flexible Server accepts one operation at a time. Any
+// overlap fails with `ServerIsBusy` ("Cannot complete operation while server
+// … is busy processing another operation"). A long server update makes overlap
+// likely, and once it failed a reconciling apply with the rest of the
+// deployment skipped. A re-run converges, but nothing should need one.
 resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-08-01' = {
   parent: server
   name: databaseName
@@ -98,6 +105,7 @@ resource jobsDatabase 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2025-
     charset: 'UTF8'
     collation: 'en_US.utf8'
   }
+  dependsOn: [database]
 }
 
 output serverId string = server.id
@@ -113,6 +121,7 @@ resource secureTransport 'Microsoft.DBforPostgreSQL/flexibleServers/configuratio
     value: 'ON'
     source: 'user-override'
   }
+  dependsOn: [jobsDatabase]
 }
 resource minimumTls 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@2025-08-01' = {
   parent: server
@@ -121,4 +130,5 @@ resource minimumTls 'Microsoft.DBforPostgreSQL/flexibleServers/configurations@20
     value: 'TLSv1.2'
     source: 'user-override'
   }
+  dependsOn: [secureTransport]
 }
